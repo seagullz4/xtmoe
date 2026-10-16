@@ -6,7 +6,7 @@
 !.gitattributes
 !.github
 !.github/**
-!Readme.md
+!README.md
 !debian.sh
 !src
 !License

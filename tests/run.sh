@@ -4,6 +4,7 @@ set -Eeuo pipefail
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 CLI="$ROOT_DIR/share/termux-v2/bin/tmoe"
 ROOT_HELPER="$ROOT_DIR/share/termux-v2/lib/tmoe-root"
+README_FILE="$ROOT_DIR/README.md"
 TEST_TMP=$(mktemp -d)
 trap 'rm -rf -- "$TEST_TMP"' EXIT
 
@@ -174,7 +175,7 @@ assert_ok 'Local installer completes' sh "$ROOT_DIR/termux.sh"
 [[ -x "$PREFIX/bin/tmoe" ]] && pass 'Installer creates executable command' || fail 'Installer creates executable command'
 [[ -r "$PREFIX/libexec/tmoe-termux/lib/chroot.sh" ]] && pass 'Installer copies libraries' || fail 'Installer copies libraries'
 
-proot_actions=$(grep -rhoE 'tmoe[[:space:]]+proot[[:space:]]+[a-z-]+' "$ROOT_DIR/Readme.md" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
+proot_actions=$(grep -rhoE 'tmoe[[:space:]]+proot[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
 for action in $proot_actions; do
     case "$action" in
         install|login|exec|list|ps|stop|backup|restore|remove|raw) ;;
@@ -183,7 +184,7 @@ for action in $proot_actions; do
 done
 pass 'Documented PRoot actions map to CLI'
 
-chroot_actions=$(grep -rhoE 'tmoe[[:space:]]+chroot[[:space:]]+[a-z-]+' "$ROOT_DIR/Readme.md" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
+chroot_actions=$(grep -rhoE 'tmoe[[:space:]]+chroot[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
 for action in $chroot_actions; do
     case "$action" in
         prepare|install|login|exec|setup|status|list|stop|bind|unbind|backup|restore|remove) ;;
