@@ -1,8 +1,8 @@
-# XTMOE Termux v2
+# XTMOE
 
-TMOE 是 Android Termux 上的 Linux 环境管理工具。本分支正在把旧版大型交互脚本重构为可诊断、可测试的命令式实现，并明确分离 **PRoot** 和 **Chroot** 两种模式。
+XTMOE 是一个从零设计的 Android Termux Linux 环境管理工具，使用可诊断、可测试的命令式实现，并明确分离 **PRoot** 和 **Chroot** 两种模式。
 
-本仓库只保留重制版代码，不包含旧版 `share` 脚本树。安装入口只从已经下载的源码树安装，并且不会自动修改 Termux 软件源、字体、键盘布局或颜色主题。
+项目只实现当前架构。安装入口从已经下载的源码树安装，并且不会自动修改 Termux 软件源、字体、键盘布局或颜色主题。
 
 ## 选择运行模式
 
@@ -35,31 +35,31 @@ pkg install -y git
 git clone https://github.com/seagullz4/xtmoe.git xtmoe
 cd xtmoe
 sh termux.sh
-tmoe doctor
+xtmoe doctor
 ```
 
-不要先执行 `su` 或 `tsu`。TMOE 仅在 Chroot 的必要步骤中单独申请 Root。
+不要先执行 `su` 或 `tsu`。XTMOE 仅在 Chroot 的必要步骤中单独申请 Root。
 
 ## PRoot 快速开始
 
 ```sh
-tmoe proot install ubuntu:24.04 ubuntu
-tmoe proot login ubuntu
+xtmoe proot install ubuntu:24.04 ubuntu
+xtmoe proot login ubuntu
 ```
 
 执行单条命令：
 
 ```sh
-tmoe proot exec ubuntu -- uname -a
+xtmoe proot exec ubuntu -- uname -a
 ```
 
 查看、停止和备份：
 
 ```sh
-tmoe proot list
-tmoe proot ps
-tmoe proot stop ubuntu
-tmoe proot backup ubuntu "$HOME/ubuntu-backup.tar.gz"
+xtmoe proot list
+xtmoe proot ps
+xtmoe proot stop ubuntu
+xtmoe proot backup ubuntu "$HOME/ubuntu-backup.tar.gz"
 ```
 
 完整说明见 [PRoot 使用指南](docs/PROOT.md)。
@@ -69,17 +69,17 @@ tmoe proot backup ubuntu "$HOME/ubuntu-backup.tar.gz"
 先阅读 [Chroot 使用指南](docs/CHROOT.md) 中的风险说明，然后运行：
 
 ```sh
-tmoe chroot prepare
-tmoe doctor
-tmoe chroot install ubuntu 24.04 ubuntu
-tmoe chroot login ubuntu
+xtmoe chroot prepare
+xtmoe doctor
+xtmoe chroot install ubuntu 24.04 ubuntu
+xtmoe chroot login ubuntu
 ```
 
 退出后确认挂载已经释放：
 
 ```sh
-tmoe chroot stop ubuntu
-tmoe chroot status ubuntu
+xtmoe chroot stop ubuntu
+xtmoe chroot status ubuntu
 ```
 
 安装过程从 Ubuntu 官方发布页选择最新的 24.04.x Ubuntu Base 原生架构镜像，并使用官方 `SHA256SUMS` 校验后才解压。
@@ -91,7 +91,6 @@ tmoe chroot status ubuntu
 - [Chroot 模式](docs/CHROOT.md)
 - [存储、SSH、桌面、备份等操作](docs/OPERATIONS.md)
 - [故障排查](docs/TROUBLESHOOTING.md)
-- [旧版容器迁移](docs/MIGRATION.md)
 - [优化计划与验收状态](docs/ROADMAP.md)
 
 ## Android 真机验收
@@ -106,7 +105,7 @@ bash tests/android-smoke.sh proot
 Chroot 冒烟测试会实际申请 Root、挂载、备份、恢复并删除名称带时间戳的测试容器，因此要求显式确认：
 
 ```sh
-TMOE_SMOKE_ACCEPT_CHROOT_RISK=YES bash tests/android-smoke.sh chroot
+XTMOE_SMOKE_ACCEPT_CHROOT_RISK=YES bash tests/android-smoke.sh chroot
 ```
 
 测试范围和剩余机型矩阵见 [测试说明](tests/README.md) 与 [ROADMAP](docs/ROADMAP.md)。
@@ -115,14 +114,14 @@ TMOE_SMOKE_ACCEPT_CHROOT_RISK=YES bash tests/android-smoke.sh chroot
 
 - PRoot 和 Chroot 都不应当作为运行不可信程序的强隔离沙箱。
 - Chroot 中的 root 与 Android 共用内核；把宿主目录挂入容器后，容器可以修改该目录。
-- 新版删除逻辑只接受 TMOE 自己的数据目录和带 `.tmoe-chroot` 标记的容器，并拒绝删除仍有挂载的容器。
+- 删除逻辑只接受 XTMOE 自己的数据目录和带 `.xtmoe-chroot` 标记的容器，并拒绝删除仍有挂载的容器。
 - 不要把整个 `/data`、`/` 或 Termux `$HOME` 以可写方式挂入 Chroot。
-- 删除前先备份，并执行 `tmoe chroot stop <名称>`。
+- 删除前先备份，并执行 `xtmoe chroot stop <名称>`。
 
 ## 项目状态
 
-新的 PRoot 路径以 Termux 官方 `proot-distro` 为运行后端；Chroot 路径为独立的新实现。Windows 开发环境可以完成静态检查和模拟测试，但挂载、SELinux、Root 授权与 Android 厂商内核差异必须在真实设备上完成最终验收。当前进度记录在 [ROADMAP](docs/ROADMAP.md)。
+PRoot 以 Termux 官方 `proot-distro` 为运行后端；Chroot 使用独立的受控实现。Windows 开发环境可以完成静态检查和模拟测试，但挂载、SELinux、Root 授权与 Android 厂商内核差异必须在真实设备上完成最终验收。当前进度记录在 [ROADMAP](docs/ROADMAP.md)。
 
 ## 许可证
 
-项目主体使用 Apache License 2.0；个别继承的第三方文件使用其各自许可证，详见 `Copyright`。
+项目使用 Apache License 2.0；上游著作权来源见 `Copyright`。

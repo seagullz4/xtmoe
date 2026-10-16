@@ -1,0 +1,141 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -Eeuo pipefail
+
+XTMOE_VERSION='0.1.0-dev'
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+if [[ -r "$SCRIPT_DIR/../lib/common.sh" ]]; then
+    XTMOE_LIB_DIR=$(cd -- "$SCRIPT_DIR/../lib" && pwd)
+else
+    XTMOE_LIB_DIR="${PREFIX:?PREFIX 未设置}/libexec/xtmoe/lib"
+fi
+
+source "$XTMOE_LIB_DIR/common.sh"
+source "$XTMOE_LIB_DIR/proot.sh"
+source "$XTMOE_LIB_DIR/chroot.sh"
+
+show_help() {
+    cat <<'EOF'
+XTMOE 0.1
+
+用法：
+  xtmoe doctor
+  xtmoe proot  <操作> [参数]
+  xtmoe chroot <操作> [参数]
+  xtmoe version
+  xtmoe help
+
+常用示例：
+  xtmoe proot install ubuntu:24.04 ubuntu
+  xtmoe proot login ubuntu
+  xtmoe proot exec ubuntu -- uname -a
+  xtmoe chroot install ubuntu 24.04 ubuntu
+  xtmoe chroot login ubuntu
+  xtmoe chroot stop ubuntu
+
+运行 `xtmoe proot help` 或 `xtmoe chroot help` 查看模式专用帮助。
+EOF
+}
+
+doctor() {
+    local failures=0 android_release='未知' root_state='不可用' architecture available_kb apk_release
+
+    info "XTMOE $XTMOE_VERSION 环境检查"
+    if is_termux; then
+        ok "Termux 环境：${PREFIX:-未知}"
+    else
+        warn '当前不是可识别的 Termux 环境'
+        ((failures += 1))
+    fi
+
+    if command_exists getprop; then
+        android_release=$(getprop ro.build.version.release 2>/dev/null || true)
+    fi
+    architecture=$(uname -m)
+    info "Android：${android_release:-未知}；架构：$architecture"
+    case "$architecture" in
+        aarch64|arm64|armv7l|armv8l|arm|x86_64|amd64) ;;
+        *) warn "当前架构尚未列入 Chroot 支持矩阵：$architecture" ;;
+    esac
+
+    apk_release=${TERMUX_APK_RELEASE:-${TERMUX_APP__APK_RELEASE:-未知}}
+    info "Termux APK 来源：$apk_release"
+    case "${apk_release^^}" in
+        *GOOGLE*PLAY*|*PLAY*STORE*)
+            warn '检测到已停止维护的 Google Play Termux；请改用 F-Droid 或官方 GitHub 版本'
+            ((failures += 1))
+            ;;
+    esac
+
+    if [[ $(id -u) -eq 0 ]]; then
+        warn '当前会话是 Root；请退出 su/tsu 后再运行 xtmoe'
+        ((failures += 1))
+    else
+        ok '当前为 Termux 普通用户'
+    fi
+
+    for cmd in bash curl tar sha256sum; do
+        if command_exists "$cmd"; then
+            ok "命令：$cmd"
+        else
+            warn "缺少命令：$cmd"
+            ((failures += 1))
+        fi
+    done
+
+    if command_exists proot-distro; then
+        ok "PRoot：$(proot-distro --version 2>/dev/null | head -n 1 || printf '已安装')"
+    else
+        warn 'PRoot：缺少 proot-distro（执行 pkg install proot-distro）'
+    fi
+
+    if root_available; then
+        root_state='可用'
+        ok "Root：$root_state"
+        for cmd in mount umount chroot; do
+            if command_exists "$cmd"; then
+                ok "Chroot 命令：$cmd"
+            else
+                warn "Root 可用但缺少 Chroot 命令：$cmd（执行 xtmoe chroot prepare）"
+            fi
+        done
+    else
+        info 'Root：不可用；PRoot 不受影响，Chroot 不可用'
+    fi
+
+    if [[ -d /sdcard || -d /storage/emulated/0 ]]; then
+        ok 'Android 共享存储目录存在'
+    else
+        info '未发现共享存储；如需访问，请执行 termux-setup-storage'
+    fi
+
+    available_kb=$(df -Pk "$XTMOE_HOME" 2>/dev/null | awk 'NR == 2 { print $4 }' || true)
+    if [[ $available_kb =~ ^[0-9]+$ ]]; then
+        info "可用空间：$((available_kb / 1024)) MiB"
+        if ((available_kb < 1048576)); then
+            warn '可用空间低于 1 GiB，安装 Linux 容器可能失败'
+        fi
+    fi
+
+    if ((failures > 0)); then
+        warn "检查完成：发现 $failures 个基础问题"
+        return 1
+    fi
+    ok '检查完成：基础环境可用'
+}
+
+main() {
+    local command=${1:-help}
+    shift || true
+    case "$command" in
+        doctor) doctor "$@" ;;
+        proot) proot_main "$@" ;;
+        chroot) chroot_main "$@" ;;
+        version|-V|--version) printf 'xtmoe %s\n' "$XTMOE_VERSION" ;;
+        help|-h|--help) show_help ;;
+        *) die "未知命令：$command（执行 xtmoe help 查看帮助）" ;;
+    esac
+}
+
+main "$@"
+

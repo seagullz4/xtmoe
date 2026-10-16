@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-CLI="$ROOT_DIR/src/bin/tmoe"
-ROOT_HELPER="$ROOT_DIR/src/lib/tmoe-root"
+CLI="$ROOT_DIR/src/bin/xtmoe"
+ROOT_HELPER="$ROOT_DIR/src/lib/xtmoe-root"
 README_FILE="$ROOT_DIR/README.md"
 TEST_TMP=$(mktemp -d)
 trap 'rm -rf -- "$TEST_TMP"' EXIT
@@ -41,10 +41,10 @@ assert_contains() {
 export HOME="$TEST_TMP/home"
 export PREFIX="$TEST_TMP/prefix"
 export TERMUX_VERSION='test'
-export TMOE_HOME="$HOME"
-export TMOE_CONFIG_DIR="$HOME/.config/tmoe-termux"
-export TMOE_DATA_DIR="$HOME/.local/share/tmoe-termux"
-export TMOE_CACHE_DIR="$HOME/.cache/tmoe-termux"
+export XTMOE_HOME="$HOME"
+export XTMOE_CONFIG_DIR="$HOME/.config/xtmoe"
+export XTMOE_DATA_DIR="$HOME/.local/share/xtmoe"
+export XTMOE_CACHE_DIR="$HOME/.cache/xtmoe"
 export NO_COLOR=1
 mkdir -p "$HOME" "$PREFIX/bin" "$TEST_TMP/mock-bin"
 
@@ -68,11 +68,11 @@ export MOCK_LOG="$TEST_TMP/proot.log"
 : >"$MOCK_LOG"
 
 assert_ok 'CLI help' bash "$CLI" help
-assert_contains 'CLI help mentions PRoot' 'tmoe proot' "$TEST_TMP/stdout"
+assert_contains 'CLI help mentions PRoot' 'xtmoe proot' "$TEST_TMP/stdout"
 assert_ok 'CLI version' bash "$CLI" version
+assert_contains 'CLI starts at project version 0.1' 'xtmoe 0.1.0-dev' "$TEST_TMP/stdout"
 assert_ok 'PRoot help' bash "$CLI" proot help
 assert_ok 'Chroot help' bash "$CLI" chroot help
-assert_ok 'Migration help' bash "$CLI" migrate help
 
 assert_ok 'PRoot install dispatch' bash "$CLI" proot install ubuntu:24.04 demo
 assert_contains 'PRoot install keeps image and name' 'install --name demo ubuntu:24.04' "$MOCK_LOG"
@@ -83,21 +83,13 @@ assert_fail 'PRoot non-interactive remove requires --yes' bash "$CLI" proot remo
 assert_ok 'PRoot explicit remove accepted' bash "$CLI" proot remove --yes demo
 assert_contains 'PRoot remove dispatched' 'remove demo' "$MOCK_LOG"
 
-mkdir -p "$TMOE_DATA_DIR/chroot/demo" "$TMOE_CONFIG_DIR/chroot" "$HOME/shared"
+mkdir -p "$XTMOE_DATA_DIR/chroot/demo" "$XTMOE_CONFIG_DIR/chroot" "$HOME/shared"
 assert_ok 'Chroot bind config accepted' bash "$CLI" chroot bind demo "$HOME/shared" /mnt/shared ro
-assert_contains 'Chroot bind is data, not shell' "ro|$HOME/shared|/mnt/shared" "$TMOE_CONFIG_DIR/chroot/demo.binds"
+assert_contains 'Chroot bind is data, not shell' "ro|$HOME/shared|/mnt/shared" "$XTMOE_CONFIG_DIR/chroot/demo.binds"
 assert_fail 'Chroot duplicate target rejected' bash "$CLI" chroot bind demo "$HOME/shared" /mnt/shared rw
 assert_fail 'Chroot relative target rejected' bash "$CLI" chroot bind demo "$HOME/shared" '../escape' rw
 assert_fail 'Chroot invalid container name rejected' bash "$CLI" chroot bind '../escape' "$HOME/shared" /mnt/shared rw
 assert_fail 'Chroot refuses whole host root bind' bash "$CLI" chroot bind demo / /mnt/host rw
-
-mkdir -p "$HOME/.local/share/tmoe-linux/containers/proot/legacy-proot"
-mkdir -p "$HOME/.local/share/tmoe-linux/containers/chroot/legacy-chroot"
-mkdir -p "$HOME/.config/tmoe-linux"
-assert_ok 'Legacy migration scan is readable' bash "$CLI" migrate scan
-assert_contains 'Migration scan finds legacy PRoot' 'legacy-proot' "$TEST_TMP/stdout"
-assert_contains 'Migration scan finds legacy Chroot' 'legacy-chroot' "$TEST_TMP/stdout"
-assert_contains 'Migration scan reports mount state' '[未发现挂载]' "$TEST_TMP/stdout"
 
 printf '<a>ubuntu-base-24.04.3-base-amd64.tar.gz</a>\n<a>ubuntu-base-24.04.5-base-amd64.tar.gz</a>\n' >"$TEST_TMP/ubuntu-index"
 printf 'fake ubuntu base archive\n' >"$TEST_TMP/ubuntu-archive"
@@ -125,7 +117,7 @@ MOCK
 chmod +x "$TEST_TMP/mock-bin/curl"
 assert_ok 'Ubuntu Base index and starred checksum parsed' bash -c "source '$ROOT_DIR/src/lib/common.sh'; source '$ROOT_DIR/src/lib/chroot.sh'; download_ubuntu_base 24.04"
 assert_contains 'Newest Ubuntu point release selected' 'ubuntu-base-24.04.5-base-amd64.tar.gz' "$TEST_TMP/stdout"
-cached_ubuntu="$TMOE_CACHE_DIR/ubuntu-base/24.04/ubuntu-base-24.04.5-base-amd64.tar.gz"
+cached_ubuntu="$XTMOE_CACHE_DIR/ubuntu-base/24.04/ubuntu-base-24.04.5-base-amd64.tar.gz"
 printf 'corrupted cache\n' >"$cached_ubuntu"
 assert_ok 'Corrupted Ubuntu cache is downloaded again' bash -c "source '$ROOT_DIR/src/lib/common.sh'; source '$ROOT_DIR/src/lib/chroot.sh'; download_ubuntu_base 24.04"
 cmp -s "$cached_ubuntu" "$MOCK_UBUNTU_ARCHIVE" && pass 'Redownloaded Ubuntu cache content verified' || fail 'Redownloaded Ubuntu cache content verified'
@@ -138,11 +130,11 @@ exec /usr/bin/id "$@"
 MOCK
 chmod +x "$TEST_TMP/mock-bin/id"
 assert_fail 'Root helper rejects arbitrary base path' bash "$ROOT_HELPER" "$PREFIX" status /tmp demo
-assert_contains 'Root helper reports protected path' '拒绝操作非 TMOE Chroot 目录' "$TEST_TMP/stderr"
+assert_contains 'Root helper reports protected path' '拒绝操作非 XTMOE Chroot 目录' "$TEST_TMP/stderr"
 
 rootfs_fixture_lifecycle() {
     local fixture="$TEST_TMP/rootfs-fixture" archive="$TEST_TMP/rootfs-fixture.tar.gz"
-    local base="$TEST_TMP/data/data/com.termux/files/home/.local/share/tmoe-termux/chroot"
+    local base="$TEST_TMP/data/data/com.termux/files/home/.local/share/xtmoe/chroot"
     local backup="$TEST_TMP/rootfs-backup.tar.gz"
     mkdir -p "$fixture/bin" "$fixture/etc" "$base"
     printf '#!/bin/sh\nexit 0\n' >"$fixture/bin/sh"
@@ -151,6 +143,7 @@ rootfs_fixture_lifecycle() {
 
     PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" install "$base" fixture "$archive" 223.5.5.5
     [[ -x $base/fixture/rootfs/bin/sh ]]
+    grep -qx 'xtmoe-chroot-format-1' "$base/fixture/.xtmoe-chroot"
     grep -qx 'nameserver 223.5.5.5' "$base/fixture/rootfs/etc/resolv.conf"
     [[ $(PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" status "$base" fixture) == stopped ]]
     if PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" backup "$base" fixture "$base/fixture/inside.tar.gz" 0 0; then
@@ -169,13 +162,13 @@ rootfs_fixture_lifecycle() {
 assert_ok 'Synthetic rootfs install/backup/restore/remove lifecycle' rootfs_fixture_lifecycle
 rm -f -- "$TEST_TMP/mock-bin/id"
 
-export TMOE_SKIP_PACKAGES=1
-export TMOE_ALLOW_NON_TERMUX=1
+export XTMOE_SKIP_PACKAGES=1
+export XTMOE_ALLOW_NON_TERMUX=1
 assert_ok 'Local installer completes' sh "$ROOT_DIR/termux.sh"
-[[ -x "$PREFIX/bin/tmoe" ]] && pass 'Installer creates executable command' || fail 'Installer creates executable command'
-[[ -r "$PREFIX/libexec/tmoe-termux/lib/chroot.sh" ]] && pass 'Installer copies libraries' || fail 'Installer copies libraries'
+[[ -x "$PREFIX/bin/xtmoe" ]] && pass 'Installer creates executable command' || fail 'Installer creates executable command'
+[[ -r "$PREFIX/libexec/xtmoe/lib/chroot.sh" ]] && pass 'Installer copies libraries' || fail 'Installer copies libraries'
 
-proot_actions=$(grep -rhoE 'tmoe[[:space:]]+proot[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
+proot_actions=$(grep -rhoE 'xtmoe[[:space:]]+proot[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
 for action in $proot_actions; do
     case "$action" in
         install|login|exec|list|ps|stop|backup|restore|remove|raw) ;;
@@ -184,7 +177,7 @@ for action in $proot_actions; do
 done
 pass 'Documented PRoot actions map to CLI'
 
-chroot_actions=$(grep -rhoE 'tmoe[[:space:]]+chroot[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
+chroot_actions=$(grep -rhoE 'xtmoe[[:space:]]+chroot[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
 for action in $chroot_actions; do
     case "$action" in
         prepare|install|login|exec|setup|status|list|stop|bind|unbind|backup|restore|remove) ;;
@@ -193,7 +186,7 @@ for action in $chroot_actions; do
 done
 pass 'Documented Chroot actions map to CLI'
 
-for doc in INSTALL PROOT CHROOT OPERATIONS TROUBLESHOOTING MIGRATION ROADMAP; do
+for doc in INSTALL PROOT CHROOT OPERATIONS TROUBLESHOOTING ROADMAP; do
     [[ -r "$ROOT_DIR/docs/$doc.md" ]] || fail "Missing documentation: $doc.md"
 done
 pass 'README documentation targets exist'

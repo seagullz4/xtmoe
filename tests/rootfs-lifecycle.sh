@@ -5,12 +5,12 @@ ARCHIVE=${1:?用法：bash tests/rootfs-lifecycle.sh /path/to/ubuntu-base.tar.gz
 [[ -f $ARCHIVE ]] || { printf '镜像不存在：%s\n' "$ARCHIVE" >&2; exit 1; }
 ARCHIVE=$(realpath -- "$ARCHIVE")
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-HELPER="$ROOT_DIR/src/lib/tmoe-root"
+HELPER="$ROOT_DIR/src/lib/xtmoe-root"
 SANDBOX=$(mktemp -d)
 trap 'rm -rf -- "$SANDBOX"' EXIT
 
 PREFIX="$SANDBOX/prefix"
-BASE="$SANDBOX/data/data/com.termux/files/home/.local/share/tmoe-termux/chroot"
+BASE="$SANDBOX/data/data/com.termux/files/home/.local/share/xtmoe/chroot"
 BACKUP="$SANDBOX/ubuntu-test.tar.gz"
 mkdir -p "$PREFIX/bin" "$BASE"
 

@@ -3,7 +3,7 @@
 ## 先运行 doctor
 
 ```sh
-tmoe doctor
+xtmoe doctor
 termux-info
 ```
 
@@ -29,14 +29,14 @@ pkg update
 pkg upgrade
 ```
 
-新版 TMOE 不会自动改写镜像源。
+XTMOE 不会自动改写镜像源。
 
 ## PRoot 无法安装或登录
 
 ```sh
 pkg reinstall proot proot-distro
-tmoe proot raw --version
-tmoe proot raw list
+xtmoe proot raw --version
+xtmoe proot raw list
 ```
 
 不要在另一个 PRoot 容器中嵌套运行，也不要从 Root shell 运行 `proot-distro`。
@@ -44,7 +44,7 @@ tmoe proot raw list
 ## Chroot 提示没有 Root
 
 ```sh
-tmoe chroot prepare
+xtmoe chroot prepare
 tsu -c 'id -u'
 ```
 
@@ -65,8 +65,8 @@ tsu -c 'id; getenforce; mount --version'
 先回到容器停止后台进程，然后：
 
 ```sh
-tmoe chroot stop ubuntu
-tmoe chroot status ubuntu
+xtmoe chroot stop ubuntu
+xtmoe chroot status ubuntu
 ```
 
 仍提示 busy 时不要删除 rootfs。关闭其他 Termux 会话和可能使用共享目录的程序后重试；最后手段是重启手机，再先执行 `status`/`stop`。
@@ -83,8 +83,4 @@ Chroot 初始化会写入公共 DNS。若当前网络阻止这些 DNS，可在�
 ## Android 杀死后台任务
 
 关闭 Termux 的电池优化，允许后台活动，并避免清理最近任务。部分 Android 12+ 设备还受 Phantom Process Killer 限制；具体设置随厂商和系统版本变化。
-
-## 恢复旧版数据
-
-旧版容器目录和新版不同。不要手动把旧 rootfs 直接移动进 `~/.local/share/tmoe-termux/chroot`。先用旧版工具生成备份，确认其中没有活动绑定挂载，再在隔离目录解包和迁移数据。
 

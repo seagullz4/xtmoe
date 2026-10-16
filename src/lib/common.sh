@@ -1,9 +1,9 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-: "${TMOE_HOME:=${HOME:-}}"
-: "${TMOE_CONFIG_DIR:=$TMOE_HOME/.config/tmoe-termux}"
-: "${TMOE_DATA_DIR:=$TMOE_HOME/.local/share/tmoe-termux}"
-: "${TMOE_CACHE_DIR:=$TMOE_HOME/.cache/tmoe-termux}"
+: "${XTMOE_HOME:=${HOME:-}}"
+: "${XTMOE_CONFIG_DIR:=$XTMOE_HOME/.config/xtmoe}"
+: "${XTMOE_DATA_DIR:=$XTMOE_HOME/.local/share/xtmoe}"
+: "${XTMOE_CACHE_DIR:=$XTMOE_HOME/.cache/xtmoe}"
 
 if [[ -t 1 && ${NO_COLOR:-} == '' ]]; then
     C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_BLUE=$'\033[34m'; C_RESET=$'\033[0m'
@@ -22,7 +22,7 @@ is_termux() {
 }
 
 require_termux() {
-    if [[ ${TMOE_ALLOW_NON_TERMUX:-0} != 1 ]]; then
+    if [[ ${XTMOE_ALLOW_NON_TERMUX:-0} != 1 ]]; then
         is_termux || die '此操作只能在 Android Termux 中运行。'
     fi
     [[ $(id -u) -ne 0 ]] || die '请在 Termux 普通用户会话中运行；不要先执行 su/tsu。'
@@ -42,7 +42,7 @@ require_name() {
 
 confirm() {
     local prompt=$1 answer
-    [[ ${TMOE_YES:-0} == 1 ]] && return 0
+    [[ ${XTMOE_YES:-0} == 1 ]] && return 0
     [[ -t 0 ]] || die "$prompt；非交互模式请显式添加 --yes。"
     printf '%s [y/N] ' "$prompt" >&2
     read -r answer
@@ -81,6 +81,6 @@ run_root() {
 }
 
 ensure_dirs() {
-    mkdir -p "$TMOE_CONFIG_DIR" "$TMOE_DATA_DIR" "$TMOE_CACHE_DIR"
+    mkdir -p "$XTMOE_CONFIG_DIR" "$XTMOE_DATA_DIR" "$XTMOE_CACHE_DIR"
 }
 

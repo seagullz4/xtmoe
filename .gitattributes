@@ -4,8 +4,8 @@
 *.md text eol=lf
 *.py text eol=lf
 termux.sh text eol=lf
-src/bin/tmoe text eol=lf
-src/lib/tmoe-root text eol=lf
+src/bin/xtmoe text eol=lf
+src/lib/xtmoe-root text eol=lf
 
 *.png binary
 *.jpg binary

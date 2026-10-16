@@ -5,14 +5,14 @@
 PRoot 可以在登录时添加绑定：
 
 ```sh
-tmoe proot login ubuntu --bind "$HOME/storage/downloads:/mnt/download"
+xtmoe proot login ubuntu --bind "$HOME/storage/downloads:/mnt/download"
 ```
 
 Chroot 使用持久挂载配置：
 
 ```sh
-tmoe chroot bind ubuntu "$HOME/storage/downloads" /mnt/download rw
-tmoe chroot login ubuntu
+xtmoe chroot bind ubuntu "$HOME/storage/downloads" /mnt/download rw
+xtmoe chroot login ubuntu
 ```
 
 重要数据应保存在明确的共享目录并单独备份。不要把唯一副本只放在容器 rootfs 中。
@@ -75,14 +75,14 @@ termux-x11 :1 &
 PRoot 登录时共享 X11 socket：
 
 ```sh
-tmoe proot login ubuntu --shared-x11
+xtmoe proot login ubuntu --shared-x11
 ```
 
 Chroot 添加 socket 挂载：
 
 ```sh
-tmoe chroot bind ubuntu "$PREFIX/tmp/.X11-unix" /tmp/.X11-unix rw
-tmoe chroot login ubuntu
+xtmoe chroot bind ubuntu "$PREFIX/tmp/.X11-unix" /tmp/.X11-unix rw
+xtmoe chroot login ubuntu
 ```
 
 然后在容器内安装桌面并启动：
@@ -100,9 +100,9 @@ dbus-launch --exit-with-session startxfce4
 
 建议保留三类备份：
 
-1. 容器备份：通过 `tmoe ... backup` 创建；
+1. 容器备份：通过 `xtmoe ... backup` 创建；
 2. 项目与个人数据：从共享目录单独同步；
-3. 配置备份：保存 `~/.config/tmoe-termux`。
+3. 配置备份：保存 `~/.config/xtmoe`。
 
 备份完成后运行 `sha256sum` 并把校验值与备份文件放在不同介质：
 
@@ -114,10 +114,10 @@ sha256sum ubuntu-backup.tar.gz > ubuntu-backup.tar.gz.sha256
 
 ```sh
 df -h "$HOME"
-du -sh ~/.local/share/tmoe-termux ~/.cache/tmoe-termux 2>/dev/null
-tmoe proot list
-tmoe chroot list
+du -sh ~/.local/share/xtmoe ~/.cache/xtmoe 2>/dev/null
+xtmoe proot list
+xtmoe chroot list
 ```
 
-Ubuntu Base 下载缓存位于 `~/.cache/tmoe-termux/ubuntu-base`。只有在没有安装任务运行时才应清理缓存。
+Ubuntu Base 下载缓存位于 `~/.cache/xtmoe/ubuntu-base`。只有在没有安装任务运行时才应清理缓存。
 

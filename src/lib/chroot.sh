@@ -4,30 +4,30 @@ chroot_help() {
     cat <<'EOF'
 Chroot 模式（需要设备 Root；当前支持原生架构 Ubuntu Base 24.04）
 
-  tmoe chroot install [ubuntu] [24.04] [名称]
-  tmoe chroot prepare                    安装 tsu、mount-utils 等依赖
-  tmoe chroot login [名称]
-  tmoe chroot exec <名称> -- <命令>
-  tmoe chroot setup [名称]             更新 apt 并安装常用基础包
-  tmoe chroot status [名称]
-  tmoe chroot list
-  tmoe chroot stop [名称]              卸载全部绑定挂载
-  tmoe chroot bind <名称> <宿主目录> <容器目录> [ro|rw]
-  tmoe chroot unbind <名称> <容器目录>
-  tmoe chroot backup <名称> [文件]
-  tmoe chroot restore <文件> [名称]
-  tmoe chroot remove [--yes] <名称>
+  xtmoe chroot install [ubuntu] [24.04] [名称]
+  xtmoe chroot prepare                    安装 tsu、mount-utils 等依赖
+  xtmoe chroot login [名称]
+  xtmoe chroot exec <名称> -- <命令>
+  xtmoe chroot setup [名称]             更新 apt 并安装常用基础包
+  xtmoe chroot status [名称]
+  xtmoe chroot list
+  xtmoe chroot stop [名称]              卸载全部绑定挂载
+  xtmoe chroot bind <名称> <宿主目录> <容器目录> [ro|rw]
+  xtmoe chroot unbind <名称> <容器目录>
+  xtmoe chroot backup <名称> [文件]
+  xtmoe chroot restore <文件> [名称]
+  xtmoe chroot remove [--yes] <名称>
 
 Chroot 与 Android 共用内核，不是安全沙箱。删除前必须先 stop。
 EOF
 }
 
-chroot_base() { printf '%s/chroot' "$TMOE_DATA_DIR"; }
-chroot_config_base() { printf '%s/chroot' "$TMOE_CONFIG_DIR"; }
+chroot_base() { printf '%s/chroot' "$XTMOE_DATA_DIR"; }
+chroot_config_base() { printf '%s/chroot' "$XTMOE_CONFIG_DIR"; }
 
 chroot_helper() {
-    local candidate="$TMOE_LIB_DIR/../tmoe-root"
-    [[ -r $candidate ]] || candidate="${PREFIX:?PREFIX 未设置}/libexec/tmoe-termux/tmoe-root"
+    local candidate="$XTMOE_LIB_DIR/../xtmoe-root"
+    [[ -r $candidate ]] || candidate="${PREFIX:?PREFIX 未设置}/libexec/xtmoe/xtmoe-root"
     [[ -r $candidate ]] || die "缺少 Chroot 助手：$candidate"
     printf '%s' "$candidate"
 }
@@ -85,16 +85,16 @@ download_ubuntu_base() {
     local version=$1 arch index filename base_url sums archive line version_regex
     arch=$(ubuntu_arch)
     base_url="https://cdimage.ubuntu.com/ubuntu-base/releases/$version/release"
-    mkdir -p "$TMOE_CACHE_DIR/ubuntu-base/$version"
-    index="$TMOE_CACHE_DIR/ubuntu-base/$version/index.html"
-    sums="$TMOE_CACHE_DIR/ubuntu-base/$version/SHA256SUMS"
+    mkdir -p "$XTMOE_CACHE_DIR/ubuntu-base/$version"
+    index="$XTMOE_CACHE_DIR/ubuntu-base/$version/index.html"
+    sums="$XTMOE_CACHE_DIR/ubuntu-base/$version/SHA256SUMS"
 
     info "读取 Ubuntu Base $version 官方发布列表……" >&2
     curl -fL --retry 3 --connect-timeout 20 -o "$index" "$base_url/"
     version_regex=${version//./[.]}
     filename=$(grep -oE "ubuntu-base-${version_regex}[.][0-9]+-base-${arch}[.]tar[.]gz" "$index" | sort -Vu | tail -n 1)
     [[ -n $filename ]] || die "没有找到 Ubuntu Base $version/$arch 镜像"
-    archive="$TMOE_CACHE_DIR/ubuntu-base/$version/$filename"
+    archive="$XTMOE_CACHE_DIR/ubuntu-base/$version/$filename"
 
     curl -fL --retry 3 --connect-timeout 20 -o "$sums" "$base_url/SHA256SUMS"
     line=$(grep -E "[[:space:]]+[*]?$filename$" "$sums" | head -n 1 || true)
@@ -118,7 +118,7 @@ download_ubuntu_base() {
 chroot_install() {
     local distro=${1:-ubuntu} version=${2:-24.04} name=${3:-ubuntu} archive base config_base
     local -a dns_servers=()
-    [[ $distro == ubuntu ]] || die 'Chroot v2 当前只支持 Ubuntu Base；其他发行版请使用 PRoot。'
+    [[ $distro == ubuntu ]] || die 'Chroot 当前只支持 Ubuntu Base；其他发行版请使用 PRoot。'
     [[ $version == 24.04 ]] || die '当前经过配置的是 Ubuntu 24.04 LTS。'
     require_name "$name"
     ensure_dirs
@@ -131,7 +131,7 @@ chroot_install() {
     chroot_root install "$base" "$name" "$archive" "${dns_servers[@]}"
     printf 'distro=ubuntu\nversion=%s\narch=%s\n' "$version" "$(ubuntu_arch)" >"$config_base/$name.meta"
     : >"$config_base/$name.binds"
-    ok "Chroot '$name' 安装完成；执行：tmoe chroot login $name"
+    ok "Chroot '$name' 安装完成；执行：xtmoe chroot login $name"
 }
 
 chroot_login() {
@@ -208,7 +208,7 @@ chroot_remove() {
         shift
     done
     [[ -n $name ]] || die '缺少容器名称'; require_name "$name"
-    ((yes)) && export TMOE_YES=1
+    ((yes)) && export XTMOE_YES=1
     confirm "永久删除 Chroot 容器 '$name' 及其全部数据？" || { info '已取消'; return; }
     base=$(chroot_base); config_base=$(chroot_config_base)
     chroot_root remove "$base" "$name"

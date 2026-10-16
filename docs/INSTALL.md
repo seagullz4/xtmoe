@@ -27,21 +27,21 @@ sh termux.sh
 
 安装器会把以下文件放入 Termux 的 `$PREFIX`：
 
-- `$PREFIX/bin/tmoe`：用户命令；
-- `$PREFIX/libexec/tmoe-termux/`：模块和受控 Root 助手。
+- `$PREFIX/bin/xtmoe`：用户命令；
+- `$PREFIX/libexec/xtmoe/`：模块和受控 Root 助手。
 
 配置、数据和缓存分别位于：
 
 ```text
-~/.config/tmoe-termux
-~/.local/share/tmoe-termux
-~/.cache/tmoe-termux
+~/.config/xtmoe
+~/.local/share/xtmoe
+~/.cache/xtmoe
 ```
 
 安装完成后必须运行：
 
 ```sh
-tmoe doctor
+xtmoe doctor
 ```
 
 ## 更新
@@ -52,14 +52,14 @@ tmoe doctor
 cd "$HOME/xtmoe"
 git pull --ff-only
 sh termux.sh
-tmoe doctor
+xtmoe doctor
 ```
 
 重新执行安装器只更新程序文件，不删除容器、配置或备份。
 
 ## 切换 Termux 镜像
 
-新版不会自动改写 `sources.list`。网络异常时使用 Termux 自带工具：
+XTMOE 不会自动改写 `sources.list`。网络异常时使用 Termux 自带工具：
 
 ```sh
 termux-change-repo
@@ -73,9 +73,9 @@ pkg update
 先根据模式备份并移除容器。然后仅删除程序文件：
 
 ```sh
-rm -f "$PREFIX/bin/tmoe"
-rm -rf "$PREFIX/libexec/tmoe-termux"
+rm -f "$PREFIX/bin/xtmoe"
+rm -rf "$PREFIX/libexec/xtmoe"
 ```
 
-配置和容器数据不会自动删除。确认已经不再需要后，用户可单独处理 `~/.config/tmoe-termux`、`~/.local/share/tmoe-termux` 和 `~/.cache/tmoe-termux`。不要在仍有 Chroot 挂载时删除数据目录。
+配置和容器数据不会自动删除。确认已经不再需要后，用户可单独处理 `~/.config/xtmoe`、`~/.local/share/xtmoe` 和 `~/.cache/xtmoe`。不要在仍有 Chroot 挂载时删除数据目录。
 

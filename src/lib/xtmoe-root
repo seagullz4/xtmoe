@@ -4,7 +4,7 @@ set -Eeuo pipefail
 die() { printf '[Root 错误] %s\n' "$*" >&2; exit 1; }
 warn() { printf '[Root 警告] %s\n' "$*" >&2; }
 
-[[ $(id -u) -eq 0 ]] || die '本助手必须由 tmoe 通过 su/tsu 调用。'
+[[ $(id -u) -eq 0 ]] || die '本助手必须由 xtmoe 通过 su/tsu 调用。'
 TERMUX_PREFIX=${1:?缺少 Termux PREFIX}
 shift
 export PATH="$TERMUX_PREFIX/bin:/system/bin:/system/xbin:/vendor/bin:${PATH:-}"
@@ -16,8 +16,8 @@ container_paths() {
     valid_name "$requested_name" || die '非法容器名称'
     BASE=$(realpath -m -- "$requested_base")
     case "$BASE" in
-        */files/home/.local/share/tmoe-termux/chroot) ;;
-        *) die "拒绝操作非 TMOE Chroot 目录：$BASE" ;;
+        */files/home/.local/share/xtmoe/chroot) ;;
+        *) die "拒绝操作非 XTMOE Chroot 目录：$BASE" ;;
     esac
     CONTAINER=$(realpath -m -- "$BASE/$requested_name")
     parent=$(dirname -- "$CONTAINER")
@@ -110,14 +110,14 @@ install_rootfs() {
         printf 'nameserver %s\n' "$dns" >>"$partial_rootfs/rootfs/etc/resolv.conf"
     done
     [[ -s $partial_rootfs/rootfs/etc/resolv.conf ]] || printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' >"$partial_rootfs/rootfs/etc/resolv.conf"
-    printf 'tmoe-chroot-v2\n' >"$partial_rootfs/.tmoe-chroot"
+    printf 'xtmoe-chroot-format-1\n' >"$partial_rootfs/.xtmoe-chroot"
     mv -- "$partial_rootfs" "$CONTAINER"
 }
 
 run_chroot() {
     local config=$1 command_status=0; shift
     is_mounted "$ROOTFS" && die '容器已经处于 mounted 状态；请勿并发登录，先执行 stop。'
-    trap 'unmount_all "$ROOTFS" || warn "异常退出后仍有挂载，请执行 tmoe chroot stop"' EXIT
+    trap 'unmount_all "$ROOTFS" || warn "异常退出后仍有挂载，请执行 xtmoe chroot stop"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
     mount_all "$config"
@@ -137,7 +137,7 @@ run_chroot() {
     set -e
     trap - EXIT INT TERM
     if ! unmount_all "$ROOTFS"; then
-        warn '容器命令已经退出，但部分挂载仍在使用；必须执行 tmoe chroot stop'
+        warn '容器命令已经退出，但部分挂载仍在使用；必须执行 xtmoe chroot stop'
         return 1
     fi
     return "$command_status"
@@ -145,7 +145,7 @@ run_chroot() {
 
 backup_container() {
     local output=$1 owner_uid=$2 owner_gid=$3 canonical_output partial_output
-    [[ -f $CONTAINER/.tmoe-chroot ]] || die '容器标记不存在，拒绝备份'
+    [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器标记不存在，拒绝备份'
     is_mounted "$ROOTFS" && die '容器仍有挂载；请先执行 stop'
     canonical_output=$(realpath -m -- "$output")
     [[ $canonical_output != "$CONTAINER" && $canonical_output != "$CONTAINER"/* ]] || die '备份文件不能写入被备份的容器内部'
@@ -173,13 +173,13 @@ restore_container() {
         rm -rf --one-file-system -- "$partial"
         die '备份解压失败'
     fi
-    [[ -f $partial/.tmoe-chroot && -f $partial/rootfs/bin/sh ]] || { rm -rf --one-file-system -- "$partial"; die '不是有效的 TMOE Chroot 备份'; }
+    [[ -f $partial/.xtmoe-chroot && -f $partial/rootfs/bin/sh ]] || { rm -rf --one-file-system -- "$partial"; die '不是有效的 XTMOE Chroot 备份'; }
     mv -- "$partial" "$CONTAINER"
 }
 
 remove_container() {
-    [[ -f $CONTAINER/.tmoe-chroot ]] || die '容器标记不存在，拒绝删除'
-    is_mounted "$ROOTFS" && die '容器仍有挂载；请先执行 tmoe chroot stop'
+    [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器标记不存在，拒绝删除'
+    is_mounted "$ROOTFS" && die '容器仍有挂载；请先执行 xtmoe chroot stop'
     rm -rf --one-file-system -- "$CONTAINER"
 }
 
@@ -207,7 +207,7 @@ case "$ACTION" in
         ;;
     status)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
-        [[ -f $CONTAINER/.tmoe-chroot ]] || die '容器不存在'
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
         if is_mounted "$ROOTFS"; then printf 'mounted\n'; else printf 'stopped\n'; fi
         ;;
     backup)

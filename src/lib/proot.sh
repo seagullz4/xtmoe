@@ -4,16 +4,16 @@ proot_help() {
     cat <<'EOF'
 PRoot 模式（无需 Root）
 
-  tmoe proot install [镜像] [名称]   默认：ubuntu:24.04 / ubuntu
-  tmoe proot login [名称]            进入交互式 shell
-  tmoe proot exec <名称> -- <命令>   执行单条命令
-  tmoe proot list                    列出容器
-  tmoe proot ps                      列出活动会话
-  tmoe proot stop <名称>             停止容器会话
-  tmoe proot backup <名称> [文件]    备份
-  tmoe proot restore <文件>          恢复（名称保存在备份中）
-  tmoe proot remove [--yes] <名称>   永久删除
-  tmoe proot raw <参数...>           直接调用 proot-distro
+  xtmoe proot install [镜像] [名称]   默认：ubuntu:24.04 / ubuntu
+  xtmoe proot login [名称]            进入交互式 shell
+  xtmoe proot exec <名称> -- <命令>   执行单条命令
+  xtmoe proot list                    列出容器
+  xtmoe proot ps                      列出活动会话
+  xtmoe proot stop <名称>             停止容器会话
+  xtmoe proot backup <名称> [文件]    备份
+  xtmoe proot restore <文件>          恢复（名称保存在备份中）
+  xtmoe proot remove [--yes] <名称>   永久删除
+  xtmoe proot raw <参数...>           直接调用 proot-distro
 EOF
 }
 
@@ -58,7 +58,7 @@ proot_remove() {
     done
     [[ -n $name ]] || die '缺少容器名称'
     require_name "$name"
-    if ((yes)); then export TMOE_YES=1; fi
+    if ((yes)); then export XTMOE_YES=1; fi
     confirm "永久删除 PRoot 容器 '$name' 及其全部数据？" || { info '已取消'; return 0; }
     proot-distro remove "$name"
 }
