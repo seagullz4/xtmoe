@@ -1,0 +1,12 @@
+* text=auto
+
+*.sh text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+termux.sh text eol=lf
+share/termux-v2/bin/tmoe text eol=lf
+share/termux-v2/lib/tmoe-root text eol=lf
+
+*.png binary
+*.jpg binary
+*.svg text eol=lf

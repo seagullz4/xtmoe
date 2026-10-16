@@ -1,0 +1,226 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -Eeuo pipefail
+
+die() { printf '[Root 错误] %s\n' "$*" >&2; exit 1; }
+warn() { printf '[Root 警告] %s\n' "$*" >&2; }
+
+[[ $(id -u) -eq 0 ]] || die '本助手必须由 tmoe 通过 su/tsu 调用。'
+TERMUX_PREFIX=${1:?缺少 Termux PREFIX}
+shift
+export PATH="$TERMUX_PREFIX/bin:/system/bin:/system/xbin:/vendor/bin:${PATH:-}"
+
+valid_name() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; }
+
+container_paths() {
+    local requested_base=$1 requested_name=$2 parent
+    valid_name "$requested_name" || die '非法容器名称'
+    BASE=$(realpath -m -- "$requested_base")
+    case "$BASE" in
+        */files/home/.local/share/tmoe-termux/chroot) ;;
+        *) die "拒绝操作非 TMOE Chroot 目录：$BASE" ;;
+    esac
+    CONTAINER=$(realpath -m -- "$BASE/$requested_name")
+    parent=$(dirname -- "$CONTAINER")
+    [[ $parent == "$BASE" && $CONTAINER != / ]] || die '容器路径越界'
+    ROOTFS="$CONTAINER/rootfs"
+}
+
+is_mounted() {
+    local path=$1
+    awk -v p="$path" '$2 == p || index($2, p "/") == 1 { found=1 } END { exit !found }' /proc/mounts
+}
+
+mount_one() {
+    local source_path=$1 target=$2 mode=${3:-rw}
+    [[ -d $source_path ]] || die "挂载源不是目录：$source_path"
+    [[ $target == /* && $target != / ]] || die "非法容器挂载点：$target"
+    case "$target" in /dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/run|/run/*) die "保留挂载点不能自定义：$target" ;; esac
+    local destination
+    destination=$(realpath -m -- "$ROOTFS$target")
+    [[ $destination == "$ROOTFS"/* ]] || die "挂载点越界：$target"
+    is_mounted "$destination" && return 0
+    mkdir -p -- "$destination"
+    mount --bind "$source_path" "$destination"
+    mount --make-private "$destination" 2>/dev/null || true
+    if [[ $mode == ro ]]; then
+        mount -o remount,bind,ro "$source_path" "$destination"
+    fi
+}
+
+apply_bind_config() {
+    local config=${1:-} mode source_path target extra
+    [[ -n $config && -s $config ]] || return 0
+    while IFS='|' read -r mode source_path target extra; do
+        [[ -n $mode && -z $extra ]] || die "挂载配置格式错误：$config"
+        [[ $mode == ro || $mode == rw ]] || die "非法挂载模式：$mode"
+        mount_one "$source_path" "$target" "$mode"
+    done <"$config"
+}
+
+mount_all() {
+    local config=${1:-}
+    [[ -f $ROOTFS/bin/sh ]] || die "无效 rootfs：$ROOTFS"
+    mkdir -p "$ROOTFS"/{dev,proc,sys,run,tmp}
+    if ! is_mounted "$ROOTFS"; then
+        mount --bind "$ROOTFS" "$ROOTFS"
+        mount --make-private "$ROOTFS" 2>/dev/null || true
+    fi
+    is_mounted "$ROOTFS/proc" || mount -t proc proc "$ROOTFS/proc"
+    if ! is_mounted "$ROOTFS/sys"; then
+        mount --rbind /sys "$ROOTFS/sys"
+        mount --make-rslave "$ROOTFS/sys" 2>/dev/null || mount --make-private "$ROOTFS/sys" 2>/dev/null || true
+    fi
+    if ! is_mounted "$ROOTFS/dev"; then
+        mount --rbind /dev "$ROOTFS/dev"
+        mount --make-rslave "$ROOTFS/dev" 2>/dev/null || mount --make-private "$ROOTFS/dev" 2>/dev/null || true
+    fi
+    is_mounted "$ROOTFS/run" || mount -t tmpfs -o mode=755,nosuid,nodev tmpfs "$ROOTFS/run"
+    apply_bind_config "$config"
+}
+
+unmount_all() {
+    local rootfs=$1 mounts target failed=0
+    mounts=$(awk -v p="$rootfs" '$2 == p || index($2, p "/") == 1 { print $2 }' /proc/mounts | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2-)
+    while IFS= read -r target; do
+        [[ -n $target ]] || continue
+        umount "$target" 2>/dev/null || failed=1
+    done <<<"$mounts"
+    return "$failed"
+}
+
+install_rootfs() {
+    local archive=$1 partial_rootfs dns
+    shift
+    [[ -f $archive ]] || die "镜像不存在：$archive"
+    [[ ! -e $CONTAINER ]] || die "容器已存在：$CONTAINER"
+    partial_rootfs="$BASE/.${CONTAINER##*/}.partial.$$"
+    [[ ! -e $partial_rootfs ]] || die "临时目录已存在：$partial_rootfs"
+    mkdir -p "$partial_rootfs/rootfs"
+    if ! tar --numeric-owner -xpf "$archive" -C "$partial_rootfs/rootfs"; then
+        rm -rf --one-file-system -- "$partial_rootfs"
+        die '镜像解压失败'
+    fi
+    [[ -f $partial_rootfs/rootfs/bin/sh ]] || { rm -rf --one-file-system -- "$partial_rootfs"; die '镜像解压后缺少 /bin/sh'; }
+    mkdir -p "$partial_rootfs/rootfs"/{dev,proc,sys,run,tmp,root}
+    chmod 1777 "$partial_rootfs/rootfs/tmp"
+    ln -snf /proc/mounts "$partial_rootfs/rootfs/etc/mtab"
+    : >"$partial_rootfs/rootfs/etc/resolv.conf"
+    for dns in "$@"; do
+        [[ $dns =~ ^[0-9A-Fa-f:.]+$ ]] || { rm -rf --one-file-system -- "$partial_rootfs"; die "非法 DNS 地址：$dns"; }
+        printf 'nameserver %s\n' "$dns" >>"$partial_rootfs/rootfs/etc/resolv.conf"
+    done
+    [[ -s $partial_rootfs/rootfs/etc/resolv.conf ]] || printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' >"$partial_rootfs/rootfs/etc/resolv.conf"
+    printf 'tmoe-chroot-v2\n' >"$partial_rootfs/.tmoe-chroot"
+    mv -- "$partial_rootfs" "$CONTAINER"
+}
+
+run_chroot() {
+    local config=$1 command_status=0; shift
+    is_mounted "$ROOTFS" && die '容器已经处于 mounted 状态；请勿并发登录，先执行 stop。'
+    trap 'unmount_all "$ROOTFS" || warn "异常退出后仍有挂载，请执行 tmoe chroot stop"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    mount_all "$config"
+    set +e
+    if (($#)); then
+        chroot "$ROOTFS" /usr/bin/env -i \
+            HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            LANG=C.UTF-8 "$@"
+    else
+        chroot "$ROOTFS" /usr/bin/env -i \
+            HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            LANG=C.UTF-8 /bin/bash -l
+    fi
+    command_status=$?
+    set -e
+    trap - EXIT INT TERM
+    if ! unmount_all "$ROOTFS"; then
+        warn '容器命令已经退出，但部分挂载仍在使用；必须执行 tmoe chroot stop'
+        return 1
+    fi
+    return "$command_status"
+}
+
+backup_container() {
+    local output=$1 owner_uid=$2 owner_gid=$3 canonical_output partial_output
+    [[ -f $CONTAINER/.tmoe-chroot ]] || die '容器标记不存在，拒绝备份'
+    is_mounted "$ROOTFS" && die '容器仍有挂载；请先执行 stop'
+    canonical_output=$(realpath -m -- "$output")
+    [[ $canonical_output != "$CONTAINER" && $canonical_output != "$CONTAINER"/* ]] || die '备份文件不能写入被备份的容器内部'
+    [[ ! -e $output ]] || die "备份文件已存在，拒绝覆盖：$output"
+    mkdir -p -- "$(dirname -- "$output")"
+    partial_output="${output}.partial.$$"
+    if ! tar --numeric-owner -czpf "$partial_output" -C "$CONTAINER" .; then
+        rm -f -- "$partial_output"
+        die '创建备份失败'
+    fi
+    mv -- "$partial_output" "$output"
+    chown "$owner_uid:$owner_gid" "$output" 2>/dev/null || true
+}
+
+restore_container() {
+    local archive=$1 partial
+    [[ -f $archive ]] || die "备份不存在：$archive"
+    [[ ! -e $CONTAINER ]] || die '目标容器已存在'
+    if tar -tzf "$archive" | awk '$0 ~ /^\// || $0 ~ /(^|\/)\.\.($|\/)/ { bad=1 } END { exit bad ? 0 : 1 }'; then
+        die '备份包含绝对路径或上级目录引用，拒绝恢复'
+    fi
+    partial="$BASE/.${CONTAINER##*/}.restore.$$"
+    mkdir -p "$partial"
+    if ! tar --numeric-owner -xzpf "$archive" -C "$partial"; then
+        rm -rf --one-file-system -- "$partial"
+        die '备份解压失败'
+    fi
+    [[ -f $partial/.tmoe-chroot && -f $partial/rootfs/bin/sh ]] || { rm -rf --one-file-system -- "$partial"; die '不是有效的 TMOE Chroot 备份'; }
+    mv -- "$partial" "$CONTAINER"
+}
+
+remove_container() {
+    [[ -f $CONTAINER/.tmoe-chroot ]] || die '容器标记不存在，拒绝删除'
+    is_mounted "$ROOTFS" && die '容器仍有挂载；请先执行 tmoe chroot stop'
+    rm -rf --one-file-system -- "$CONTAINER"
+}
+
+ACTION=${1:-}
+shift || true
+case "$ACTION" in
+    install)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        archive=${3:?缺少镜像}; shift 3
+        install_rootfs "$archive" "$@"
+        ;;
+    login)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        run_chroot "${3:-}"
+        ;;
+    exec)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        config=${3:-}; shift 3
+        (($#)) || die '缺少命令'
+        run_chroot "$config" "$@"
+        ;;
+    stop)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        unmount_all "$ROOTFS" || die '部分挂载无法卸载，可能仍有进程占用'
+        ;;
+    status)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.tmoe-chroot ]] || die '容器不存在'
+        if is_mounted "$ROOTFS"; then printf 'mounted\n'; else printf 'stopped\n'; fi
+        ;;
+    backup)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        backup_container "${3:?缺少输出文件}" "${4:?缺少 uid}" "${5:?缺少 gid}"
+        ;;
+    restore)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        restore_container "${3:?缺少备份文件}"
+        ;;
+    remove)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        remove_container
+        ;;
+    *) die "未知操作：$ACTION" ;;
+esac

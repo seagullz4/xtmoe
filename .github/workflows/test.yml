@@ -1,0 +1,54 @@
+name: Test XTMOE
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  shell-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Parse shell files
+        shell: bash
+        run: |
+          bash -n \
+            termux.sh \
+            share/termux-v2/bin/tmoe \
+            share/termux-v2/lib/common.sh \
+            share/termux-v2/lib/proot.sh \
+            share/termux-v2/lib/chroot.sh \
+            share/termux-v2/lib/tmoe-root \
+            tests/run.sh \
+            tests/android-smoke.sh \
+            tests/rootfs-lifecycle.sh
+
+      - name: Run ShellCheck
+        shell: bash
+        run: |
+          shellcheck -x -S warning \
+            termux.sh \
+            share/termux-v2/bin/tmoe \
+            share/termux-v2/lib/common.sh \
+            share/termux-v2/lib/proot.sh \
+            share/termux-v2/lib/chroot.sh \
+            share/termux-v2/lib/tmoe-root \
+            tests/run.sh \
+            tests/android-smoke.sh \
+            tests/rootfs-lifecycle.sh
+
+      - name: Run simulated lifecycle tests
+        run: bash tests/run.sh
+
+      - name: Check whitespace
+        run: git diff --check
