@@ -79,3 +79,11 @@ rm -rf "$PREFIX/libexec/xtmoe"
 
 配置和容器数据不会自动删除。确认已经不再需要后，用户可单独处理 `~/.config/xtmoe`、`~/.local/share/xtmoe` 和 `~/.cache/xtmoe`。不要在仍有 Chroot 挂载时删除数据目录。
 
+卸载某个 Linux 镜像应先使用受控命令，而不是手动删除数据目录：
+
+```sh
+xtmoe uninstall proot ubuntu
+xtmoe chroot stop ubuntu
+xtmoe uninstall chroot ubuntu
+```
+

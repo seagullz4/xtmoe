@@ -61,6 +61,8 @@ xtmoe chroot setup ubuntu
 
 每次登录会受控挂载 rootfs 自身、`/proc`、`/sys`、`/dev` 和 `/run`。Shell 正常退出后会尝试卸载；如果容器中留下后台进程，卸载可能失败。
 
+交互登录通过 Termux `util-linux` 提供的 `script` 创建独立伪终端。Ctrl+C 只中断容器内当前前台命令并返回提示符，不会退出容器；使用 `exit` 或 Ctrl+D 才结束登录。`xtmoe chroot exec` 保持非交互模式，不分配伪终端。
+
 XTMOE 在卸载失败时返回失败状态，不会把“Shell 已退出”误报成“容器已安全停止”。此时应按照下面的停止流程处理占用进程。
 
 ## 停止和检查
@@ -125,10 +127,18 @@ xtmoe chroot stop ubuntu
 xtmoe chroot remove ubuntu
 ```
 
+也可以使用统一的镜像卸载命令：
+
+```sh
+xtmoe chroot stop ubuntu
+xtmoe uninstall chroot ubuntu
+```
+
 脚本化删除必须显式添加 `--yes`：
 
 ```sh
 xtmoe chroot remove --yes ubuntu
+xtmoe uninstall --yes chroot ubuntu
 ```
 
 ## systemd 说明

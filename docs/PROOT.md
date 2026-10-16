@@ -102,10 +102,17 @@ xtmoe proot raw rename --help
 xtmoe proot remove ubuntu
 ```
 
+也可以使用统一的镜像卸载命令：
+
+```sh
+xtmoe uninstall proot ubuntu
+```
+
 非交互脚本必须显式确认：
 
 ```sh
 xtmoe proot remove --yes ubuntu
+xtmoe uninstall --yes proot ubuntu
 ```
 
 删除无法撤销，建议先备份。

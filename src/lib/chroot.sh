@@ -47,7 +47,7 @@ chroot_prepare() {
     require_termux
     require_command pkg '请使用官方 Termux 客户端'
     info '安装 Chroot 所需的 Termux 软件包……'
-    pkg install -y tsu mount-utils coreutils curl tar
+    pkg install -y tsu mount-utils util-linux coreutils curl tar
     if root_available; then
         ok 'Chroot 依赖与 Root 授权可用'
     else

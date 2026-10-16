@@ -115,10 +115,9 @@ install_rootfs() {
 }
 
 run_chroot() {
-    local config=$1 command_status=0; shift
+    local config=$1 command_status=0 script_bin; shift
     is_mounted "$ROOTFS" && die '容器已经处于 mounted 状态；请勿并发登录，先执行 stop。'
     trap 'unmount_all "$ROOTFS" || warn "异常退出后仍有挂载，请执行 xtmoe chroot stop"' EXIT
-    trap 'exit 130' INT
     trap 'exit 143' TERM
     mount_all "$config"
     set +e
@@ -128,14 +127,24 @@ run_chroot() {
             PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
             LANG=C.UTF-8 "$@"
     else
-        chroot "$ROOTFS" /usr/bin/env -i \
-            HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
-            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-            LANG=C.UTF-8 /bin/bash -l
+        script_bin="$TERMUX_PREFIX/bin/script"
+        if [[ -t 0 && -t 1 && -x $script_bin ]]; then
+            "$script_bin" -q -e /dev/null -- \
+                chroot "$ROOTFS" /usr/bin/env -i \
+                HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
+                PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                LANG=C.UTF-8 /bin/bash -l
+        else
+            [[ -x $script_bin ]] || warn '缺少 util-linux script，交互式 Shell 可能没有作业控制；请执行 xtmoe chroot prepare'
+            chroot "$ROOTFS" /usr/bin/env -i \
+                HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
+                PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                LANG=C.UTF-8 /bin/bash -l
+        fi
     fi
     command_status=$?
     set -e
-    trap - EXIT INT TERM
+    trap - EXIT TERM
     if ! unmount_all "$ROOTFS"; then
         warn '容器命令已经退出，但部分挂载仍在使用；必须执行 xtmoe chroot stop'
         return 1

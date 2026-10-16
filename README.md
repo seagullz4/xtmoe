@@ -62,6 +62,12 @@ xtmoe proot stop ubuntu
 xtmoe proot backup ubuntu "$HOME/ubuntu-backup.tar.gz"
 ```
 
+卸载 PRoot 镜像及其全部数据：
+
+```sh
+xtmoe uninstall proot ubuntu
+```
+
 完整说明见 [PRoot 使用指南](docs/PROOT.md)。
 
 ## Chroot 快速开始
@@ -80,6 +86,13 @@ xtmoe chroot login ubuntu
 ```sh
 xtmoe chroot stop ubuntu
 xtmoe chroot status ubuntu
+```
+
+停止后卸载 Chroot 镜像及其全部数据：
+
+```sh
+xtmoe chroot stop ubuntu
+xtmoe uninstall chroot ubuntu
 ```
 
 安装过程从 Ubuntu 官方发布页选择最新的 24.04.x Ubuntu Base 原生架构镜像，并使用官方 `SHA256SUMS` 校验后才解压。

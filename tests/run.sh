@@ -70,7 +70,7 @@ export MOCK_LOG="$TEST_TMP/proot.log"
 assert_ok 'CLI help' bash "$CLI" help
 assert_contains 'CLI help mentions PRoot' 'xtmoe proot' "$TEST_TMP/stdout"
 assert_ok 'CLI version' bash "$CLI" version
-assert_contains 'CLI starts at project version 0.1' 'xtmoe 0.1.0-dev' "$TEST_TMP/stdout"
+assert_contains 'CLI reports version 0.1.1-dev' 'xtmoe 0.1.1-dev' "$TEST_TMP/stdout"
 assert_ok 'PRoot help' bash "$CLI" proot help
 assert_ok 'Chroot help' bash "$CLI" chroot help
 
@@ -82,6 +82,10 @@ assert_fail 'PRoot invalid name rejected' bash "$CLI" proot install ubuntu:24.04
 assert_fail 'PRoot non-interactive remove requires --yes' bash "$CLI" proot remove demo
 assert_ok 'PRoot explicit remove accepted' bash "$CLI" proot remove --yes demo
 assert_contains 'PRoot remove dispatched' 'remove demo' "$MOCK_LOG"
+assert_fail 'Unified uninstall requires confirmation' bash "$CLI" uninstall proot demo
+assert_ok 'Unified uninstall dispatches PRoot removal' bash "$CLI" uninstall --yes proot demo
+assert_contains 'Unified uninstall removes requested image' 'remove demo' "$MOCK_LOG"
+assert_fail 'Unified uninstall rejects unknown mode' bash "$CLI" uninstall virtual demo
 
 mkdir -p "$XTMOE_DATA_DIR/chroot/demo" "$XTMOE_CONFIG_DIR/chroot" "$HOME/shared"
 assert_ok 'Chroot bind config accepted' bash "$CLI" chroot bind demo "$HOME/shared" /mnt/shared ro
@@ -131,6 +135,12 @@ MOCK
 chmod +x "$TEST_TMP/mock-bin/id"
 assert_fail 'Root helper rejects arbitrary base path' bash "$ROOT_HELPER" "$PREFIX" status /tmp demo
 assert_contains 'Root helper reports protected path' '拒绝操作非 XTMOE Chroot 目录' "$TEST_TMP/stderr"
+if grep -Fq "trap 'exit 130' INT" "$ROOT_HELPER"; then
+    fail 'Interactive login must not trap Ctrl+C as container exit'
+else
+    pass 'Interactive login leaves Ctrl+C to the container shell'
+fi
+assert_contains 'Interactive login allocates a PTY' '"$script_bin" -q -e /dev/null --' "$ROOT_HELPER"
 
 rootfs_fixture_lifecycle() {
     local fixture="$TEST_TMP/rootfs-fixture" archive="$TEST_TMP/rootfs-fixture.tar.gz"

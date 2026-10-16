@@ -71,6 +71,26 @@ xtmoe chroot status ubuntu
 
 仍提示 busy 时不要删除 rootfs。关闭其他 Termux 会话和可能使用共享目录的程序后重试；最后手段是重启手机，再先执行 `status`/`stop`。
 
+## Chroot 提示 no job control 或 Ctrl+C 退出登录
+
+重新安装 Chroot 运行依赖和 XTMOE：
+
+```sh
+xtmoe chroot prepare
+cd "$HOME/xtmoe"
+git pull --ff-only
+sh termux.sh
+```
+
+交互登录需要 Termux 的 `util-linux` 提供 `script` 伪终端。确认命令存在：
+
+```sh
+command -v script
+xtmoe chroot login ubuntu
+```
+
+修复后 Ctrl+C 应只中断当前前台命令；应使用 `exit` 或 Ctrl+D 主动退出容器。
+
 ## apt 无法解析域名
 
 ```sh
