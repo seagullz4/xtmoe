@@ -52,6 +52,7 @@ is_mounted() {
 mount_one() {
     local source_path=$1 target=$2 mode=${3:-rw}
     [[ -d $source_path ]] || die "挂载源不是目录：$source_path"
+    [[ $source_path != / && $source_path != /data ]] || die '拒绝挂载整个宿主根目录或 /data'
     [[ $target == /* && $target != / ]] || die "非法容器挂载点：$target"
     case "$target" in /dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/run|/run/*) die "保留挂载点不能自定义：$target" ;; esac
     local destination
@@ -221,6 +222,11 @@ case "$ACTION" in
         encoded=$(mount_path_encode "${1:?缺少测试路径}")
         decoded=$(mount_path_decode "$encoded")
         printf '%s\n%s\n' "$encoded" "$decoded"
+        ;;
+    _internal-mount-source-check)
+        [[ ${XTMOE_INTERNAL_TEST:-0} == 1 ]] || die '内部测试操作不可用'
+        ROOTFS=/tmp/xtmoe-internal-test-rootfs
+        mount_one "${1:?缺少测试挂载源}" /mnt/test rw
         ;;
     install)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"

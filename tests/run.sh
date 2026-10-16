@@ -69,11 +69,12 @@ export MOCK_LOG="$TEST_TMP/proot.log"
 : >"$MOCK_LOG"
 
 assert_ok 'CLI help' bash "$CLI" help
+assert_contains 'CLI help uses current version variable' 'XTMOE 0.2.2-dev' "$TEST_TMP/stdout"
 assert_contains 'CLI help mentions PRoot' 'xtmoe proot' "$TEST_TMP/stdout"
 assert_contains 'CLI help mentions updater' 'xtmoe update' "$TEST_TMP/stdout"
 assert_contains 'CLI help mentions program uninstall' 'xtmoe uninstall-app' "$TEST_TMP/stdout"
 assert_ok 'CLI version' bash "$CLI" version
-assert_contains 'CLI reports version 0.2.1-dev' 'xtmoe 0.2.1-dev' "$TEST_TMP/stdout"
+assert_contains 'CLI reports version 0.2.2-dev' 'xtmoe 0.2.2-dev' "$TEST_TMP/stdout"
 assert_ok 'PRoot help' bash "$CLI" proot help
 assert_ok 'Chroot help' bash "$CLI" chroot help
 assert_contains 'Chroot help mentions Docker readiness check' 'docker-check' "$TEST_TMP/stdout"
@@ -151,6 +152,8 @@ assert_contains 'Root helper reports protected path' '拒绝操作非 XTMOE Chro
 codec_input=$'/tmp/a b\\c\td'
 assert_ok 'Mount table path codec handles spaces, tabs and backslashes' env XTMOE_TEST_ROOT=1 XTMOE_INTERNAL_TEST=1 bash "$ROOT_HELPER" "$PREFIX" _internal-path-codec "$codec_input"
 [[ $(tail -n 1 "$TEST_TMP/stdout") == "$codec_input" ]] && pass 'Mount table path codec round-trips exactly' || fail 'Mount table path codec round-trips exactly'
+assert_fail 'Root helper rejects manually configured host root bind' env XTMOE_TEST_ROOT=1 XTMOE_INTERNAL_TEST=1 bash "$ROOT_HELPER" "$PREFIX" _internal-mount-source-check /
+assert_contains 'Root helper enforces dangerous source policy' '拒绝挂载整个宿主根目录或 /data' "$TEST_TMP/stderr"
 if grep -Fq "trap 'exit 130' INT" "$ROOT_HELPER"; then
     fail 'Interactive login must not trap Ctrl+C as container exit'
 else
@@ -265,6 +268,15 @@ for doc in INSTALL PROOT CHROOT OPERATIONS TROUBLESHOOTING ROADMAP; do
     [[ -r "$ROOT_DIR/docs/$doc.md" ]] || fail "Missing documentation: $doc.md"
 done
 pass 'README documentation targets exist'
+
+top_actions=$(grep -rhoE 'xtmoe[[:space:]]+[a-z][a-z-]*' "$README_FILE" "$ROOT_DIR/docs" "$ROOT_DIR/tests/README.md" | awk '{print $2}' | sort -u)
+for action in $top_actions; do
+    case "$action" in
+        doctor|proot|chroot|uninstall|update|uninstall-app|version|help) ;;
+        *) fail "Documentation references unknown top-level action: $action" ;;
+    esac
+done
+pass 'Documented top-level actions map to CLI'
 
 if grep -R -q --include='*.sh' --include='*.md' 'xzmore' "$ROOT_DIR/src" "$ROOT_DIR/termux.sh"; then
     fail 'Runtime has no xzmore dependency'

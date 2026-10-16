@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
 
-XTMOE_VERSION='0.2.1-dev'
+XTMOE_VERSION='0.2.2-dev'
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 if [[ -r "$SCRIPT_DIR/../lib/common.sh" ]]; then
@@ -15,9 +15,8 @@ source "$XTMOE_LIB_DIR/proot.sh"
 source "$XTMOE_LIB_DIR/chroot.sh"
 
 show_help() {
+    printf 'XTMOE %s\n\n' "$XTMOE_VERSION"
     cat <<'EOF'
-XTMOE 0.1
-
 用法：
   xtmoe doctor
   xtmoe proot  <操作> [参数]
