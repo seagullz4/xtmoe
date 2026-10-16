@@ -57,9 +57,38 @@ xtmoe chroot exec ubuntu -- uname -a
 xtmoe chroot setup ubuntu
 ```
 
-`setup` 会更新 apt，并安装 CA 证书、curl、locale、OpenSSH Server 和 sudo。Ubuntu Base 默认非常精简，缺少许多常见工具是正常现象。
+`setup` 会更新 apt，并安装 CA 证书、curl、locale、OpenSSH Server、sudo、systemd、D-Bus、Bash 和 procps。Ubuntu Base 默认非常精简，缺少许多常见工具是正常现象。
 
 初始化会保留镜像中已有的其他主机映射，并确保 `localhost` 同时映射到 `127.0.0.1` 和 `::1`。每次 `login`、`exec` 或 `setup` 还会自动补齐已有容器缺失的本机名称配置，这可以避免 `sudo: unable to resolve host localhost` 一类的错误。
+
+## 嵌套 systemd
+
+Chroot 不会成为 Android 的 PID 1，因此这里提供的是独立 PID namespace 中的嵌套 systemd。先检查并启动：
+
+```sh
+xtmoe chroot systemd-check ubuntu
+xtmoe chroot systemd-start ubuntu
+xtmoe chroot systemd-status ubuntu
+xtmoe chroot systemd-login ubuntu
+```
+
+在 systemd 会话中可以直接使用 `systemctl`、`journalctl` 等命令。结束时执行：
+
+```sh
+xtmoe chroot systemd-stop ubuntu
+```
+
+嵌套 systemd 不等于 Android 原生启动服务，也不会绕过缺少 pids cgroup 等内核限制。只要 `systemd-check` 出现 `[缺失]`，就不应继续安装 Docker 或 1Panel。
+
+## Bash 作为 `/bin/sh`
+
+如果第三方安装脚本声明 `#!/bin/sh` 却使用 Bash 数组，可以显式切换：
+
+```sh
+xtmoe chroot use-bash-sh ubuntu
+```
+
+这会把容器内 `/bin/sh` 指向 Bash。原生 Ubuntu 默认使用 dash；该选项是兼容性调整，只建议在专用 XTMOE 容器或虚拟机镜像中启用。
 
 在安装 Docker 或 1Panel 前运行只读内核检查：
 

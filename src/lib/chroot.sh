@@ -10,6 +10,13 @@ Chroot 模式（需要设备 Root；当前支持原生架构 Ubuntu Base 24.04�
   xtmoe chroot exec <名称> -- <命令>
   xtmoe chroot setup [名称]             更新 apt 并安装常用基础包
   xtmoe chroot docker-check [名称]      只读检查 Docker/1Panel 内核条件
+  xtmoe chroot systemd-check [名称]     检查嵌套 systemd 启动条件
+  xtmoe chroot systemd-start [名称]     在 PID namespace 中启动 systemd
+  xtmoe chroot systemd-login [名称]     进入 systemd 会话 Shell
+  xtmoe chroot systemd-exec <名称> -- <命令>
+  xtmoe chroot systemd-status [名称]
+  xtmoe chroot systemd-stop [名称]      停止嵌套 systemd 并卸载
+  xtmoe chroot use-bash-sh [名称]       将 /bin/sh 切换为 Bash
   xtmoe chroot status [名称]
   xtmoe chroot list
   xtmoe chroot stop [名称]              卸载全部绑定挂载
@@ -151,6 +158,45 @@ chroot_exec() {
     (($#)) || die '缺少要执行的命令'
     require_name "$name"; base=$(chroot_base); config="$(chroot_config_base)/$name.binds"
     chroot_root exec "$base" "$name" "$config" "$@"
+}
+
+chroot_systemd_check() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot systemd-check [名称]'
+    chroot_root systemd-check "$(chroot_base)" "${1:-ubuntu}"
+}
+
+chroot_systemd_start() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot systemd-start [名称]'
+    chroot_root systemd-start "$(chroot_base)" "${1:-ubuntu}"
+}
+
+chroot_systemd_login() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot systemd-login [名称]'
+    chroot_root systemd-login "$(chroot_base)" "${1:-ubuntu}"
+}
+
+chroot_systemd_exec() {
+    local name=${1:?缺少容器名称}
+    shift
+    [[ ${1:-} == -- ]] && shift
+    (($#)) || die '缺少命令'
+    chroot_root systemd-exec "$(chroot_base)" "$name" "$@"
+}
+
+chroot_systemd_status() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot systemd-status [名称]'
+    chroot_root systemd-status "$(chroot_base)" "${1:-ubuntu}"
+}
+
+chroot_systemd_stop() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot systemd-stop [名称]'
+    chroot_root systemd-stop "$(chroot_base)" "${1:-ubuntu}"
+}
+
+chroot_use_bash_sh() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot use-bash-sh [名称]'
+    local name=${1:-ubuntu}
+    chroot_exec "$name" -- /bin/bash -lc '[[ -x /usr/bin/bash ]] || { echo "缺少 /usr/bin/bash" >&2; exit 1; }; ln -sfn /usr/bin/bash /bin/sh; readlink -f /bin/sh'
 }
 
 chroot_bind() {
@@ -318,9 +364,16 @@ chroot_main() {
         setup)
             require_arg_range 0 1 "$#" 'xtmoe chroot setup [名称]'
             name=${1:-ubuntu}
-            chroot_exec "$name" -- /bin/bash -lc 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl locales openssh-server sudo'
+            chroot_exec "$name" -- /bin/bash -lc 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl locales openssh-server sudo systemd-sysv dbus bash procps'
             ;;
         docker-check) chroot_docker_check "$@" ;;
+        systemd-check) chroot_systemd_check "$@" ;;
+        systemd-start) chroot_systemd_start "$@" ;;
+        systemd-login) chroot_systemd_login "$@" ;;
+        systemd-exec) chroot_systemd_exec "$@" ;;
+        systemd-status) chroot_systemd_status "$@" ;;
+        systemd-stop) chroot_systemd_stop "$@" ;;
+        use-bash-sh) chroot_use_bash_sh "$@" ;;
         list|ls)
             require_arg_range 0 0 "$#" 'xtmoe chroot list'
             chroot_list

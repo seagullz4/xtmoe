@@ -78,6 +78,8 @@ assert_contains 'CLI reports version 0.2.2-dev' 'xtmoe 0.2.2-dev' "$TEST_TMP/std
 assert_ok 'PRoot help' bash "$CLI" proot help
 assert_ok 'Chroot help' bash "$CLI" chroot help
 assert_contains 'Chroot help mentions Docker readiness check' 'docker-check' "$TEST_TMP/stdout"
+assert_contains 'Chroot help mentions nested systemd' 'systemd-check' "$TEST_TMP/stdout"
+assert_contains 'Chroot help mentions Bash compatibility switch' 'use-bash-sh' "$TEST_TMP/stdout"
 old_prefix=$PREFIX
 export PREFIX="$TEST_TMP/not-termux"
 mkdir -p "$PREFIX/bin"
@@ -274,7 +276,7 @@ pass 'Documented PRoot actions map to CLI'
 chroot_actions=$(grep -rhoE 'xtmoe[[:space:]]+chroot[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
 for action in $chroot_actions; do
     case "$action" in
-        prepare|install|login|exec|setup|docker-check|status|list|stop|bind|unbind|backup|restore|remove) ;;
+        prepare|install|login|exec|setup|docker-check|systemd-check|systemd-start|systemd-login|systemd-exec|systemd-status|systemd-stop|use-bash-sh|status|list|stop|bind|unbind|backup|restore|remove) ;;
         *) fail "Documentation references unknown Chroot action: $action" ;;
     esac
 done

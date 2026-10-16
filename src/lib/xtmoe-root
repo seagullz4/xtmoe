@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 die() { printf '[Root 错误] %s\n' "$*" >&2; exit 1; }
 warn() { printf '[Root 警告] %s\n' "$*" >&2; }
+ok() { printf '[Root] %s\n' "$*"; }
 
 [[ $(id -u) -eq 0 ]] || die '本助手必须由 xtmoe 通过 su/tsu 调用。'
 TERMUX_PREFIX=${1:?缺少 Termux PREFIX}
@@ -128,6 +129,188 @@ ensure_hosts_config() {
     fi
 }
 
+systemd_check_pass() { printf '[通过] %s\n' "$1"; }
+systemd_check_fail() { printf '[缺失] %s\n' "$1" >&2; }
+systemd_check_note() { printf '[警告] %s\n' "$1"; }
+
+systemd_pid_files() {
+    PID_FILE="$CONTAINER/.xtmoe-systemd.pid"
+    LAUNCHER_PID_FILE="$CONTAINER/.xtmoe-systemd-launcher.pid"
+    SYSTEMD_LOG_FILE="$CONTAINER/.xtmoe-systemd.log"
+}
+
+process_alive() {
+    local value=$1
+    [[ $value =~ ^[0-9]+$ ]] && kill -0 "$value" 2>/dev/null
+}
+
+find_child_pid() {
+    local parent=$1 proc status ppid
+    for proc in /proc/[0-9]*; do
+        [[ -r $proc/status ]] || continue
+        ppid=$(awk '$1 == "PPid:" { print $2 }' "$proc/status")
+        if [[ $ppid == "$parent" ]]; then
+            printf '%s\n' "${proc##*/}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+systemd_target_pid() {
+    local pid actual_root expected_root
+    systemd_pid_files
+    [[ -r $PID_FILE ]] || die '嵌套 systemd 未启动'
+    IFS= read -r pid <"$PID_FILE"
+    process_alive "$pid" || die '嵌套 systemd 进程已退出'
+    actual_root=$(realpath -m "/proc/$pid/root")
+    expected_root=$(realpath -m "$ROOTFS")
+    [[ $actual_root == "$expected_root" ]] || die 'systemd PID 与当前容器不匹配'
+    printf '%s\n' "$pid"
+}
+
+systemd_check() {
+    local failures=0 init_path controllers
+    [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器标记不存在'
+    if command -v unshare >/dev/null 2>&1; then
+        systemd_check_pass 'unshare 命令'
+    else
+        systemd_check_fail 'unshare 命令'; ((failures += 1))
+    fi
+    if command -v nsenter >/dev/null 2>&1; then
+        systemd_check_pass 'nsenter 命令'
+    else
+        systemd_check_fail 'nsenter 命令'; ((failures += 1))
+    fi
+    if [[ -x $ROOTFS/usr/bin/systemctl ]]; then
+        systemd_check_pass '容器内 systemctl'
+    else
+        systemd_check_fail '容器内 systemctl（安装 systemd-sysv）'; ((failures += 1))
+    fi
+    if [[ -x $ROOTFS/sbin/init ]]; then
+        init_path=$(readlink "$ROOTFS/sbin/init" 2>/dev/null || true)
+        if [[ $init_path == *'/systemd' || $init_path == 'systemd' || ( ! -L $ROOTFS/sbin/init && -x $ROOTFS/lib/systemd/systemd ) ]]; then
+            systemd_check_pass 'systemd init'
+        else
+            systemd_check_fail '/sbin/init 不是 systemd'; ((failures += 1))
+        fi
+    else
+        systemd_check_fail '容器内 /sbin/init'; ((failures += 1))
+    fi
+    if unshare --mount --pid --fork /bin/true >/dev/null 2>&1; then
+        systemd_check_pass 'PID/Mount namespace'
+    else
+        systemd_check_fail 'PID/Mount namespace'; ((failures += 1))
+    fi
+    if grep -qw cgroup2 /proc/filesystems && [[ -w /sys/fs/cgroup ]]; then
+        systemd_check_pass '可写 cgroup2'
+    elif grep -qw cgroup /proc/filesystems && [[ -w /sys/fs/cgroup ]]; then
+        systemd_check_note '使用 cgroup v1；systemd 兼容性取决于挂载的 controllers'
+    else
+        systemd_check_fail '可写 cgroup/cgroup2'; ((failures += 1))
+    fi
+    controllers=$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null || true)
+    if grep -qw pids /proc/cgroups 2>/dev/null || printf '%s\n' "$controllers" | grep -qw pids; then
+        systemd_check_pass 'pids cgroup controller'
+    else
+        systemd_check_note '缺少 pids cgroup controller；systemd 可能降级，Docker/1Panel 很可能不可用'
+    fi
+    if ((failures)); then
+        printf 'systemd 前置检查失败：%d 个阻断项\n' "$failures" >&2
+        return 1
+    fi
+    printf 'systemd 前置检查通过；可尝试嵌套启动\n'
+}
+
+systemd_start() {
+    local launcher_pid target_pid mounted_here=0 attempt
+    systemd_check
+    systemd_pid_files
+    if [[ -r $PID_FILE ]]; then
+        IFS= read -r target_pid <"$PID_FILE"
+        process_alive "$target_pid" && die '嵌套 systemd 已在运行'
+    fi
+    if is_mounted "$ROOTFS"; then
+        mounted_here=0
+    else
+        mount_all ''
+        mounted_here=1
+    fi
+    rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
+    nohup unshare --mount --pid --fork --mount-proc \
+        chroot "$ROOTFS" /sbin/init --unit=multi-user.target \
+        >"$SYSTEMD_LOG_FILE" 2>&1 &
+    launcher_pid=$!
+    printf '%s\n' "$launcher_pid" >"$LAUNCHER_PID_FILE"
+    target_pid=''
+    for ((attempt = 0; attempt < 50; attempt++)); do
+        target_pid=$(find_child_pid "$launcher_pid" || true)
+        [[ -n $target_pid ]] && break
+        sleep 0.1
+    done
+    if [[ -z $target_pid ]]; then
+        kill -TERM "$launcher_pid" 2>/dev/null || true
+        ((mounted_here)) && unmount_all "$ROOTFS" || true
+        die "无法定位嵌套 systemd 进程；查看 $SYSTEMD_LOG_FILE"
+    fi
+    printf '%s\n' "$target_pid" >"$PID_FILE"
+    for ((attempt = 0; attempt < 50; attempt++)); do
+        [[ -S $ROOTFS/run/systemd/private ]] && break
+        process_alive "$target_pid" || break
+        sleep 0.1
+    done
+    if ! process_alive "$target_pid"; then
+        rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
+        ((mounted_here)) && unmount_all "$ROOTFS" || true
+        die "systemd 已退出；查看 $SYSTEMD_LOG_FILE"
+    fi
+    [[ -S $ROOTFS/run/systemd/private ]] || warn 'systemd 已启动，但 D-Bus/private socket 尚未就绪'
+    ok "嵌套 systemd 已启动（宿主 PID $target_pid）"
+}
+
+systemd_exec() {
+    local pid
+    (($#)) || die '缺少要在 systemd 容器内执行的命令'
+    pid=$(systemd_target_pid)
+    nsenter --target "$pid" --pid --mount -- \
+        chroot "$ROOTFS" /usr/bin/env -i \
+        HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        LANG=C.UTF-8 "$@"
+}
+
+systemd_login() {
+    (($# == 0)) || die 'systemd-login 不接受额外参数'
+    systemd_exec /bin/bash -l
+}
+
+systemd_status() {
+    local pid
+    (($# == 0)) || die 'systemd-status 不接受额外参数'
+    pid=$(systemd_target_pid)
+    printf 'running pid=%s\n' "$pid"
+    systemd_exec /usr/bin/systemctl is-system-running || true
+}
+
+systemd_stop() {
+    local pid attempt
+    (($# == 0)) || die 'systemd-stop 不接受额外参数'
+    pid=$(systemd_target_pid)
+    systemd_exec /usr/bin/systemctl poweroff >/dev/null 2>&1 || kill -TERM "$pid" 2>/dev/null || true
+    for ((attempt = 0; attempt < 100; attempt++)); do
+        process_alive "$pid" || break
+        sleep 0.1
+    done
+    if process_alive "$pid"; then
+        warn 'systemd 仍在运行；请检查会话内后台服务'
+        return 1
+    fi
+    systemd_pid_files
+    rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
+    unmount_all "$ROOTFS" || warn 'systemd 已停止，但部分挂载未卸载'
+    ok '嵌套 systemd 已停止'
+}
+
 install_rootfs() {
     local archive=$1 partial_rootfs dns
     shift
@@ -251,6 +434,31 @@ case "$ACTION" in
     _internal-hosts-config)
         [[ ${XTMOE_INTERNAL_TEST:-0} == 1 ]] || die '内部测试操作不可用'
         ensure_hosts_config "${1:?缺少测试 rootfs}"
+        ;;
+    systemd-check)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        systemd_check
+        ;;
+    systemd-start)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        systemd_start
+        ;;
+    systemd-login)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        systemd_login
+        ;;
+    systemd-exec)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        shift 2
+        systemd_exec "$@"
+        ;;
+    systemd-status)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        systemd_status
+        ;;
+    systemd-stop)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        systemd_stop
         ;;
     install)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"

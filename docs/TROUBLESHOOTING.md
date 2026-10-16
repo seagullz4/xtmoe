@@ -173,6 +173,24 @@ printf 'localhost\n' > /etc/hostname
 printf '127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n' > /etc/hosts
 ```
 
+## 1Panel 报 `/bin/sh` 数组语法错误
+
+这表示安装脚本声明 POSIX Shell，却使用 Bash 语法。不要修改 1Panel 脚本，可切换容器系统 Shell：
+
+```sh
+xtmoe chroot use-bash-sh ubuntu
+```
+
+随后使用嵌套 systemd 启动服务：
+
+```sh
+xtmoe chroot systemd-check ubuntu
+xtmoe chroot systemd-start ubuntu
+xtmoe chroot systemd-status ubuntu
+```
+
+若 `systemd-check` 报缺失，说明 Android 内核条件不满足；切换 Shell 不能修复 cgroup、PID namespace 或 systemd 缺失。
+
 ## Android 杀死后台任务
 
 关闭 Termux 的电池优化，允许后台活动，并避免清理最近任务。部分 Android 12+ 设备还受 Phantom Process Killer 限制；具体设置随厂商和系统版本变化。
