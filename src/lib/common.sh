@@ -54,6 +54,15 @@ confirm() {
     [[ $answer == y || $answer == Y || $answer == yes || $answer == YES ]]
 }
 
+confirm_default_yes() {
+    local prompt=$1 answer
+    [[ ${XTMOE_YES:-0} == 1 ]] && return 0
+    [[ -t 0 ]] || die "$prompt；非交互模式请使用 --yes 或显式跳过选项。"
+    printf '%s [Y/n] ' "$prompt" >&2
+    read -r answer
+    [[ -z $answer || $answer == y || $answer == Y || $answer == yes || $answer == YES ]]
+}
+
 root_available() {
     if command_exists tsu && tsu -c 'id -u' 2>/dev/null | grep -qx 0; then
         return 0

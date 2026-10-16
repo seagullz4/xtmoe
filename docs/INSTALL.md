@@ -38,6 +38,8 @@ sh termux.sh
 ~/.cache/xtmoe
 ```
 
+Chroot 全新安装由 `xtmoe chroot install` 默认询问并完成 Ubuntu 标准组件、systemd 和 Bash Shell 初始化；自动化使用 `--yes`，显式跳过使用 `--skip-systemd`、`--skip-bash-sh`。
+
 安装完成后必须运行：
 
 ```sh

@@ -1,6 +1,6 @@
 # Chroot 模式
 
-Chroot 只适用于已经 Root 且了解 Android 挂载和恢复流程的设备。它与 Android 共用内核，也不会自动获得 systemd、cgroup 或完整 namespace 支持。
+Chroot 只适用于已经 Root 且了解 Android 挂载和恢复流程的设备。它与 Android 共用内核；XTMOE 会尝试提供嵌套 systemd，但 cgroup 和 namespace 仍由 Android 内核决定。
 
 ## 风险
 
@@ -45,19 +45,28 @@ xtmoe chroot install ubuntu 24.04 ubuntu
 4. 校验镜像；
 5. 以 Root 保留原始 UID/GID 解压；
 6. 优先读取 Android 当前 DNS，若系统未公开 DNS 属性则使用后备 DNS；
-7. 初始化 `/etc/hostname`、`/etc/hosts`、名称解析策略、`/etc/resolv.conf`、`/etc/mtab` 和运行目录。
+7. 初始化 `/etc/hostname`、`/etc/hosts`、名称解析策略、`/etc/resolv.conf`、`/etc/mtab` 和运行目录；
+8. 默认确认后安装 Ubuntu 标准组件和 systemd，把 `/bin/sh` 切换为 Bash，并启动嵌套 systemd。
 
 目前不支持跨架构 Chroot。需要跨架构时请使用 PRoot 加 QEMU。
 
 ## 登录、命令和初始化
 
+全新安装默认已经完成组件和 systemd/Bash 初始化。交互进入嵌套 systemd：
+
+```sh
+xtmoe chroot systemd-login ubuntu
+xtmoe chroot systemd-exec ubuntu -- uname -a
+```
+
+普通 Chroot Shell 仍可用于修复或维护：
+
 ```sh
 xtmoe chroot login ubuntu
-xtmoe chroot exec ubuntu -- uname -a
 xtmoe chroot setup ubuntu
 ```
 
-`setup` 会更新 apt，并安装 CA 证书、curl、locale、OpenSSH Server、sudo、systemd、D-Bus、Bash 和 procps。Ubuntu Base 默认非常精简，缺少许多常见工具是正常现象。
+`setup` 会更新 apt，并安装 `ubuntu-standard`、CA 证书、curl、locale、OpenSSH Server、sudo、systemd、D-Bus、Bash、procps、util-linux、kmod 和 mount。安装期间临时阻止包脚本启动宿主服务，之后由嵌套 systemd 管理。
 
 初始化会保留镜像中已有的其他主机映射，并确保 `localhost` 同时映射到 `127.0.0.1` 和 `::1`。每次 `login`、`exec` 或 `setup` 还会自动补齐已有容器缺失的本机名称配置，这可以避免 `sudo: unable to resolve host localhost` 一类的错误。
 
@@ -82,13 +91,13 @@ xtmoe chroot systemd-stop ubuntu
 
 ## Bash 作为 `/bin/sh`
 
-如果第三方安装脚本声明 `#!/bin/sh` 却使用 Bash 数组，可以显式切换：
+全新安装默认询问是否把 `/bin/sh` 切换为 Bash；接受后即可兼容声明 `#!/bin/sh` 却使用 Bash 数组的第三方脚本。也可以随时显式执行：
 
 ```sh
 xtmoe chroot use-bash-sh ubuntu
 ```
 
-这会把容器内 `/bin/sh` 指向 Bash。原生 Ubuntu 默认使用 dash；该选项是兼容性调整，只建议在专用 XTMOE 容器或虚拟机镜像中启用。
+该命令通过 dash 的包配置切换默认 Shell，并把 `/bin/sh` 以相对链接指向 Bash，避免 usrmerge rootfs 在宿主侧被误判。原生 Ubuntu 默认使用 dash；XTMOE 专用容器默认选择 Bash，以兼容 1Panel 等安装器。拒绝切换时使用 `--skip-bash-sh`，或在安装确认提示中回答 `n`。
 
 在安装 Docker 或 1Panel 前运行只读内核检查：
 
@@ -140,7 +149,8 @@ xtmoe chroot bind ubuntu "$HOME/storage/downloads" /mnt/download rw
 
 ```sh
 xtmoe chroot unbind ubuntu /mnt/download
-xtmoe chroot stop ubuntu
+xtmoe chroot systemd-stop ubuntu
+xtmoe chroot systemd-start ubuntu
 ```
 
 配置保存在 `~/.config/xtmoe/chroot/<名称>.binds`，使用数据格式解析，不会作为 Shell 脚本执行。`/dev`、`/proc`、`/sys` 和 `/run` 是保留挂载点，不能自定义覆盖。
@@ -180,9 +190,23 @@ xtmoe chroot remove --yes ubuntu
 xtmoe uninstall --yes chroot ubuntu
 ```
 
-## systemd 说明
+## 非交互安装
 
-本实现默认不启动 systemd。普通 Android 内核经常缺少或限制 systemd 所需的 PID namespace、mount namespace、cgroup v2 和设备管理能力。`systemd-container` 软件包存在并不代表 `systemd-nspawn` 能在手机内核上工作。
+自动化环境使用：
 
-在容器内应优先直接启动所需服务，例如 `/usr/sbin/sshd`、`nginx` 或数据库进程，而不是依赖 `systemctl`。
+```sh
+xtmoe chroot install --yes ubuntu 24.04 ubuntu
+```
+
+明确跳过可选初始化：
+
+```sh
+xtmoe chroot install --skip-systemd --skip-bash-sh ubuntu 24.04 ubuntu
+```
+
+`--yes` 接受默认 systemd/Bash 初始化。手机重启或 Termux 被 Android 杀死后，需要重新执行 `xtmoe chroot systemd-start ubuntu`；嵌套 systemd 不是 Android 启动服务。
+
+## systemd 兼容边界
+
+systemd 必须在 PID namespace 中作为 PID 1，并使用可写 cgroup。XTMOE 会在内核允许时附加 IPC、UTS 和 cgroup namespace，但不能补造 Android 内核未编译的 controllers。缺少 pids controller 时 systemd 可能启动，但 Docker/1Panel 仍可能降级或失败。`systemd-container` 或 `systemctl` 文件存在并不代表 Android 内核已经满足运行条件。
 

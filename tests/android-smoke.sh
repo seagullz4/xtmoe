@@ -33,6 +33,8 @@ cleanup_proot() {
 }
 
 cleanup_chroot() {
+    xtmoe chroot systemd-stop "$CHROOT_NAME" >/dev/null 2>&1 || true
+    xtmoe chroot systemd-stop "$RESTORE_NAME" >/dev/null 2>&1 || true
     xtmoe chroot stop "$CHROOT_NAME" >/dev/null 2>&1 || true
     xtmoe chroot stop "$RESTORE_NAME" >/dev/null 2>&1 || true
     xtmoe chroot remove --yes "$CHROOT_NAME" >/dev/null 2>&1 || true
@@ -79,16 +81,22 @@ chroot_test() {
     trap cleanup_chroot EXIT INT TERM
 
     xtmoe chroot prepare
-    xtmoe chroot install ubuntu 24.04 "$CHROOT_NAME"
-    xtmoe chroot exec "$CHROOT_NAME" -- /bin/sh -lc \
+    xtmoe chroot install --yes ubuntu 24.04 "$CHROOT_NAME"
+    [[ $(xtmoe chroot systemd-exec "$CHROOT_NAME" -- readlink -f /bin/sh) == /usr/bin/bash ]] || die '/bin/sh 未切换为 Bash'
+    systemd_state=$(xtmoe chroot systemd-exec "$CHROOT_NAME" -- systemctl is-system-running || true)
+    [[ $systemd_state == running || $systemd_state == degraded || $systemd_state == starting ]] || die "systemd 状态异常：$systemd_state"
+    xtmoe chroot systemd-exec "$CHROOT_NAME" -- /bin/bash -lc \
         'grep -q "^ID=ubuntu" /etc/os-release && getent hosts archive.ubuntu.com >/dev/null && printf smoke-ok > /root/.xtmoe-smoke'
     xtmoe chroot bind "$CHROOT_NAME" "$HOST_SHARE" /mnt/xtmoe-smoke ro
-    [[ $(xtmoe chroot exec "$CHROOT_NAME" -- cat /mnt/xtmoe-smoke/probe.txt) == host-bind-ok ]] || die 'Chroot 只读绑定读取失败'
-    if xtmoe chroot exec "$CHROOT_NAME" -- touch /mnt/xtmoe-smoke/must-not-exist; then
+    xtmoe chroot systemd-stop "$CHROOT_NAME"
+    xtmoe chroot systemd-start "$CHROOT_NAME"
+    [[ $(xtmoe chroot systemd-exec "$CHROOT_NAME" -- cat /mnt/xtmoe-smoke/probe.txt) == host-bind-ok ]] || die 'Chroot 只读绑定读取失败'
+    if xtmoe chroot systemd-exec "$CHROOT_NAME" -- touch /mnt/xtmoe-smoke/must-not-exist; then
         die 'Chroot 只读绑定仍可写入'
     fi
     [[ ! -e $HOST_SHARE/must-not-exist ]] || die '只读绑定在宿主产生了文件'
 
+    xtmoe chroot systemd-stop "$CHROOT_NAME"
     xtmoe chroot stop "$CHROOT_NAME"
     [[ $(xtmoe chroot status "$CHROOT_NAME") == stopped ]] || die 'Chroot 未完全停止'
     xtmoe chroot backup "$CHROOT_NAME" "$CHROOT_BACKUP"
@@ -99,7 +107,7 @@ chroot_test() {
     xtmoe chroot stop "$RESTORE_NAME"
     xtmoe chroot remove --yes "$RESTORE_NAME"
     trap - EXIT INT TERM
-    say 'SMOKE PASS: Chroot install/DNS/bind/backup/restore/remove'
+    say 'SMOKE PASS: Chroot install/systemd/Bash/DNS/bind/backup/restore/remove'
 }
 
 case "$MODE" in

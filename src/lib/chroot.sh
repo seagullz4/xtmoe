@@ -4,7 +4,7 @@ chroot_help() {
     cat <<'EOF'
 Chroot 模式（需要设备 Root；当前支持原生架构 Ubuntu Base 24.04）
 
-  xtmoe chroot install [ubuntu] [24.04] [名称]
+  xtmoe chroot install [--yes] [--skip-systemd] [--skip-bash-sh] [ubuntu] [24.04] [名称]
   xtmoe chroot prepare                    安装 tsu、mount-utils 等依赖
   xtmoe chroot login [名称]
   xtmoe chroot exec <名称> -- <命令>
@@ -106,7 +106,7 @@ download_ubuntu_base() {
     archive="$XTMOE_CACHE_DIR/ubuntu-base/$version/$filename"
 
     curl -fL --retry 3 --connect-timeout 20 -o "$sums" "$base_url/SHA256SUMS"
-    line=$(grep -E "[[:space:]]+[*]?$filename$" "$sums" | head -n 1 || true)
+    line=$(awk -v expected="$filename" '$2 == expected || $2 == "*" expected { print; exit }' "$sums")
     [[ -n $line ]] || die "SHA256SUMS 中没有 $filename"
 
     if [[ -s $archive ]]; then
@@ -125,12 +125,28 @@ download_ubuntu_base() {
 }
 
 chroot_install() {
-    require_arg_range 0 3 "$#" 'xtmoe chroot install [ubuntu] [24.04] [名称]'
-    local distro=${1:-ubuntu} version=${2:-24.04} name=${3:-ubuntu} archive base config_base
-    local -a dns_servers=()
+    local yes=0 skip_systemd=0 skip_bash_sh=0 distro version name archive base config_base
+    local bootstrap_systemd=0
+    local -a positional=() dns_servers=()
+    while (($#)); do
+        case $1 in
+            --yes|-y) yes=1 ;;
+            --skip-systemd) skip_systemd=1 ;;
+            --skip-bash-sh) skip_bash_sh=1 ;;
+            --) shift; positional+=("$@"); break ;;
+            -*) die "未知安装选项：$1" ;;
+            *) positional+=("$1") ;;
+        esac
+        shift
+    done
+    ((${#positional[@]} <= 3)) || die 'xtmoe chroot install [--yes] [--skip-systemd] [--skip-bash-sh] [ubuntu] [24.04] [名称]'
+    distro=${positional[0]:-ubuntu}
+    version=${positional[1]:-24.04}
+    name=${positional[2]:-ubuntu}
     [[ $distro == ubuntu ]] || die 'Chroot 当前只支持 Ubuntu Base；其他发行版请使用 PRoot。'
     [[ $version == 24.04 ]] || die '当前经过配置的是 Ubuntu 24.04 LTS。'
     require_name "$name"
+    ((yes)) && export XTMOE_YES=1
     ensure_dirs
     base=$(chroot_base); config_base=$(chroot_config_base)
     mkdir -p "$base" "$config_base"
@@ -141,9 +157,31 @@ chroot_install() {
     chroot_root install "$base" "$name" "$archive" "${dns_servers[@]}"
     printf 'distro=ubuntu\nversion=%s\narch=%s\n' "$version" "$(ubuntu_arch)" >"$config_base/$name.meta"
     : >"$config_base/$name.binds"
-    ok "Chroot '$name' 安装完成；执行：xtmoe chroot login $name"
-}
 
+    if ((skip_systemd)); then
+        info '已按要求跳过 systemd/Ubuntu 标准组件初始化'
+    elif confirm_default_yes "默认安装完整 Ubuntu 标准组件和 systemd，并启动嵌套 systemd？"; then
+        bootstrap_systemd=1
+        chroot_setup "$name"
+    else
+        info '已跳过 systemd 初始化'
+    fi
+
+    if ((skip_bash_sh)); then
+        info '已按要求保留 /bin/sh'
+    elif confirm_default_yes "将容器内 /bin/sh 切换为 Bash？"; then
+        chroot_use_bash_sh "$name"
+    else
+        info '已保留默认 Shell'
+    fi
+
+    if ((bootstrap_systemd)); then
+        chroot_systemd_start "$name"
+        ok "Chroot '$name' 已完成 systemd/Bash 初始化；执行：xtmoe chroot systemd-login $name"
+    else
+        ok "Chroot '$name' 安装完成；执行：xtmoe chroot login $name"
+    fi
+}
 chroot_login() {
     require_arg_range 0 1 "$#" 'xtmoe chroot login [名称]'
     local name=${1:-ubuntu} base config
@@ -167,7 +205,9 @@ chroot_systemd_check() {
 
 chroot_systemd_start() {
     require_arg_range 0 1 "$#" 'xtmoe chroot systemd-start [名称]'
-    chroot_root systemd-start "$(chroot_base)" "${1:-ubuntu}"
+    local name=${1:-ubuntu} config
+    config="$(chroot_config_base)/$name.binds"
+    chroot_root systemd-start "$(chroot_base)" "$name" "$config"
 }
 
 chroot_systemd_login() {
@@ -196,7 +236,7 @@ chroot_systemd_stop() {
 chroot_use_bash_sh() {
     require_arg_range 0 1 "$#" 'xtmoe chroot use-bash-sh [名称]'
     local name=${1:-ubuntu}
-    chroot_exec "$name" -- /bin/bash -lc '[[ -x /usr/bin/bash ]] || { echo "缺少 /usr/bin/bash" >&2; exit 1; }; ln -sfn /usr/bin/bash /bin/sh; readlink -f /bin/sh'
+    chroot_exec "$name" -- /bin/bash -lc 'set -e; [[ -x /usr/bin/bash ]] || { echo "缺少 /usr/bin/bash" >&2; exit 1; }; if command -v debconf-set-selections >/dev/null 2>&1 && command -v dpkg-reconfigure >/dev/null 2>&1; then printf "dash dash/sh boolean false\\n" | debconf-set-selections; DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -f noninteractive dash; fi; ln -sfn bash /bin/sh; readlink -f /bin/sh'
 }
 
 chroot_bind() {
@@ -216,7 +256,7 @@ chroot_bind() {
         die "容器挂载点已配置：$target"
     fi
     printf '%s|%s|%s\n' "$mode" "$source_path" "$target" >>"$config"
-    ok "已添加：$source_path -> $target ($mode)；下次 login 生效"
+    ok "已添加：$source_path -> $target ($mode)；下次 login 或 systemd-start 生效"
 }
 
 chroot_unbind() {
@@ -364,7 +404,7 @@ chroot_main() {
         setup)
             require_arg_range 0 1 "$#" 'xtmoe chroot setup [名称]'
             name=${1:-ubuntu}
-            chroot_exec "$name" -- /bin/bash -lc 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl locales openssh-server sudo systemd-sysv dbus bash procps'
+            chroot_exec "$name" -- /bin/bash -lc 'set -Eeuo pipefail; policy_created=0; cleanup_policy() { if [ "$policy_created" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi; }; trap cleanup_policy EXIT; if [ ! -e /usr/sbin/policy-rc.d ]; then printf "#!/bin/sh\\nexit 101\\n" > /usr/sbin/policy-rc.d; chmod 0755 /usr/sbin/policy-rc.d; policy_created=1; fi; apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y ubuntu-standard ca-certificates curl locales openssh-server sudo systemd-sysv dbus bash procps util-linux kmod mount'
             ;;
         docker-check) chroot_docker_check "$@" ;;
         systemd-check) chroot_systemd_check "$@" ;;

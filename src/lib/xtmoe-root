@@ -5,8 +5,49 @@ die() { printf '[Root 错误] %s\n' "$*" >&2; exit 1; }
 warn() { printf '[Root 警告] %s\n' "$*" >&2; }
 ok() { printf '[Root] %s\n' "$*"; }
 
+rootfs_has_executable() {
+    local rootfs=$1 relative=${2#/} target resolved root_real
+    root_real=$(realpath -m -- "$rootfs")
+    resolved=$(realpath -m -- "$rootfs/$relative")
+    if [[ $resolved == "$root_real"/* && -x $resolved ]]; then
+        return 0
+    fi
+    [[ -L $rootfs/$relative ]] || return 1
+    target=$(readlink -- "$rootfs/$relative" 2>/dev/null || true)
+    [[ -n $target ]] || return 1
+    if [[ $target == /* ]]; then
+        resolved=$(realpath -m -- "$rootfs/${target#/}")
+    else
+        resolved=$(realpath -m -- "$(dirname -- "$rootfs/$relative")/$target")
+    fi
+    [[ $resolved == "$root_real"/* && -x $resolved ]]
+}
+
+rootfs_has_shell() {
+    local rootfs=$1 candidate
+    for candidate in /usr/bin/sh /bin/sh /usr/bin/bash; do
+        rootfs_has_executable "$rootfs" "$candidate" && return 0
+    done
+    return 1
+}
+
+valid_container_tree() {
+    local container=$1
+    [[ -f $container/.xtmoe-chroot && ! -L $container/.xtmoe-chroot ]] || return 1
+    grep -qx 'xtmoe-chroot-format-1' "$container/.xtmoe-chroot" || return 1
+    [[ -d $container/rootfs && ! -L $container/rootfs ]] || return 1
+    rootfs_has_shell "$container/rootfs"
+}
+
+rootfs_has_systemd_init() {
+    local rootfs=$1
+    rootfs_has_executable "$rootfs" /sbin/init || return 1
+    rootfs_has_executable "$rootfs" /usr/lib/systemd/systemd ||
+        rootfs_has_executable "$rootfs" /lib/systemd/systemd
+}
 [[ $(id -u) -eq 0 ]] || die '本助手必须由 xtmoe 通过 su/tsu 调用。'
-TERMUX_PREFIX=${1:?缺少 Termux PREFIX}
+[[ $# -gt 0 ]] || die '缺少 Termux PREFIX'
+TERMUX_PREFIX=$1
 shift
 export PATH="$TERMUX_PREFIX/bin:/system/bin:/system/xbin:/vendor/bin:${PATH:-}"
 
@@ -51,20 +92,21 @@ is_mounted() {
 }
 
 mount_one() {
-    local source_path=$1 target=$2 mode=${3:-rw}
+    local source_path=$1 target=$2 mode=${3:-rw} source_real
     [[ -d $source_path ]] || die "挂载源不是目录：$source_path"
-    [[ $source_path != / && $source_path != /data ]] || die '拒绝挂载整个宿主根目录或 /data'
-    [[ $target == /* && $target != / ]] || die "非法容器挂载点：$target"
+    source_real=$(realpath -m -- "$source_path")
+    [[ $source_real != / && $source_real != /data ]] || die '拒绝挂载整个宿主根目录或 /data'
+    [[ $target == /* && $target != / ]] || die '非法容器挂载点：$target'
     case "$target" in /dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/run|/run/*) die "保留挂载点不能自定义：$target" ;; esac
     local destination
     destination=$(realpath -m -- "$ROOTFS$target")
     [[ $destination == "$ROOTFS"/* ]] || die "挂载点越界：$target"
     is_mounted "$destination" && return 0
     mkdir -p -- "$destination"
-    mount --bind "$source_path" "$destination"
+    mount --bind "$source_real" "$destination"
     mount --make-private "$destination" 2>/dev/null || true
     if [[ $mode == ro ]]; then
-        mount -o remount,bind,ro "$source_path" "$destination"
+        mount -o remount,bind,ro "$source_real" "$destination"
     fi
 }
 
@@ -73,14 +115,14 @@ apply_bind_config() {
     [[ -n $config && -s $config ]] || return 0
     while IFS='|' read -r mode source_path target extra; do
         [[ -n $mode && -z $extra ]] || die "挂载配置格式错误：$config"
-        [[ $mode == ro || $mode == rw ]] || die "非法挂载模式：$mode"
+        [[ $mode == ro || $mode == rw ]] || die '非法挂载模式'
         mount_one "$source_path" "$target" "$mode"
     done <"$config"
 }
 
 mount_all() {
     local config=${1:-}
-    [[ -f $ROOTFS/bin/sh ]] || die "无效 rootfs：$ROOTFS"
+    rootfs_has_shell "$ROOTFS" || die "无效 rootfs：$ROOTFS（缺少可执行的 /bin/sh）"
     mkdir -p "$ROOTFS"/{dev,proc,sys,run,tmp}
     if ! is_mounted "$ROOTFS"; then
         mount --bind "$ROOTFS" "$ROOTFS"
@@ -112,7 +154,7 @@ unmount_all() {
 }
 
 ensure_hosts_config() {
-    local rootfs=$1 hostname_file="$1/etc/hostname" hosts_file="$1/etc/hosts"
+    local hostname_file="$1/etc/hostname" hosts_file="$1/etc/hosts"
     local nsswitch_file="$1/etc/nsswitch.conf"
 
     printf 'localhost\n' >"$hostname_file"
@@ -145,16 +187,30 @@ process_alive() {
 }
 
 find_child_pid() {
-    local parent=$1 proc ppid
+    local parent=$1 proc ppid child actual_root expected_root
+    expected_root=$(realpath -m "$ROOTFS")
     for proc in /proc/[0-9]*; do
         [[ -r $proc/status ]] || continue
         ppid=$(awk '$1 == "PPid:" { print $2 }' "$proc/status")
-        if [[ $ppid == "$parent" ]]; then
-            printf '%s\n' "${proc##*/}"
-            return 0
-        fi
+        [[ $ppid == "$parent" ]] || continue
+        child=${proc##*/}
+        actual_root=$(realpath -m "/proc/$child/root")
+        [[ $actual_root == "$expected_root" ]] || continue
+        printf '%s\n' "$child"
+        return 0
     done
     return 1
+}
+
+systemd_running() {
+    local pid actual_root expected_root
+    systemd_pid_files
+    [[ -r $PID_FILE ]] || return 1
+    IFS= read -r pid <"$PID_FILE"
+    process_alive "$pid" || return 1
+    actual_root=$(realpath -m "/proc/$pid/root")
+    expected_root=$(realpath -m "$ROOTFS")
+    [[ $actual_root == "$expected_root" ]]
 }
 
 systemd_target_pid() {
@@ -170,7 +226,7 @@ systemd_target_pid() {
 }
 
 systemd_check() {
-    local failures=0 init_path controllers
+    local failures=0 controllers
     [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器标记不存在'
     if command -v unshare >/dev/null 2>&1; then
         systemd_check_pass 'unshare 命令'
@@ -187,15 +243,10 @@ systemd_check() {
     else
         systemd_check_fail '容器内 systemctl（安装 systemd-sysv）'; ((failures += 1))
     fi
-    if [[ -x $ROOTFS/sbin/init ]]; then
-        init_path=$(readlink "$ROOTFS/sbin/init" 2>/dev/null || true)
-        if [[ $init_path == *'/systemd' || $init_path == 'systemd' || ( ! -L $ROOTFS/sbin/init && -x $ROOTFS/lib/systemd/systemd ) ]]; then
-            systemd_check_pass 'systemd init'
-        else
-            systemd_check_fail '/sbin/init 不是 systemd'; ((failures += 1))
-        fi
+    if rootfs_has_systemd_init "$ROOTFS"; then
+        systemd_check_pass 'systemd init'
     else
-        systemd_check_fail '容器内 /sbin/init'; ((failures += 1))
+        systemd_check_fail '/sbin/init 未指向可执行 systemd'; ((failures += 1))
     fi
     if unshare --mount --pid --fork /bin/true >/dev/null 2>&1; then
         systemd_check_pass 'PID/Mount namespace'
@@ -223,7 +274,9 @@ systemd_check() {
 }
 
 systemd_start() {
-    local launcher_pid target_pid mounted_here=0 attempt
+    local config=${1:-} launcher_pid target_pid mounted_here=0 attempt
+    local extra
+    local -a namespace_args=(--mount --pid) candidate_args
     systemd_check
     systemd_pid_files
     if [[ -r $PID_FILE ]]; then
@@ -233,11 +286,17 @@ systemd_start() {
     if is_mounted "$ROOTFS"; then
         mounted_here=0
     else
-        mount_all ''
+        mount_all "$config"
         mounted_here=1
     fi
     rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
-    nohup unshare --mount --pid --fork --mount-proc \
+    for extra in --ipc --uts --cgroup; do
+        candidate_args=("${namespace_args[@]}" "$extra")
+        if unshare "${candidate_args[@]}" --fork /bin/true >/dev/null 2>&1; then
+            namespace_args=("${candidate_args[@]}")
+        fi
+    done
+    nohup unshare "${namespace_args[@]}" --fork --mount-proc \
         chroot "$ROOTFS" /sbin/init --unit=multi-user.target \
         >"$SYSTEMD_LOG_FILE" 2>&1 &
     launcher_pid=$!
@@ -320,7 +379,7 @@ install_rootfs() {
         rm -rf --one-file-system -- "$partial_rootfs"
         die '镜像解压失败'
     fi
-    [[ -f $partial_rootfs/rootfs/bin/sh ]] || { rm -rf --one-file-system -- "$partial_rootfs"; die '镜像解压后缺少 /bin/sh'; }
+    rootfs_has_shell "$partial_rootfs/rootfs" || { rm -rf --one-file-system -- "$partial_rootfs"; die '镜像解压后缺少可执行的 /bin/sh'; }
     mkdir -p "$partial_rootfs/rootfs"/{dev,proc,sys,run,tmp,root}
     chmod 1777 "$partial_rootfs/rootfs/tmp"
     ln -snf /proc/mounts "$partial_rootfs/rootfs/etc/mtab"
@@ -380,9 +439,10 @@ backup_container() {
     is_mounted "$ROOTFS" && die '容器仍有挂载；请先执行 stop'
     canonical_output=$(realpath -m -- "$output")
     [[ $canonical_output != "$CONTAINER" && $canonical_output != "$CONTAINER"/* ]] || die '备份文件不能写入被备份的容器内部'
-    [[ ! -e $output ]] || die "备份文件已存在，拒绝覆盖：$output"
+    [[ ! -e $output && ! -L $output ]] || die "备份文件已存在或链接无效，拒绝覆盖：$output"
     mkdir -p -- "$(dirname -- "$output")"
     partial_output="${output}.partial.$$"
+    [[ ! -e $partial_output && ! -L $partial_output ]] || die "临时备份路径已被占用：$partial_output"
     if ! tar --numeric-owner -czpf "$partial_output" -C "$CONTAINER" .; then
         rm -f -- "$partial_output"
         die '创建备份失败'
@@ -393,7 +453,7 @@ backup_container() {
 
 restore_container() {
     local archive=$1 partial
-    [[ -f $archive ]] || die "备份不存在：$archive"
+    [[ -f $archive && ! -L $archive ]] || die "备份不存在或不是普通文件：$archive"
     [[ ! -e $CONTAINER ]] || die '目标容器已存在'
     if tar -tzf "$archive" | awk '$0 ~ /^\// || $0 ~ /(^|\/)\.\.($|\/)/ { bad=1 } END { exit bad ? 0 : 1 }'; then
         die '备份包含绝对路径或上级目录引用，拒绝恢复'
@@ -404,7 +464,7 @@ restore_container() {
         rm -rf --one-file-system -- "$partial"
         die '备份解压失败'
     fi
-    [[ -f $partial/.xtmoe-chroot && -f $partial/rootfs/bin/sh ]] || { rm -rf --one-file-system -- "$partial"; die '不是有效的 XTMOE Chroot 备份'; }
+    valid_container_tree "$partial" || { rm -rf --one-file-system -- "$partial"; die '不是有效的 XTMOE Chroot 备份'; }
     mv -- "$partial" "$CONTAINER"
 }
 
@@ -432,13 +492,18 @@ case "$ACTION" in
         [[ ${XTMOE_INTERNAL_TEST:-0} == 1 ]] || die '内部测试操作不可用'
         ensure_hosts_config "${1:?缺少测试 rootfs}"
         ;;
+    _internal-rootfs-shell-check)
+        [[ ${XTMOE_INTERNAL_TEST:-0} == 1 ]] || die '内部测试操作不可用'
+        rootfs_has_shell "${1:?缺少测试 rootfs}" || die '测试 rootfs 缺少可执行的 /bin/sh'
+        ok 'rootfs shell check passed'
+        ;;
     systemd-check)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
         systemd_check
         ;;
     systemd-start)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
-        systemd_start
+        systemd_start "${3:-}"
         ;;
     systemd-login)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
@@ -470,17 +535,28 @@ case "$ACTION" in
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
         config=${3:-}; shift 3
         (($#)) || die '缺少命令'
-        run_chroot "$config" "$@"
+        if systemd_running; then
+            systemd_exec "$@"
+        else
+            run_chroot "$config" "$@"
+        fi
         ;;
     stop)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
         [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        systemd_running && die '嵌套 systemd 正在运行；请先执行 xtmoe chroot systemd-stop'
         unmount_all "$ROOTFS" || die '部分挂载无法卸载，可能仍有进程占用'
         ;;
     status)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
         [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
-        if is_mounted "$ROOTFS"; then printf 'mounted\n'; else printf 'stopped\n'; fi
+        if systemd_running; then
+            printf 'systemd\n'
+        elif is_mounted "$ROOTFS"; then
+            printf 'mounted\n'
+        else
+            printf 'stopped\n'
+        fi
         ;;
     backup)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"

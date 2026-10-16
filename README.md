@@ -13,7 +13,7 @@ XTMOE 是一个从零设计的 Android Termux Linux 环境管理工具，使用�
 | 安装来源 | Termux 官方 `proot-distro` | Canonical Ubuntu Base 官方镜像 |
 | 性能 | 有系统调用转换开销 | 接近原生用户空间性能 |
 | 隔离性 | 不是强安全沙箱 | 不是安全沙箱，与 Android 共用内核 |
-| systemd | 通常不可用 | 取决于 Android 内核；本项目不承诺支持 |
+| systemd | 通常不可用 | 默认尝试嵌套 systemd；能力取决于 Android 内核 |
 | 删除风险 | 较低 | 必须先卸载绑定挂载 |
 
 不确定时请选择 **PRoot**。
@@ -92,7 +92,7 @@ xtmoe uninstall proot ubuntu
 xtmoe chroot prepare
 xtmoe doctor
 xtmoe chroot install ubuntu 24.04 ubuntu
-xtmoe chroot login ubuntu
+xtmoe chroot systemd-login ubuntu
 ```
 
 退出后确认挂载已经释放：
@@ -109,7 +109,7 @@ xtmoe chroot stop ubuntu
 xtmoe uninstall chroot ubuntu
 ```
 
-安装过程从 Ubuntu 官方发布页选择最新的 24.04.x Ubuntu Base 原生架构镜像，并使用官方 `SHA256SUMS` 校验后才解压。
+安装过程从 Ubuntu 官方发布页选择最新的 24.04.x Ubuntu Base 原生架构镜像，并使用官方 `SHA256SUMS` 校验后才解压。全新安装默认询问并初始化 Ubuntu 标准组件、嵌套 systemd 和 Bash `/bin/sh`。自动化可使用 `--yes`，明确拒绝可使用 `--skip-systemd`、`--skip-bash-sh`。
 
 ## 文档
 

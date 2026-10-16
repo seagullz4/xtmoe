@@ -175,7 +175,7 @@ printf '127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n' > /etc/
 
 ## 1Panel 报 `/bin/sh` 数组语法错误
 
-这表示安装脚本声明 POSIX Shell，却使用 Bash 语法。不要修改 1Panel 脚本，可切换容器系统 Shell：
+这表示安装脚本声明 POSIX Shell，却使用 Bash 语法。全新安装默认会切换容器系统 Shell；旧容器可执行：
 
 ```sh
 xtmoe chroot use-bash-sh ubuntu

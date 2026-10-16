@@ -86,6 +86,32 @@ mkdir -p "$PREFIX/bin"
 assert_fail 'Forged TERMUX_VERSION cannot bypass PREFIX validation' bash "$CLI" proot list
 export PREFIX=$old_prefix
 
+BOOTSTRAP_LOG="$TEST_TMP/bootstrap.log"
+export BOOTSTRAP_LOG
+assert_ok 'Fresh install bootstraps systemd and Bash by default' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/chroot.sh"
+    download_ubuntu_base() { printf /tmp/fake-ubuntu.tar.gz; }
+    chroot_root() { :; }
+    chroot_setup() { printf "setup\\n" >>"$BOOTSTRAP_LOG"; }
+    chroot_use_bash_sh() { printf "bash\\n" >>"$BOOTSTRAP_LOG"; }
+    chroot_systemd_start() { printf "start\\n" >>"$BOOTSTRAP_LOG"; }
+    chroot_install --yes ubuntu 24.04 bootstrap-demo
+' _ "$ROOT_DIR"
+[[ $(tr '\n' ' ' <"$BOOTSTRAP_LOG") == 'setup bash start ' ]] && pass 'Fresh install bootstrap order is correct' || fail 'Fresh install bootstrap order is correct'
+: >"$BOOTSTRAP_LOG"
+assert_ok 'Fresh install allows explicit bootstrap opt-out' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/chroot.sh"
+    download_ubuntu_base() { printf /tmp/fake-ubuntu.tar.gz; }
+    chroot_root() { :; }
+    chroot_setup() { printf "setup\\n" >>"$BOOTSTRAP_LOG"; }
+    chroot_use_bash_sh() { printf "bash\\n" >>"$BOOTSTRAP_LOG"; }
+    chroot_systemd_start() { printf "start\\n" >>"$BOOTSTRAP_LOG"; }
+    chroot_install --yes --skip-systemd --skip-bash-sh ubuntu 24.04 bootstrap-skip
+' _ "$ROOT_DIR"
+[[ ! -s $BOOTSTRAP_LOG ]] && pass 'Explicit opt-out skips default bootstrap' || fail 'Explicit opt-out skips default bootstrap'
+
 assert_ok 'PRoot install dispatch' bash "$CLI" proot install ubuntu:24.04 demo
 assert_fail 'PRoot install rejects extra arguments' bash "$CLI" proot install ubuntu:24.04 demo extra
 assert_contains 'PRoot install keeps image and name' 'install --name demo ubuntu:24.04' "$MOCK_LOG"
@@ -167,9 +193,11 @@ rootfs_fixture_lifecycle() {
     local fixture="$TEST_TMP/rootfs-fixture" archive="$TEST_TMP/rootfs-fixture.tar.gz"
     local base="$XTMOE_DATA_DIR/chroot"
     local backup="$TEST_TMP/rootfs-backup.tar.gz"
-    mkdir -p "$fixture/bin" "$fixture/etc" "$base"
-    printf '#!/bin/sh\nexit 0\n' >"$fixture/bin/sh"
-    chmod +x "$fixture/bin/sh"
+    mkdir -p "$fixture/usr/bin" "$fixture/etc" "$base"
+    printf '#!/usr/bin/bash\nexit 0\n' >"$fixture/usr/bin/bash"
+    chmod +x "$fixture/usr/bin/bash"
+    ln -s /usr/bin/bash "$fixture/usr/bin/sh"
+    ln -s usr/bin "$fixture/bin"
     printf 'ubuntu\n' >"$fixture/etc/hostname"
     printf '10.0.0.1 example.test example\n127.0.0.1 android-test\n' >"$fixture/etc/hosts"
     tar -czpf "$archive" -C "$fixture" .
@@ -178,14 +206,32 @@ rootfs_fixture_lifecycle() {
     mkdir -p "$repair_rootfs/etc"
     printf 'old-host\n' >"$repair_rootfs/etc/hostname"
     printf '10.0.0.1 existing.test\n' >"$repair_rootfs/etc/hosts"
-    env XTMOE_INTERNAL_TEST=1 bash "$ROOT_HELPER" "$PREFIX" _internal-hosts-config "$repair_rootfs"
+    env XTMOE_TEST_ROOT=1 XTMOE_INTERNAL_TEST=1 bash "$ROOT_HELPER" "$PREFIX" _internal-hosts-config "$repair_rootfs"
     grep -qx 'localhost' "$repair_rootfs/etc/hostname"
     grep -qE '^127\.0\.0\.1[[:space:]]+localhost([[:space:]]|$)' "$repair_rootfs/etc/hosts"
     grep -qx '10.0.0.1 existing.test' "$repair_rootfs/etc/hosts"
 
+    local escape_rootfs="$TEST_TMP/escape-rootfs" outside_exec="$TEST_TMP/outside-exec" root_link="$TEST_TMP/root-link"
+    mkdir -p "$escape_rootfs/usr/bin"
+    printf '#!/usr/bin/bash\nexit 0\n' >"$outside_exec"
+    chmod +x "$outside_exec"
+    ln -s ../../../outside-exec "$escape_rootfs/usr/bin/sh"
+    if [[ -L $escape_rootfs/usr/bin/sh ]] && env XTMOE_TEST_ROOT=1 XTMOE_INTERNAL_TEST=1 bash "$ROOT_HELPER" "$PREFIX" _internal-rootfs-shell-check "$escape_rootfs"; then
+        return 1
+    fi
+    ln -s / "$root_link"
+    if [[ -L $root_link ]] && env XTMOE_TEST_ROOT=1 XTMOE_INTERNAL_TEST=1 bash "$ROOT_HELPER" "$PREFIX" _internal-mount-source-check "$root_link"; then
+        return 1
+    fi
+
     export XTMOE_TEST_ROOT=1
     PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" install "$base" fixture "$archive" 223.5.5.5
-    [[ -x $base/fixture/rootfs/bin/sh ]]
+    if [[ -L $base/fixture/rootfs/usr/bin/sh ]]; then
+        [[ $(readlink "$base/fixture/rootfs/usr/bin/sh") == /usr/bin/bash ]]
+    else
+        [[ -x $base/fixture/rootfs/usr/bin/sh ]]
+    fi
+    env XTMOE_INTERNAL_TEST=1 bash "$ROOT_HELPER" "$PREFIX" _internal-rootfs-shell-check "$base/fixture/rootfs"
     grep -qx 'xtmoe-chroot-format-1' "$base/fixture/.xtmoe-chroot"
     grep -qx 'localhost' "$base/fixture/rootfs/etc/hostname"
     grep -qE '^127\.0\.0\.1[[:space:]]+localhost([[:space:]]|$)' "$base/fixture/rootfs/etc/hosts"
@@ -208,12 +254,29 @@ rootfs_fixture_lifecycle() {
     ! compgen -G "$backup.partial.*" >/dev/null
     PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" remove "$base" fixture
     PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" restore "$base" restored "$backup"
-    [[ -x $base/restored/rootfs/bin/sh ]]
+    env XTMOE_INTERNAL_TEST=1 bash "$ROOT_HELPER" "$PREFIX" _internal-rootfs-shell-check "$base/restored/rootfs"
     PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" remove "$base" restored
+
+    local bad_fixture="$TEST_TMP/bad-rootfs" bad_archive="$TEST_TMP/bad-rootfs.tar.gz"
+    mkdir -p "$bad_fixture/rootfs/usr/bin"
+    printf '#!/usr/bin/bash\nexit 0\n' >"$bad_fixture/rootfs/usr/bin/bash"
+    chmod +x "$bad_fixture/rootfs/usr/bin/bash"
+    ln -s /usr/bin/bash "$bad_fixture/rootfs/usr/bin/sh"
+    printf 'not-a-valid-marker\n' >"$bad_fixture/.xtmoe-chroot"
+    tar -czpf "$bad_archive" -C "$bad_fixture" .
+    if PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" restore "$base" bad-marker "$bad_archive"; then
+        return 1
+    fi
+    ln -s "$backup" "$backup.link"
+    if [[ -L $backup.link ]]; then
+        if PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" restore "$base" bad-link "$backup.link"; then
+            return 1
+        fi
+    fi
 
     PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" install "$base" uninstall-demo "$archive" 223.5.5.5
     unset XTMOE_TEST_ROOT
-    XTMOE_YES=1 bash "$CLI" uninstall chroot uninstall-demo
+    PATH="$TEST_TMP/mock-bin:$PATH" XTMOE_YES=1 bash "$CLI" uninstall chroot uninstall-demo
     [[ ! -e $base/uninstall-demo ]]
 }
 assert_ok 'Synthetic rootfs lifecycle and unified Chroot uninstall' rootfs_fixture_lifecycle
