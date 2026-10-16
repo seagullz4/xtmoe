@@ -145,7 +145,7 @@ process_alive() {
 }
 
 find_child_pid() {
-    local parent=$1 proc status ppid
+    local parent=$1 proc ppid
     for proc in /proc/[0-9]*; do
         [[ -r $proc/status ]] || continue
         ppid=$(awk '$1 == "PPid:" { print $2 }' "$proc/status")
@@ -280,13 +280,11 @@ systemd_exec() {
 }
 
 systemd_login() {
-    (($# == 0)) || die 'systemd-login 不接受额外参数'
     systemd_exec /bin/bash -l
 }
 
 systemd_status() {
     local pid
-    (($# == 0)) || die 'systemd-status 不接受额外参数'
     pid=$(systemd_target_pid)
     printf 'running pid=%s\n' "$pid"
     systemd_exec /usr/bin/systemctl is-system-running || true
@@ -294,7 +292,6 @@ systemd_status() {
 
 systemd_stop() {
     local pid attempt
-    (($# == 0)) || die 'systemd-stop 不接受额外参数'
     pid=$(systemd_target_pid)
     systemd_exec /usr/bin/systemctl poweroff >/dev/null 2>&1 || kill -TERM "$pid" 2>/dev/null || true
     for ((attempt = 0; attempt < 100; attempt++)); do
