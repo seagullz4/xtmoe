@@ -243,6 +243,11 @@ systemd_check() {
     else
         systemd_check_fail '容器内 systemctl（安装 systemd-sysv）'; ((failures += 1))
     fi
+    if rootfs_has_shell "$ROOTFS"; then
+        systemd_check_pass 'rootfs /bin/sh'
+    else
+        systemd_check_fail 'rootfs /bin/sh'; ((failures += 1))
+    fi
     if rootfs_has_systemd_init "$ROOTFS"; then
         systemd_check_pass 'systemd init'
     else
