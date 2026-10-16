@@ -19,6 +19,36 @@ curl -IL --connect-timeout 15 https://github.com/seagullz4/xtmoe
 
 出现 `Could not resolve host` 是 DNS 问题；`SSL certificate problem` 通常需要更新 `ca-certificates`；HTTP 403/429 可能是网络限制或服务端限流。
 
+## GitHub 已有新命令，但本机提示未知命令
+
+`git pull` 只更新 `$HOME/xtmoe` 源码，不会自动覆盖 Termux 中已经安装的 `$PREFIX/bin/xtmoe`。先查看实际运行位置和版本：
+
+```sh
+command -v xtmoe
+xtmoe version
+```
+
+旧安装版本需要执行一次：
+
+```sh
+cd "$HOME/xtmoe"
+git pull --ff-only
+sh termux.sh
+xtmoe doctor
+```
+
+此后可直接使用：
+
+```sh
+xtmoe update
+```
+
+`doctor` 会显示当前程序、已安装命令、源码目录以及两边版本；不一致时会明确报错。
+
+## 出现 Command xzmore in package xz-utils
+
+XTMOE 源码和安装流程不调用 `xzmore`，Ubuntu Base 镜像使用 `.tar.gz`，备份也使用 gzip。这个提示是 Termux 的 command-not-found 对用户输入 `xzmore` 的软件包建议，不表示 XTMOE 缺少运行依赖。除非你本人需要浏览 `.xz` 文本，否则不需要为 XTMOE 安装 `xz-utils`。
+
 ## pkg 更新失败
 
 确认不是旧 Play 商店版 Termux，然后运行：
@@ -59,6 +89,32 @@ tsu -c 'id; getenforce; mount --version'
 ```
 
 不要为了绕过错误永久关闭 SELinux。无法满足挂载能力的设备应使用 PRoot。
+
+## 1Panel 提示 Unsupported option: s
+
+这是 1Panel 安装脚本的参数解析错误，不是 Docker 内核错误。1Panel v2 不接受单独的 `s` 或 `-s` 参数。先检查实际执行的命令，不要把 curl 的静默参数错误地传给 `install.sh`。
+
+在继续安装 1Panel 之前，先运行：
+
+```sh
+xtmoe chroot docker-check ubuntu
+```
+
+如果输出存在 `[缺失]`，说明 Android 内核缺少 Docker 必需能力。仅安装 `docker`/`dockerd`/`wmdocker` 用户空间程序不能补上内核中的 namespace 或 cgroup controller。
+
+以下输出只表示安装了 Docker 客户端，不能证明 daemon 可用：
+
+```text
+failed to connect to the docker API at unix:///var/run/docker.sock
+```
+
+必须满足：
+
+```sh
+docker info
+```
+
+能连接 daemon，且 `/var/run/docker.sock` 存在。如果 `cat /proc/1/comm` 不是 `systemd`、`systemctl is-system-running` 显示 `offline`，则 1Panel 的 systemd 服务管理分支也不可用。
 
 ## Chroot 无法卸载
 

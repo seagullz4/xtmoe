@@ -18,7 +18,7 @@ die() { printf '%s[错误]%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 is_termux() {
-    [[ ${PREFIX:-} == */com.termux/files/usr || ${PREFIX:-} == */com.termux.*/*/usr || -n ${TERMUX_VERSION:-} ]]
+    [[ -n ${PREFIX:-} && $PREFIX == */files/usr && -d $PREFIX/bin ]]
 }
 
 require_termux() {
@@ -38,6 +38,11 @@ valid_name() {
 
 require_name() {
     valid_name "$1" || die '名称只能包含字母、数字、点、下划线和连字符，最长 64 个字符。'
+}
+
+require_arg_range() {
+    local minimum=$1 maximum=$2 actual=$3 usage=$4
+    ((actual >= minimum && actual <= maximum)) || die "参数数量错误。用法：$usage"
 }
 
 confirm() {

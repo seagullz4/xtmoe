@@ -59,6 +59,14 @@ xtmoe chroot setup ubuntu
 
 `setup` 会更新 apt，并安装 CA 证书、curl、locale、OpenSSH Server 和 sudo。Ubuntu Base 默认非常精简，缺少许多常见工具是正常现象。
 
+在安装 Docker 或 1Panel 前运行只读内核检查：
+
+```sh
+xtmoe chroot docker-check ubuntu
+```
+
+它检查 namespace、cgroup controller、OverlayFS、IPv4 转发、iptables、dockerd、Docker socket 和 PID 1，不安装或更改 Docker。只要存在 `[缺失]`，就不应继续安装 1Panel。
+
 每次登录会受控挂载 rootfs 自身、`/proc`、`/sys`、`/dev` 和 `/run`。Shell 正常退出后会尝试卸载；如果容器中留下后台进程，卸载可能失败。
 
 交互登录通过 Termux `util-linux` 提供的 `script` 创建独立伪终端。Ctrl+C 只中断容器内当前前台命令并返回提示符，不会退出容器；使用 `exit` 或 Ctrl+D 才结束登录。`xtmoe chroot exec` 保持非交互模式，不分配伪终端。

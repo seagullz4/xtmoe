@@ -9,6 +9,7 @@ Chroot 模式（需要设备 Root；当前支持原生架构 Ubuntu Base 24.04�
   xtmoe chroot login [名称]
   xtmoe chroot exec <名称> -- <命令>
   xtmoe chroot setup [名称]             更新 apt 并安装常用基础包
+  xtmoe chroot docker-check [名称]      只读检查 Docker/1Panel 内核条件
   xtmoe chroot status [名称]
   xtmoe chroot list
   xtmoe chroot stop [名称]              卸载全部绑定挂载
@@ -26,7 +27,8 @@ chroot_base() { printf '%s/chroot' "$XTMOE_DATA_DIR"; }
 chroot_config_base() { printf '%s/chroot' "$XTMOE_CONFIG_DIR"; }
 
 chroot_helper() {
-    local candidate="$XTMOE_LIB_DIR/../xtmoe-root"
+    local candidate="$XTMOE_LIB_DIR/xtmoe-root"
+    [[ -r $candidate ]] || candidate="$XTMOE_LIB_DIR/../xtmoe-root"
     [[ -r $candidate ]] || candidate="${PREFIX:?PREFIX 未设置}/libexec/xtmoe/xtmoe-root"
     [[ -r $candidate ]] || die "缺少 Chroot 助手：$candidate"
     printf '%s' "$candidate"
@@ -116,6 +118,7 @@ download_ubuntu_base() {
 }
 
 chroot_install() {
+    require_arg_range 0 3 "$#" 'xtmoe chroot install [ubuntu] [24.04] [名称]'
     local distro=${1:-ubuntu} version=${2:-24.04} name=${3:-ubuntu} archive base config_base
     local -a dns_servers=()
     [[ $distro == ubuntu ]] || die 'Chroot 当前只支持 Ubuntu Base；其他发行版请使用 PRoot。'
@@ -135,6 +138,7 @@ chroot_install() {
 }
 
 chroot_login() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot login [名称]'
     local name=${1:-ubuntu} base config
     require_name "$name"; base=$(chroot_base); config="$(chroot_config_base)/$name.binds"
     chroot_root login "$base" "$name" "$config"
@@ -150,6 +154,7 @@ chroot_exec() {
 }
 
 chroot_bind() {
+    require_arg_range 3 4 "$#" 'xtmoe chroot bind <名称> <宿主目录> <容器目录> [ro|rw]'
     local name=${1:?缺少容器名称} source_path=${2:?缺少宿主目录} target=${3:?缺少容器目录} mode=${4:-rw}
     local config
     require_name "$name"
@@ -169,8 +174,11 @@ chroot_bind() {
 }
 
 chroot_unbind() {
+    require_arg_range 2 2 "$#" 'xtmoe chroot unbind <名称> <容器目录>'
     local name=${1:?缺少容器名称} target=${2:?缺少容器目录} config tmp
-    require_name "$name"; config="$(chroot_config_base)/$name.binds"
+    require_name "$name"
+    [[ $target == /* && $target != / && $target != *'|'* && $target != *$'\n'* ]] || die '容器路径必须是有效的非根绝对路径。'
+    config="$(chroot_config_base)/$name.binds"
     [[ -f $config ]] || die "没有挂载配置：$name"
     tmp="$config.tmp.$$"
     awk -F '|' -v dst="$target" '$3 != dst' "$config" >"$tmp"
@@ -179,6 +187,7 @@ chroot_unbind() {
 }
 
 chroot_backup() {
+    require_arg_range 1 2 "$#" 'xtmoe chroot backup <名称> [文件]'
     local name=${1:?缺少容器名称} output=${2:-"$PWD/${1}-$(date +%Y%m%d-%H%M%S)-chroot.tar.gz"}
     local base
     require_name "$name"; base=$(chroot_base)
@@ -187,6 +196,7 @@ chroot_backup() {
 }
 
 chroot_restore() {
+    require_arg_range 1 2 "$#" 'xtmoe chroot restore <文件> [名称]'
     local archive=${1:?缺少备份文件} name=${2:-ubuntu-restored} base config_base
     [[ -f $archive ]] || die "备份文件不存在：$archive"
     require_name "$name"; base=$(chroot_base); config_base=$(chroot_config_base)
@@ -196,6 +206,71 @@ chroot_restore() {
     : >"$config_base/$name.binds"
     printf 'restored_from=%s\n' "$archive" >"$config_base/$name.meta"
     ok "已恢复为：$name"
+}
+
+chroot_docker_check() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot docker-check [名称]'
+    local name=${1:-ubuntu} check_script
+    require_name "$name"
+    check_script=$(cat <<'DOCKER_CHECK'
+failures=0
+warnings=0
+good() { printf '[OK] %s\n' "$*"; }
+bad() { printf '[缺失] %s\n' "$*"; failures=$((failures + 1)); }
+note() { printf '[警告] %s\n' "$*"; warnings=$((warnings + 1)); }
+
+printf 'Kernel: %s\n' "$(uname -r)"
+printf 'Architecture: %s\n' "$(uname -m)"
+printf 'PID 1: %s\n' "$(cat /proc/1/comm 2>/dev/null || printf unknown)"
+
+for ns in mnt pid net uts ipc; do
+    if [ -e "/proc/self/ns/$ns" ]; then good "namespace: $ns"; else bad "namespace: $ns"; fi
+done
+[ -e /proc/self/ns/user ] && good 'namespace: user（可选）' || note 'namespace: user 不存在（rootful Docker 可选）'
+
+if grep -Eq ' cgroup2? ' /proc/mounts; then
+    good 'cgroup 文件系统已挂载'
+else
+    bad '没有 cgroup/cgroup2 挂载'
+fi
+
+controllers="$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null || true)"
+if grep -qw pids /proc/cgroups 2>/dev/null || printf '%s\n' "$controllers" | grep -qw pids; then
+    good 'pids cgroup controller'
+else
+    bad 'pids cgroup controller'
+fi
+if grep -qw devices /proc/cgroups 2>/dev/null; then
+    good 'devices cgroup v1 controller'
+elif [ -n "$controllers" ]; then
+    note 'cgroup v2 不列出 devices；仍需 dockerd/runc 实际验证 BPF devices 支持'
+else
+    bad 'devices cgroup controller'
+fi
+
+grep -qw overlay /proc/filesystems && good 'OverlayFS' || note 'OverlayFS 缺失，只能尝试低性能 vfs 存储驱动'
+[ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || printf 0)" = 1 ] && good 'IPv4 forwarding' || note 'IPv4 forwarding 当前未启用'
+command -v iptables >/dev/null 2>&1 && good "iptables: $(iptables --version 2>/dev/null | head -n 1)" || note 'iptables 命令未安装'
+command -v dockerd >/dev/null 2>&1 && good "dockerd: $(dockerd --version 2>/dev/null)" || note 'dockerd 未安装'
+
+if [ -S /var/run/docker.sock ]; then
+    good 'Docker socket 存在'
+    docker info >/dev/null 2>&1 && good 'Docker daemon 可响应' || bad 'Docker socket 存在但 daemon 不可响应'
+else
+    note 'Docker socket 不存在，daemon 未运行'
+fi
+
+if [ "$(cat /proc/1/comm 2>/dev/null)" = systemd ]; then
+    good 'systemd 是 PID 1'
+else
+    note 'systemd 不是 PID 1；1Panel 的 systemctl 服务路径不可用'
+fi
+
+printf 'Summary: failures=%s warnings=%s\n' "$failures" "$warnings"
+[ "$failures" -eq 0 ]
+DOCKER_CHECK
+)
+    chroot_exec "$name" -- /bin/bash -lc "$check_script"
 }
 
 chroot_remove() {
@@ -241,12 +316,23 @@ chroot_main() {
         login|shell) chroot_login "$@" ;;
         exec) chroot_exec "$@" ;;
         setup)
+            require_arg_range 0 1 "$#" 'xtmoe chroot setup [名称]'
             name=${1:-ubuntu}
             chroot_exec "$name" -- /bin/bash -lc 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl locales openssh-server sudo'
             ;;
-        list|ls) chroot_list ;;
-        status) chroot_root status "$(chroot_base)" "${1:-ubuntu}" ;;
-        stop|umount) chroot_root stop "$(chroot_base)" "${1:-ubuntu}" ;;
+        docker-check) chroot_docker_check "$@" ;;
+        list|ls)
+            require_arg_range 0 0 "$#" 'xtmoe chroot list'
+            chroot_list
+            ;;
+        status)
+            require_arg_range 0 1 "$#" 'xtmoe chroot status [名称]'
+            chroot_root status "$(chroot_base)" "${1:-ubuntu}"
+            ;;
+        stop|umount)
+            require_arg_range 0 1 "$#" 'xtmoe chroot stop [名称]'
+            chroot_root stop "$(chroot_base)" "${1:-ubuntu}"
+            ;;
         bind) chroot_bind "$@" ;;
         unbind) chroot_unbind "$@" ;;
         backup) chroot_backup "$@" ;;

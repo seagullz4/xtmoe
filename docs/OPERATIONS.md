@@ -51,6 +51,16 @@ ip addr
 
 Android 可能限制后台进程；长期运行应关闭 Termux 电池优化，并使用 Termux:Boot 或受监督的前台会话。不要直接把 SSH 端口暴露到公网。
 
+## Docker 与 1Panel 前置检查
+
+Chroot 共用 Android 内核，安装 Docker 软件包不能补上缺失的 namespace、cgroup 或网络模块。先执行：
+
+```sh
+xtmoe chroot docker-check ubuntu
+```
+
+Docker 客户端存在不等于 daemon 可用；只有 `docker info` 能连接 `/var/run/docker.sock` 才说明 daemon 正常。普通 Chroot 的 PID 1 通常是 Android `init`，不是 systemd；当 `systemctl is-system-running` 显示 `offline` 时，1Panel 的 systemd 服务管理路径不可用。
+
 ## Python 和编译环境
 
 Ubuntu/Debian 容器内：

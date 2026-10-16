@@ -11,6 +11,24 @@ export PATH="$TERMUX_PREFIX/bin:/system/bin:/system/xbin:/vendor/bin:${PATH:-}"
 
 valid_name() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; }
 
+mount_path_encode() {
+    local path=$1
+    path=${path//\\/\\134}
+    path=${path//$'\t'/\\011}
+    path=${path//$'\n'/\\012}
+    path=${path// /\\040}
+    printf '%s' "$path"
+}
+
+mount_path_decode() {
+    local path=$1
+    path=${path//\\040/ }
+    path=${path//\\011/$'\t'}
+    path=${path//\\012/$'\n'}
+    path=${path//\\134/\\}
+    printf '%s' "$path"
+}
+
 container_paths() {
     local requested_base=$1 requested_name=$2 parent
     valid_name "$requested_name" || die '非法容器名称'
@@ -26,7 +44,8 @@ container_paths() {
 }
 
 is_mounted() {
-    local path=$1
+    local path
+    path=$(mount_path_encode "$1")
     awk -v p="$path" '$2 == p || index($2, p "/") == 1 { found=1 } END { exit !found }' /proc/mounts
 }
 
@@ -79,10 +98,12 @@ mount_all() {
 }
 
 unmount_all() {
-    local rootfs=$1 mounts target failed=0
-    mounts=$(awk -v p="$rootfs" '$2 == p || index($2, p "/") == 1 { print $2 }' /proc/mounts | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2-)
+    local rootfs=$1 encoded_rootfs mounts target failed=0
+    encoded_rootfs=$(mount_path_encode "$rootfs")
+    mounts=$(awk -v p="$encoded_rootfs" '$2 == p || index($2, p "/") == 1 { print $2 }' /proc/mounts | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2-)
     while IFS= read -r target; do
         [[ -n $target ]] || continue
+        target=$(mount_path_decode "$target")
         umount "$target" 2>/dev/null || failed=1
     done <<<"$mounts"
     return "$failed"
@@ -195,6 +216,12 @@ remove_container() {
 ACTION=${1:-}
 shift || true
 case "$ACTION" in
+    _internal-path-codec)
+        [[ ${XTMOE_INTERNAL_TEST:-0} == 1 ]] || die '内部测试操作不可用'
+        encoded=$(mount_path_encode "${1:?缺少测试路径}")
+        decoded=$(mount_path_decode "$encoded")
+        printf '%s\n%s\n' "$encoded" "$decoded"
+        ;;
     install)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
         archive=${3:?缺少镜像}; shift 3

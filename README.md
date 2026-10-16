@@ -40,6 +40,20 @@ xtmoe doctor
 
 不要先执行 `su` 或 `tsu`。XTMOE 仅在 Chroot 的必要步骤中单独申请 Root。
 
+以后更新只需执行：
+
+```sh
+xtmoe update
+```
+
+`git pull` 只更新源码目录，不会自动替换 `$PREFIX/bin/xtmoe`；请优先使用 `xtmoe update`。如果当前安装版本还没有该命令，先执行一次：
+
+```sh
+cd "$HOME/xtmoe"
+git pull --ff-only
+sh termux.sh
+```
+
 ## PRoot 快速开始
 
 ```sh

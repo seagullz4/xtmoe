@@ -23,6 +23,7 @@ require_proot() {
 }
 
 proot_install() {
+    require_arg_range 0 2 "$#" 'xtmoe proot install [镜像] [名称]'
     local image=${1:-ubuntu:24.04} name=${2:-ubuntu}
     require_name "$name"
     info "安装 PRoot 容器：$name（$image）"
@@ -34,6 +35,7 @@ proot_install() {
 }
 
 proot_backup() {
+    require_arg_range 1 2 "$#" 'xtmoe proot backup <名称> [文件]'
     local name=${1:?缺少容器名称} output=${2:-"$PWD/${1}-$(date +%Y%m%d-%H%M%S).tar.gz"}
     require_name "$name"
     proot-distro backup "$name" --output "$output"
@@ -83,7 +85,10 @@ proot_main() {
             ;;
         list|ls) proot-distro list "$@" ;;
         ps) proot-distro ps "$@" ;;
-        stop|kill) proot-distro kill "${1:?缺少容器名称}" ;;
+        stop|kill)
+            require_arg_range 1 1 "$#" 'xtmoe proot stop <名称>'
+            proot-distro kill "$1"
+            ;;
         backup) proot_backup "$@" ;;
         restore) proot_restore "$@" ;;
         remove|rm) proot_remove "$@" ;;

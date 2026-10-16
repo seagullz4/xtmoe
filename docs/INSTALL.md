@@ -46,7 +46,15 @@ xtmoe doctor
 
 ## 更新
 
-在原源码目录更新后重新安装：
+正常更新使用：
+
+```sh
+xtmoe update
+```
+
+该命令会检查源码目录没有未提交修改，执行 `git pull --ff-only`，然后以原子替换方式更新已安装命令和模块，并校验安装版本。单独执行 `git pull` 不会更新 `$PREFIX/bin/xtmoe`。
+
+如果当前安装版本还没有 `update` 命令，执行一次引导更新：
 
 ```sh
 cd "$HOME/xtmoe"
@@ -55,7 +63,7 @@ sh termux.sh
 xtmoe doctor
 ```
 
-重新执行安装器只更新程序文件，不删除容器、配置或备份。
+重新执行安装器只更新程序文件，不删除容器、配置或备份。安装器先替换库文件，最后原子替换命令入口；安装结束会比较源码版本和已安装版本。
 
 ## 切换 Termux 镜像
 
@@ -76,6 +84,20 @@ pkg update
 rm -f "$PREFIX/bin/xtmoe"
 rm -rf "$PREFIX/libexec/xtmoe"
 ```
+
+也可以使用内置命令：
+
+```sh
+xtmoe uninstall-app
+```
+
+非交互卸载：
+
+```sh
+xtmoe uninstall-app --yes
+```
+
+它只删除 XTMOE 程序和模块，保留所有容器、配置、缓存及备份。
 
 配置和容器数据不会自动删除。确认已经不再需要后，用户可单独处理 `~/.config/xtmoe`、`~/.local/share/xtmoe` 和 `~/.cache/xtmoe`。不要在仍有 Chroot 挂载时删除数据目录。
 

@@ -38,8 +38,8 @@ assert_contains() {
     if grep -Fq -- "$expected" "$file"; then pass "$description"; else fail "$description"; fi
 }
 
-export HOME="$TEST_TMP/home"
-export PREFIX="$TEST_TMP/prefix"
+export HOME="$TEST_TMP/data/data/com.termux/files/home"
+export PREFIX="$TEST_TMP/data/data/com.termux/files/usr"
 export TERMUX_VERSION='test'
 export XTMOE_HOME="$HOME"
 export XTMOE_CONFIG_DIR="$HOME/.config/xtmoe"
@@ -59,22 +59,32 @@ cat >"$TEST_TMP/mock-bin/tsu" <<'MOCK'
 #!/usr/bin/env bash
 [[ ${1:-} == -c ]] || exit 2
 if [[ ${2:-} == 'id -u' ]]; then printf '0\n'; exit 0; fi
+export XTMOE_TEST_ROOT=1
 eval "$2"
 MOCK
 
 chmod +x "$TEST_TMP/mock-bin/proot-distro" "$TEST_TMP/mock-bin/tsu"
-export PATH="$TEST_TMP/mock-bin:$PATH"
+export PATH="$TEST_TMP/mock-bin:$PREFIX/bin:$PATH"
 export MOCK_LOG="$TEST_TMP/proot.log"
 : >"$MOCK_LOG"
 
 assert_ok 'CLI help' bash "$CLI" help
 assert_contains 'CLI help mentions PRoot' 'xtmoe proot' "$TEST_TMP/stdout"
+assert_contains 'CLI help mentions updater' 'xtmoe update' "$TEST_TMP/stdout"
+assert_contains 'CLI help mentions program uninstall' 'xtmoe uninstall-app' "$TEST_TMP/stdout"
 assert_ok 'CLI version' bash "$CLI" version
-assert_contains 'CLI reports version 0.1.1-dev' 'xtmoe 0.1.1-dev' "$TEST_TMP/stdout"
+assert_contains 'CLI reports version 0.2.0-dev' 'xtmoe 0.2.0-dev' "$TEST_TMP/stdout"
 assert_ok 'PRoot help' bash "$CLI" proot help
 assert_ok 'Chroot help' bash "$CLI" chroot help
+assert_contains 'Chroot help mentions Docker readiness check' 'docker-check' "$TEST_TMP/stdout"
+old_prefix=$PREFIX
+export PREFIX="$TEST_TMP/not-termux"
+mkdir -p "$PREFIX/bin"
+assert_fail 'Forged TERMUX_VERSION cannot bypass PREFIX validation' bash "$CLI" proot list
+export PREFIX=$old_prefix
 
 assert_ok 'PRoot install dispatch' bash "$CLI" proot install ubuntu:24.04 demo
+assert_fail 'PRoot install rejects extra arguments' bash "$CLI" proot install ubuntu:24.04 demo extra
 assert_contains 'PRoot install keeps image and name' 'install --name demo ubuntu:24.04' "$MOCK_LOG"
 assert_ok 'PRoot exec dispatch' bash "$CLI" proot exec demo -- uname -a
 assert_contains 'PRoot exec keeps argument boundary' 'login demo -- uname -a' "$MOCK_LOG"
@@ -94,6 +104,8 @@ assert_fail 'Chroot duplicate target rejected' bash "$CLI" chroot bind demo "$HO
 assert_fail 'Chroot relative target rejected' bash "$CLI" chroot bind demo "$HOME/shared" '../escape' rw
 assert_fail 'Chroot invalid container name rejected' bash "$CLI" chroot bind '../escape' "$HOME/shared" /mnt/shared rw
 assert_fail 'Chroot refuses whole host root bind' bash "$CLI" chroot bind demo / /mnt/host rw
+assert_fail 'Chroot status rejects extra arguments' bash "$CLI" chroot status demo extra
+assert_fail 'Chroot unbind rejects relative target' bash "$CLI" chroot unbind demo relative
 
 printf '<a>ubuntu-base-24.04.3-base-amd64.tar.gz</a>\n<a>ubuntu-base-24.04.5-base-amd64.tar.gz</a>\n' >"$TEST_TMP/ubuntu-index"
 printf 'fake ubuntu base archive\n' >"$TEST_TMP/ubuntu-archive"
@@ -129,12 +141,16 @@ rm -f -- "$TEST_TMP/mock-bin/curl"
 
 cat >"$TEST_TMP/mock-bin/id" <<'MOCK'
 #!/usr/bin/env bash
-[[ ${1:-} == -u ]] && { printf '0\n'; exit 0; }
+[[ ${XTMOE_TEST_ROOT:-0} == 1 && ${1:-} == -u ]] && { printf '0\n'; exit 0; }
 exec /usr/bin/id "$@"
 MOCK
 chmod +x "$TEST_TMP/mock-bin/id"
-assert_fail 'Root helper rejects arbitrary base path' bash "$ROOT_HELPER" "$PREFIX" status /tmp demo
+cp "$(command -v bash)" "$PREFIX/bin/bash"
+assert_fail 'Root helper rejects arbitrary base path' env XTMOE_TEST_ROOT=1 bash "$ROOT_HELPER" "$PREFIX" status /tmp demo
 assert_contains 'Root helper reports protected path' '拒绝操作非 XTMOE Chroot 目录' "$TEST_TMP/stderr"
+codec_input=$'/tmp/a b\\c\td'
+assert_ok 'Mount table path codec handles spaces, tabs and backslashes' env XTMOE_TEST_ROOT=1 XTMOE_INTERNAL_TEST=1 bash "$ROOT_HELPER" "$PREFIX" _internal-path-codec "$codec_input"
+[[ $(tail -n 1 "$TEST_TMP/stdout") == "$codec_input" ]] && pass 'Mount table path codec round-trips exactly' || fail 'Mount table path codec round-trips exactly'
 if grep -Fq "trap 'exit 130' INT" "$ROOT_HELPER"; then
     fail 'Interactive login must not trap Ctrl+C as container exit'
 else
@@ -144,13 +160,14 @@ assert_contains 'Interactive login allocates a PTY' '"$script_bin" -q -e /dev/nu
 
 rootfs_fixture_lifecycle() {
     local fixture="$TEST_TMP/rootfs-fixture" archive="$TEST_TMP/rootfs-fixture.tar.gz"
-    local base="$TEST_TMP/data/data/com.termux/files/home/.local/share/xtmoe/chroot"
+    local base="$XTMOE_DATA_DIR/chroot"
     local backup="$TEST_TMP/rootfs-backup.tar.gz"
     mkdir -p "$fixture/bin" "$fixture/etc" "$base"
     printf '#!/bin/sh\nexit 0\n' >"$fixture/bin/sh"
     chmod +x "$fixture/bin/sh"
     tar -czpf "$archive" -C "$fixture" .
 
+    export XTMOE_TEST_ROOT=1
     PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" install "$base" fixture "$archive" 223.5.5.5
     [[ -x $base/fixture/rootfs/bin/sh ]]
     grep -qx 'xtmoe-chroot-format-1' "$base/fixture/.xtmoe-chroot"
@@ -168,8 +185,13 @@ rootfs_fixture_lifecycle() {
     PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" restore "$base" restored "$backup"
     [[ -x $base/restored/rootfs/bin/sh ]]
     PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" remove "$base" restored
+
+    PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" install "$base" uninstall-demo "$archive" 223.5.5.5
+    unset XTMOE_TEST_ROOT
+    XTMOE_YES=1 bash "$CLI" uninstall chroot uninstall-demo
+    [[ ! -e $base/uninstall-demo ]]
 }
-assert_ok 'Synthetic rootfs install/backup/restore/remove lifecycle' rootfs_fixture_lifecycle
+assert_ok 'Synthetic rootfs lifecycle and unified Chroot uninstall' rootfs_fixture_lifecycle
 rm -f -- "$TEST_TMP/mock-bin/id"
 
 export XTMOE_SKIP_PACKAGES=1
@@ -177,6 +199,45 @@ export XTMOE_ALLOW_NON_TERMUX=1
 assert_ok 'Local installer completes' sh "$ROOT_DIR/termux.sh"
 [[ -x "$PREFIX/bin/xtmoe" ]] && pass 'Installer creates executable command' || fail 'Installer creates executable command'
 [[ -r "$PREFIX/libexec/xtmoe/lib/chroot.sh" ]] && pass 'Installer copies libraries' || fail 'Installer copies libraries'
+[[ $(<"$PREFIX/libexec/xtmoe/source-root") == "$ROOT_DIR" ]] && pass 'Installer records source root' || fail 'Installer records source root'
+if compgen -G "$PREFIX/bin/xtmoe.tmp.*" >/dev/null || compgen -G "$PREFIX/libexec/xtmoe/*.tmp.*" >/dev/null; then
+    fail 'Installer leaves no temporary files'
+else
+    pass 'Installer leaves no temporary files'
+fi
+
+cp "$PREFIX/bin/xtmoe" "$PREFIX/bin/xtmoe.saved"
+printf '#!/usr/bin/env bash\nprintf "xtmoe 0.0.0-stale\\n"\n' >"$PREFIX/bin/xtmoe"
+chmod +x "$PREFIX/bin/xtmoe"
+assert_fail 'Doctor rejects stale installed command' bash "$CLI" doctor
+assert_contains 'Doctor explains source/install mismatch' '源码与已安装命令版本不一致' "$TEST_TMP/stderr"
+mv -f -- "$PREFIX/bin/xtmoe.saved" "$PREFIX/bin/xtmoe"
+
+cat >"$TEST_TMP/mock-bin/git" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$MOCK_GIT_LOG"
+case "$*" in
+    *'status --porcelain'*)
+        [[ ${MOCK_GIT_DIRTY:-0} == 1 ]] && printf ' M src/bin/xtmoe\n'
+        exit 0
+        ;;
+    *'pull --ff-only'*) exit 0 ;;
+esac
+exit 0
+MOCK
+chmod +x "$TEST_TMP/mock-bin/git"
+export MOCK_GIT_LOG="$TEST_TMP/git.log"
+: >"$MOCK_GIT_LOG"
+assert_ok 'Self-update refreshes source and installed copy' bash "$PREFIX/bin/xtmoe" update
+assert_contains 'Self-update uses fast-forward-only pull' 'pull --ff-only' "$MOCK_GIT_LOG"
+export MOCK_GIT_DIRTY=1
+assert_fail 'Self-update refuses dirty tracked source' bash "$PREFIX/bin/xtmoe" update
+unset MOCK_GIT_DIRTY
+rm -f -- "$TEST_TMP/mock-bin/git"
+
+assert_ok 'Doctor verifies installed and source versions' bash "$PREFIX/bin/xtmoe" doctor
+assert_contains 'Doctor reports installed command path' '已安装命令：' "$TEST_TMP/stdout"
+assert_contains 'Doctor reports source root' '源码目录：' "$TEST_TMP/stdout"
 
 proot_actions=$(grep -rhoE 'xtmoe[[:space:]]+proot[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
 for action in $proot_actions; do
@@ -190,7 +251,7 @@ pass 'Documented PRoot actions map to CLI'
 chroot_actions=$(grep -rhoE 'xtmoe[[:space:]]+chroot[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
 for action in $chroot_actions; do
     case "$action" in
-        prepare|install|login|exec|setup|status|list|stop|bind|unbind|backup|restore|remove) ;;
+        prepare|install|login|exec|setup|docker-check|status|list|stop|bind|unbind|backup|restore|remove) ;;
         *) fail "Documentation references unknown Chroot action: $action" ;;
     esac
 done
@@ -200,6 +261,17 @@ for doc in INSTALL PROOT CHROOT OPERATIONS TROUBLESHOOTING ROADMAP; do
     [[ -r "$ROOT_DIR/docs/$doc.md" ]] || fail "Missing documentation: $doc.md"
 done
 pass 'README documentation targets exist'
+
+if grep -R -q --include='*.sh' --include='*.md' 'xzmore' "$ROOT_DIR/src" "$ROOT_DIR/termux.sh"; then
+    fail 'Runtime has no xzmore dependency'
+else
+    pass 'Runtime has no xzmore dependency'
+fi
+
+assert_fail 'Program uninstall requires confirmation' bash "$PREFIX/bin/xtmoe" uninstall-app
+assert_ok 'Program uninstall preserves user data' bash "$PREFIX/bin/xtmoe" uninstall-app --yes
+[[ ! -e "$PREFIX/bin/xtmoe" && ! -e "$PREFIX/libexec/xtmoe" ]] && pass 'Program uninstall removes installed files' || fail 'Program uninstall removes installed files'
+[[ -d "$XTMOE_DATA_DIR" ]] && pass 'Program uninstall keeps container data directory' || fail 'Program uninstall keeps container data directory'
 
 printf '# tests: %d passed, %d failed\n' "$PASS" "$FAIL"
 ((FAIL == 0))

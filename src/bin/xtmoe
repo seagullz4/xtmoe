@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
 
-XTMOE_VERSION='0.1.1-dev'
+XTMOE_VERSION='0.2.0-dev'
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 if [[ -r "$SCRIPT_DIR/../lib/common.sh" ]]; then
@@ -23,6 +23,8 @@ XTMOE 0.1
   xtmoe proot  <操作> [参数]
   xtmoe chroot <操作> [参数]
   xtmoe uninstall [--yes] <proot|chroot> <名称>
+  xtmoe update
+  xtmoe uninstall-app [--yes]
   xtmoe version
   xtmoe help
 
@@ -39,23 +41,64 @@ XTMOE 0.1
 EOF
 }
 
-uninstall_main() {
-    local mode='' name='' yes=0 argument
+source_root() {
+    local source_file="${PREFIX:?PREFIX 未设置}/libexec/xtmoe/source-root" root=''
+    [[ -r $source_file ]] || die '缺少源码位置记录；请在 XTMOE 源码目录重新执行 sh termux.sh'
+    IFS= read -r root <"$source_file"
+    [[ -n $root && -d $root/.git && -r $root/termux.sh && -r $root/src/bin/xtmoe ]] ||
+        die "源码目录无效：${root:-未记录}；请重新克隆 XTMOE 并执行 sh termux.sh"
+    printf '%s' "$root"
+}
+
+update_main() {
+    (($# == 0)) || die 'xtmoe update 不接受额外参数'
+    require_termux
+    require_command git '执行 pkg install git'
+    local root status new_version
+    root=$(source_root)
+    status=$(git -C "$root" status --porcelain --untracked-files=no)
+    [[ -z $status ]] || die "源码目录存在未提交修改，拒绝覆盖：$root"
+    info "更新源码：$root"
+    git -C "$root" pull --ff-only
+    info '原子更新已安装命令和模块'
+    sh "$root/termux.sh"
+    new_version=$(bash "${PREFIX:?PREFIX 未设置}/bin/xtmoe" version)
+    ok "更新完成：$new_version"
+}
+
+uninstall_app_main() {
+    local yes=0 argument
     for argument in "$@"; do
         case "$argument" in
             --yes|-y) yes=1 ;;
-            proot|chroot)
-                [[ -z $mode ]] || die '卸载命令只能指定一种模式：proot 或 chroot'
-                mode=$argument
-                ;;
-            *)
-                [[ -z $name ]] || die '卸载命令只接受一个镜像名称'
-                name=$argument
-                ;;
+            *) die "未知参数：$argument" ;;
         esac
     done
-    [[ -n $mode ]] || die '缺少模式：xtmoe uninstall <proot|chroot> <名称>'
-    [[ -n $name ]] || die '缺少镜像名称：xtmoe uninstall <proot|chroot> <名称>'
+    require_termux
+    ((yes)) && export XTMOE_YES=1
+    confirm '卸载 XTMOE 程序？容器、配置、缓存和备份都会保留' || { info '已取消'; return 0; }
+    local command_path="${PREFIX:?PREFIX 未设置}/bin/xtmoe"
+    local library_path="$PREFIX/libexec/xtmoe"
+    [[ $command_path == */files/usr/bin/xtmoe && $library_path == */files/usr/libexec/xtmoe ]] ||
+        die '安装路径不符合 Termux 布局，拒绝卸载'
+    rm -f -- "$command_path"
+    rm -rf -- "$library_path"
+    ok 'XTMOE 程序已卸载；容器和用户数据未删除'
+}
+
+uninstall_main() {
+    local mode name yes=0 argument
+    local -a positional=()
+    for argument in "$@"; do
+        case "$argument" in
+            --yes|-y) yes=1 ;;
+            *) positional+=("$argument") ;;
+        esac
+    done
+    ((${#positional[@]} == 2)) || die '用法：xtmoe uninstall [--yes] <proot|chroot> <名称>'
+    mode=${positional[0]}
+    name=${positional[1]}
+    [[ $mode == proot || $mode == chroot ]] || die "未知镜像模式：$mode（只能是 proot 或 chroot）"
     require_name "$name"
 
     local -a remove_args=(remove "$name")
@@ -68,8 +111,36 @@ uninstall_main() {
 
 doctor() {
     local failures=0 android_release='未知' root_state='不可用' architecture available_kb apk_release
+    local installed_path runtime_path installed_version='' recorded_source='' source_version=''
 
     info "XTMOE $XTMOE_VERSION 环境检查"
+    runtime_path=$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
+    installed_path=$(command -v xtmoe 2>/dev/null || true)
+    info "当前程序：$runtime_path"
+    if [[ -n $installed_path ]]; then
+        installed_version=$(bash "$installed_path" version 2>/dev/null || true)
+        info "已安装命令：$installed_path（${installed_version:-版本读取失败}）"
+    else
+        warn 'PATH 中没有已安装的 xtmoe；请执行 sh termux.sh'
+        ((failures += 1))
+    fi
+    if [[ -r ${PREFIX:-}/libexec/xtmoe/source-root ]]; then
+        IFS= read -r recorded_source <"$PREFIX/libexec/xtmoe/source-root"
+        info "源码目录：$recorded_source"
+        if [[ -r $recorded_source/src/bin/xtmoe ]]; then
+            source_version=$(bash "$recorded_source/src/bin/xtmoe" version 2>/dev/null || true)
+            if [[ -n $installed_version && $source_version != "$installed_version" ]]; then
+                warn "源码与已安装命令版本不一致：源码=$source_version，安装=$installed_version；执行 xtmoe update"
+                ((failures += 1))
+            fi
+        else
+            warn '记录的源码目录不可用；请重新克隆并安装'
+            ((failures += 1))
+        fi
+    else
+        warn '缺少源码位置记录；请在源码目录重新执行 sh termux.sh'
+        ((failures += 1))
+    fi
     if is_termux; then
         ok "Termux 环境：${PREFIX:-未知}"
     else
@@ -161,6 +232,8 @@ main() {
         proot) proot_main "$@" ;;
         chroot) chroot_main "$@" ;;
         uninstall) uninstall_main "$@" ;;
+        update) update_main "$@" ;;
+        uninstall-app) uninstall_app_main "$@" ;;
         version|-V|--version) printf 'xtmoe %s\n' "$XTMOE_VERSION" ;;
         help|-h|--help) show_help ;;
         *) die "未知命令：$command（执行 xtmoe help 查看帮助）" ;;
