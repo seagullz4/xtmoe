@@ -16,7 +16,7 @@ esac
 [ "$(id -u)" -ne 0 ] || die '不要使用 su/tsu 运行安装器；需要 Root 的操作会单独提权。'
 
 SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
-SOURCE_DIR="$SCRIPT_DIR/share/termux-v2"
+SOURCE_DIR="$SCRIPT_DIR/src"
 [ -r "$SOURCE_DIR/bin/tmoe" ] || die "源文件不完整：$SOURCE_DIR/bin/tmoe"
 
 TMOE_PREFIX=${PREFIX:-"$HOME/.local"}

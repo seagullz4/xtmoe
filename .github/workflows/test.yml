@@ -24,11 +24,11 @@ jobs:
         run: |
           bash -n \
             termux.sh \
-            share/termux-v2/bin/tmoe \
-            share/termux-v2/lib/common.sh \
-            share/termux-v2/lib/proot.sh \
-            share/termux-v2/lib/chroot.sh \
-            share/termux-v2/lib/tmoe-root \
+            src/bin/tmoe \
+            src/lib/common.sh \
+            src/lib/proot.sh \
+            src/lib/chroot.sh \
+            src/lib/tmoe-root \
             tests/run.sh \
             tests/android-smoke.sh \
             tests/rootfs-lifecycle.sh
@@ -38,11 +38,11 @@ jobs:
         run: |
           shellcheck -x -S warning \
             termux.sh \
-            share/termux-v2/bin/tmoe \
-            share/termux-v2/lib/common.sh \
-            share/termux-v2/lib/proot.sh \
-            share/termux-v2/lib/chroot.sh \
-            share/termux-v2/lib/tmoe-root \
+            src/bin/tmoe \
+            src/lib/common.sh \
+            src/lib/proot.sh \
+            src/lib/chroot.sh \
+            src/lib/tmoe-root \
             tests/run.sh \
             tests/android-smoke.sh \
             tests/rootfs-lifecycle.sh

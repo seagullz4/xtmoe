@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-CLI="$ROOT_DIR/share/termux-v2/bin/tmoe"
-ROOT_HELPER="$ROOT_DIR/share/termux-v2/lib/tmoe-root"
+CLI="$ROOT_DIR/src/bin/tmoe"
+ROOT_HELPER="$ROOT_DIR/src/lib/tmoe-root"
 README_FILE="$ROOT_DIR/README.md"
 TEST_TMP=$(mktemp -d)
 trap 'rm -rf -- "$TEST_TMP"' EXIT
@@ -123,11 +123,11 @@ case "$url" in
 esac
 MOCK
 chmod +x "$TEST_TMP/mock-bin/curl"
-assert_ok 'Ubuntu Base index and starred checksum parsed' bash -c "source '$ROOT_DIR/share/termux-v2/lib/common.sh'; source '$ROOT_DIR/share/termux-v2/lib/chroot.sh'; download_ubuntu_base 24.04"
+assert_ok 'Ubuntu Base index and starred checksum parsed' bash -c "source '$ROOT_DIR/src/lib/common.sh'; source '$ROOT_DIR/src/lib/chroot.sh'; download_ubuntu_base 24.04"
 assert_contains 'Newest Ubuntu point release selected' 'ubuntu-base-24.04.5-base-amd64.tar.gz' "$TEST_TMP/stdout"
 cached_ubuntu="$TMOE_CACHE_DIR/ubuntu-base/24.04/ubuntu-base-24.04.5-base-amd64.tar.gz"
 printf 'corrupted cache\n' >"$cached_ubuntu"
-assert_ok 'Corrupted Ubuntu cache is downloaded again' bash -c "source '$ROOT_DIR/share/termux-v2/lib/common.sh'; source '$ROOT_DIR/share/termux-v2/lib/chroot.sh'; download_ubuntu_base 24.04"
+assert_ok 'Corrupted Ubuntu cache is downloaded again' bash -c "source '$ROOT_DIR/src/lib/common.sh'; source '$ROOT_DIR/src/lib/chroot.sh'; download_ubuntu_base 24.04"
 cmp -s "$cached_ubuntu" "$MOCK_UBUNTU_ARCHIVE" && pass 'Redownloaded Ubuntu cache content verified' || fail 'Redownloaded Ubuntu cache content verified'
 rm -f -- "$TEST_TMP/mock-bin/curl"
 

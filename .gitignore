@@ -1,36 +1,19 @@
-# all
+# Publish only the XTMOE rewrite.
 /*
 
-# whitelist
-!.git*
+!.gitignore
 !.gitattributes
-!.github
+!.github/
 !.github/**
 !README.md
-!debian.sh
-!src
-!License
 !Copyright
-!share
-!assets
-!Readme-*
 !termux.sh
-!docs
+!src/
+!src/**
+!docs/
 !docs/**
-!tests
+!tests/
 !tests/**
-!share/termux-v2
-!share/termux-v2/**
 
 # Local publisher. It must never be uploaded by push_github.py.
 push_github.py
-#---------
-
-# old
-/recycle_bin
-test.xml
-aria2.session
-.config/aria2_test.conf
-server_test.sh
-/test
-/core
