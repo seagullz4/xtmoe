@@ -110,6 +110,24 @@ unmount_all() {
     return "$failed"
 }
 
+ensure_hosts_config() {
+    local rootfs=$1 hostname_file="$1/etc/hostname" hosts_file="$1/etc/hosts"
+    local nsswitch_file="$1/etc/nsswitch.conf"
+
+    printf 'localhost\n' >"$hostname_file"
+    if [[ ! -e $hosts_file ]]; then
+        printf '127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n' >"$hosts_file"
+    else
+        awk '$1 == "127.0.0.1" { for (i = 2; i <= NF; i++) if ($i == "localhost") found = 1 } END { exit !found }' "$hosts_file" ||
+            printf '127.0.0.1\tlocalhost\n' >>"$hosts_file"
+        awk '$1 == "::1" { for (i = 2; i <= NF; i++) if ($i == "localhost") found = 1 } END { exit !found }' "$hosts_file" ||
+            printf '::1\tlocalhost ip6-localhost ip6-loopback\n' >>"$hosts_file"
+    fi
+    if [[ ! -e $nsswitch_file ]] || ! grep -q '^[[:space:]]*hosts:' "$nsswitch_file"; then
+        printf 'hosts: files dns\n' >>"$nsswitch_file"
+    fi
+}
+
 install_rootfs() {
     local archive=$1 partial_rootfs dns
     shift
@@ -126,6 +144,7 @@ install_rootfs() {
     mkdir -p "$partial_rootfs/rootfs"/{dev,proc,sys,run,tmp,root}
     chmod 1777 "$partial_rootfs/rootfs/tmp"
     ln -snf /proc/mounts "$partial_rootfs/rootfs/etc/mtab"
+    ensure_hosts_config "$partial_rootfs/rootfs"
     : >"$partial_rootfs/rootfs/etc/resolv.conf"
     for dns in "$@"; do
         [[ $dns =~ ^[0-9A-Fa-f:.]+$ ]] || { rm -rf --one-file-system -- "$partial_rootfs"; die "非法 DNS 地址：$dns"; }

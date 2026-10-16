@@ -168,12 +168,19 @@ rootfs_fixture_lifecycle() {
     mkdir -p "$fixture/bin" "$fixture/etc" "$base"
     printf '#!/bin/sh\nexit 0\n' >"$fixture/bin/sh"
     chmod +x "$fixture/bin/sh"
+    printf 'ubuntu\n' >"$fixture/etc/hostname"
+    printf '10.0.0.1 example.test example\n127.0.0.1 android-test\n' >"$fixture/etc/hosts"
     tar -czpf "$archive" -C "$fixture" .
 
     export XTMOE_TEST_ROOT=1
     PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" install "$base" fixture "$archive" 223.5.5.5
     [[ -x $base/fixture/rootfs/bin/sh ]]
     grep -qx 'xtmoe-chroot-format-1' "$base/fixture/.xtmoe-chroot"
+    grep -qx 'localhost' "$base/fixture/rootfs/etc/hostname"
+    grep -qE '^127\.0\.0\.1[[:space:]]+localhost([[:space:]]|$)' "$base/fixture/rootfs/etc/hosts"
+    grep -qE '^::1[[:space:]]+localhost([[:space:]]|$)' "$base/fixture/rootfs/etc/hosts"
+    grep -qx '10.0.0.1 example.test example' "$base/fixture/rootfs/etc/hosts"
+    grep -qx 'hosts: files dns' "$base/fixture/rootfs/etc/nsswitch.conf"
     grep -qx 'nameserver 223.5.5.5' "$base/fixture/rootfs/etc/resolv.conf"
     [[ $(PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" status "$base" fixture) == stopped ]]
     PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" stop "$base" fixture

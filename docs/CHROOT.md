@@ -45,7 +45,7 @@ xtmoe chroot install ubuntu 24.04 ubuntu
 4. 校验镜像；
 5. 以 Root 保留原始 UID/GID 解压；
 6. 优先读取 Android 当前 DNS，若系统未公开 DNS 属性则使用后备 DNS；
-7. 初始化 `/etc/mtab` 和运行目录。
+7. 初始化 `/etc/hostname`、`/etc/hosts`、名称解析策略、`/etc/resolv.conf`、`/etc/mtab` 和运行目录。
 
 目前不支持跨架构 Chroot。需要跨架构时请使用 PRoot 加 QEMU。
 
@@ -58,6 +58,8 @@ xtmoe chroot setup ubuntu
 ```
 
 `setup` 会更新 apt，并安装 CA 证书、curl、locale、OpenSSH Server 和 sudo。Ubuntu Base 默认非常精简，缺少许多常见工具是正常现象。
+
+初始化会保留镜像中已有的其他主机映射，并确保 `localhost` 同时映射到 `127.0.0.1` 和 `::1`。这可以避免 `sudo: unable to resolve host localhost` 一类的本机名解析错误。
 
 在安装 Docker 或 1Panel 前运行只读内核检查：
 

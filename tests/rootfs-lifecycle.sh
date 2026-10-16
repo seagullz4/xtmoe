@@ -27,6 +27,10 @@ root_helper() {
 
 root_helper install "$BASE" ubuntu-test "$ARCHIVE" 223.5.5.5 1.1.1.1
 [[ -x $BASE/ubuntu-test/rootfs/bin/sh ]]
+grep -qx 'localhost' "$BASE/ubuntu-test/rootfs/etc/hostname"
+grep -qE '^127\.0\.0\.1[[:space:]]+localhost([[:space:]]|$)' "$BASE/ubuntu-test/rootfs/etc/hosts"
+grep -qE '^::1[[:space:]]+localhost([[:space:]]|$)' "$BASE/ubuntu-test/rootfs/etc/hosts"
+grep -qE '^[[:space:]]*hosts:[[:space:]]+files[[:space:]]+dns([[:space:]]|$)' "$BASE/ubuntu-test/rootfs/etc/nsswitch.conf"
 grep -qx 'nameserver 223.5.5.5' "$BASE/ubuntu-test/rootfs/etc/resolv.conf"
 grep -qx 'nameserver 1.1.1.1' "$BASE/ubuntu-test/rootfs/etc/resolv.conf"
 [[ $(root_helper status "$BASE" ubuntu-test) == stopped ]]

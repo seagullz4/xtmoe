@@ -15,5 +15,6 @@
 !tests/
 !tests/**
 
-# Local publisher. It must never be uploaded by push_github.py.
+# Local publisher and project handoff record. They must never be uploaded.
 push_github.py
+PROJECT_STATE.md

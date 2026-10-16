@@ -156,6 +156,23 @@ getent hosts archive.ubuntu.com
 
 Chroot 初始化会写入公共 DNS。若当前网络阻止这些 DNS，可在容器内按网络环境更换 `/etc/resolv.conf`。
 
+## `sudo` 提示无法解析 `localhost`
+
+这通常不是外部 DNS 故障，而是 Chroot 的本机名称映射缺失。检查：
+
+```sh
+cat /etc/hostname
+cat /etc/hosts
+getent hosts localhost
+```
+
+新安装的 Chroot 应包含 `localhost` 的 IPv4 和 IPv6 映射。旧容器可以手工补充：
+
+```sh
+printf 'localhost\n' > /etc/hostname
+printf '127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n' > /etc/hosts
+```
+
 ## Android 杀死后台任务
 
 关闭 Termux 的电池优化，允许后台活动，并避免清理最近任务。部分 Android 12+ 设备还受 Phantom Process Killer 限制；具体设置随厂商和系统版本变化。
