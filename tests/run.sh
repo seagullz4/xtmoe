@@ -73,7 +73,7 @@ assert_contains 'CLI help mentions PRoot' 'xtmoe proot' "$TEST_TMP/stdout"
 assert_contains 'CLI help mentions updater' 'xtmoe update' "$TEST_TMP/stdout"
 assert_contains 'CLI help mentions program uninstall' 'xtmoe uninstall-app' "$TEST_TMP/stdout"
 assert_ok 'CLI version' bash "$CLI" version
-assert_contains 'CLI reports version 0.2.0-dev' 'xtmoe 0.2.0-dev' "$TEST_TMP/stdout"
+assert_contains 'CLI reports version 0.2.1-dev' 'xtmoe 0.2.1-dev' "$TEST_TMP/stdout"
 assert_ok 'PRoot help' bash "$CLI" proot help
 assert_ok 'Chroot help' bash "$CLI" chroot help
 assert_contains 'Chroot help mentions Docker readiness check' 'docker-check' "$TEST_TMP/stdout"
@@ -173,6 +173,10 @@ rootfs_fixture_lifecycle() {
     grep -qx 'xtmoe-chroot-format-1' "$base/fixture/.xtmoe-chroot"
     grep -qx 'nameserver 223.5.5.5' "$base/fixture/rootfs/etc/resolv.conf"
     [[ $(PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" status "$base" fixture) == stopped ]]
+    PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" stop "$base" fixture
+    if PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" stop "$base" missing; then
+        return 1
+    fi
     if PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" backup "$base" fixture "$base/fixture/inside.tar.gz" 0 0; then
         return 1
     fi

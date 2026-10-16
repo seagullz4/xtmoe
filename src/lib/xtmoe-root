@@ -239,6 +239,7 @@ case "$ACTION" in
         ;;
     stop)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
         unmount_all "$ROOTFS" || die '部分挂载无法卸载，可能仍有进程占用'
         ;;
     status)

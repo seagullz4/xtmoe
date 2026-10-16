@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
 
-XTMOE_VERSION='0.2.0-dev'
+XTMOE_VERSION='0.2.1-dev'
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 if [[ -r "$SCRIPT_DIR/../lib/common.sh" ]]; then
