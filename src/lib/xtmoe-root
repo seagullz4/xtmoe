@@ -157,6 +157,7 @@ install_rootfs() {
 
 run_chroot() {
     local config=$1 command_status=0 script_bin; shift
+    ensure_hosts_config "$ROOTFS"
     is_mounted "$ROOTFS" && die '容器已经处于 mounted 状态；请勿并发登录，先执行 stop。'
     trap 'unmount_all "$ROOTFS" || warn "异常退出后仍有挂载，请执行 xtmoe chroot stop"' EXIT
     trap 'exit 143' TERM
@@ -246,6 +247,10 @@ case "$ACTION" in
         [[ ${XTMOE_INTERNAL_TEST:-0} == 1 ]] || die '内部测试操作不可用'
         ROOTFS=/tmp/xtmoe-internal-test-rootfs
         mount_one "${1:?缺少测试挂载源}" /mnt/test rw
+        ;;
+    _internal-hosts-config)
+        [[ ${XTMOE_INTERNAL_TEST:-0} == 1 ]] || die '内部测试操作不可用'
+        ensure_hosts_config "${1:?缺少测试 rootfs}"
         ;;
     install)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"

@@ -172,6 +172,15 @@ rootfs_fixture_lifecycle() {
     printf '10.0.0.1 example.test example\n127.0.0.1 android-test\n' >"$fixture/etc/hosts"
     tar -czpf "$archive" -C "$fixture" .
 
+    local repair_rootfs="$TEST_TMP/existing-rootfs"
+    mkdir -p "$repair_rootfs/etc"
+    printf 'old-host\n' >"$repair_rootfs/etc/hostname"
+    printf '10.0.0.1 existing.test\n' >"$repair_rootfs/etc/hosts"
+    env XTMOE_INTERNAL_TEST=1 bash "$ROOT_HELPER" "$PREFIX" _internal-hosts-config "$repair_rootfs"
+    grep -qx 'localhost' "$repair_rootfs/etc/hostname"
+    grep -qE '^127\.0\.0\.1[[:space:]]+localhost([[:space:]]|$)' "$repair_rootfs/etc/hosts"
+    grep -qx '10.0.0.1 existing.test' "$repair_rootfs/etc/hosts"
+
     export XTMOE_TEST_ROOT=1
     PATH="$TEST_TMP/mock-bin:$PATH" bash "$ROOT_HELPER" "$PREFIX" install "$base" fixture "$archive" 223.5.5.5
     [[ -x $base/fixture/rootfs/bin/sh ]]

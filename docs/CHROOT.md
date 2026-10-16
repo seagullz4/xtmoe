@@ -59,7 +59,7 @@ xtmoe chroot setup ubuntu
 
 `setup` 会更新 apt，并安装 CA 证书、curl、locale、OpenSSH Server 和 sudo。Ubuntu Base 默认非常精简，缺少许多常见工具是正常现象。
 
-初始化会保留镜像中已有的其他主机映射，并确保 `localhost` 同时映射到 `127.0.0.1` 和 `::1`。这可以避免 `sudo: unable to resolve host localhost` 一类的本机名解析错误。
+初始化会保留镜像中已有的其他主机映射，并确保 `localhost` 同时映射到 `127.0.0.1` 和 `::1`。每次 `login`、`exec` 或 `setup` 还会自动补齐已有容器缺失的本机名称配置，这可以避免 `sudo: unable to resolve host localhost` 一类的错误。
 
 在安装 Docker 或 1Panel 前运行只读内核检查：
 
