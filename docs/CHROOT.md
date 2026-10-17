@@ -2,6 +2,8 @@
 
 Chroot 只适用于已经 Root 且了解 Android 挂载和恢复流程的设备。它与 Android 共用内核；XTMOE 会尝试提供嵌套 systemd，但 cgroup 和 namespace 仍由 Android 内核决定。
 
+开始本页的 Chroot 操作前，必须先在普通 Termux 用户会话的 XTMOE 源码目录执行 `sh termux.sh`，然后运行 `xtmoe doctor`。只有基础检查完成后才继续安装或管理 Chroot。
+
 ## 风险
 
 - 容器中的 root 是高权限进程，不是 PRoot 模拟出来的 root。

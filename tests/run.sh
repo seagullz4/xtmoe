@@ -262,6 +262,7 @@ assert_contains 'Interactive login allocates a PTY' '"$script_bin" -q -e /dev/nu
 assert_contains 'Systemd mounts proc inside its PID namespace' 'mount -t proc proc /proc' "$ROOT_HELPER"
 assert_contains 'Systemd startup avoids inherited parent proc mount' 'mount_all "$config" 0' "$ROOT_HELPER"
 assert_contains 'Systemd mounts are prepared by namespaced launcher' '_systemd-launch "$BASE" "$CONTAINER_NAME" "$config"' "$ROOT_HELPER"
+assert_contains 'Systemd replaces launcher helper before process discovery' 'exec chroot "$ROOTFS" /bin/bash -c' "$ROOT_HELPER"
 assert_contains 'Chroot login reuses running systemd session' 'systemd_login' "$ROOT_HELPER"
 assert_contains 'Unified Chroot stop stops nested systemd' 'systemd_stop' "$ROOT_HELPER"
 assert_contains 'Docker gate checks network namespace creation' 'namespace_check --net network' "$ROOT_HELPER"

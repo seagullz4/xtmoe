@@ -19,29 +19,6 @@ XTMOE 0.3.0-dev 是一个从零设计的 Android Termux Linux 环境管理工具
 
 不确定时请选择 **PRoot**。
 
-## 统一管理向导
-
-安装 XTMOE 后，推荐直接运行：
-
-```sh
-xtmoe on
-```
-
-向导会先选择 PRoot 或 Chroot，再提供安装、进入、停止、更新系统、重装、备份、恢复、卸载和状态检查。菜单中的每项操作都对应可单独执行的公共子命令。
-
-查看当前正在运行的系统并选择进入：
-
-```sh
-xtmoe list
-```
-
-查看全部已安装系统但不进入交互选择：
-
-```sh
-xtmoe list --all --no-prompt
-xtmoe enter chroot ubuntu
-```
-
 ## 要求
 
 - 从 [F-Droid](https://f-droid.org/packages/com.termux/) 或 [Termux GitHub Releases](https://github.com/termux/termux-app/releases) 安装的当前 Termux；不要使用已经停止维护的旧 Play 商店构建。
@@ -63,6 +40,31 @@ xtmoe doctor
 ```
 
 不要先执行 `su` 或 `tsu`。XTMOE 仅在 Chroot 的必要步骤中单独申请 Root。
+
+只有 `sh termux.sh` 已成功完成且 `xtmoe doctor` 未报告基础环境错误后，才可以执行后续的 `xtmoe on`、`xtmoe list`、PRoot 或 Chroot 管理命令。
+
+## 统一管理向导
+
+完成安装和环境检查后，推荐直接运行：
+
+```sh
+xtmoe on
+```
+
+向导会先选择 PRoot 或 Chroot，再提供安装、进入、停止、更新系统、重装、备份、恢复、卸载和状态检查。菜单中的每项操作都对应可单独执行的公共子命令。
+
+查看当前正在运行的系统并选择进入：
+
+```sh
+xtmoe list
+```
+
+查看全部已安装系统但不进入交互选择：
+
+```sh
+xtmoe list --all --no-prompt
+xtmoe enter chroot ubuntu
+```
 
 以后更新只需执行：
 

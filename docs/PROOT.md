@@ -2,6 +2,8 @@
 
 PRoot 不需要手机 Root。XTMOE 将容器生命周期委托给 Termux 官方维护的 `proot-distro`，并负责统一入口、环境诊断和危险操作确认。
 
+本文所有命令都以前置安装完成为条件：先在源码目录执行 `sh termux.sh`，再执行 `xtmoe doctor` 并处理其报告的基础环境问题。
+
 ## 安装容器
 
 默认安装 Ubuntu 24.04：

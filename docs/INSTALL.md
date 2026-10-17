@@ -46,11 +46,13 @@ xtmoe chroot install --yes --accept-host-network-changes ubuntu 24.04 ubuntu
 
 不需要 Docker 时使用 `--skip-docker`；`--skip-systemd` 会同时跳过 Docker。
 
-安装完成后必须运行：
+安装完成后必须先运行：
 
 ```sh
 xtmoe doctor
 ```
+
+只有 `doctor` 完成且未报告基础环境错误后，才开始使用 `xtmoe on`、`xtmoe list`、PRoot 或 Chroot 管理命令。
 
 ## 更新
 
@@ -81,6 +83,8 @@ xtmoe chroot update-system ubuntu
 ```
 
 ## 统一向导、列表与进入
+
+以下命令的前提是已在当前 Termux 普通用户会话成功执行 `sh termux.sh`，并已完成上方的 `xtmoe doctor`：
 
 ```sh
 xtmoe on

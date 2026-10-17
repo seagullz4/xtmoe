@@ -493,7 +493,7 @@ systemd_namespace_launch() {
     mount --make-rprivate / 2>/dev/null || true
     mount_all "$config" 0
     ensure_cgroup_mount
-    chroot "$ROOTFS" /bin/bash -c \
+    exec chroot "$ROOTFS" /bin/bash -c \
         'mount -t proc proc /proc 2>/dev/null || true; exec /sbin/init --unit=multi-user.target'
 }
 
