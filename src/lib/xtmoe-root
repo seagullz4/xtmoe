@@ -568,13 +568,57 @@ ensure_cgroup_mount() {
     esac
 }
 
+# This is called only after entering the private mount namespace. A bind
+# remount changes this mount's VFS flags, not Android's sysfs superblock.
+systemd_protect_kernel_views() {
+    local sys_root="$ROOTFS/sys" encoded mounts target found_root=0
+    [[ -d $sys_root && ! -L $sys_root ]] || die '无效 /sys，拒绝启动 systemd'
+    encoded=$(mount_path_encode "$sys_root")
+    mounts=$(awk -v p="$encoded" '$2 == p || index($2, p "/") == 1 { print $2 }' /proc/self/mounts |
+        awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2-)
+    [[ -n $mounts ]] || die '容器 /sys 未挂载，拒绝启动 systemd'
+    while IFS= read -r target; do
+        target=$(mount_path_decode "$target")
+        case "$target" in "$sys_root/fs/cgroup"|"$sys_root/fs/cgroup/"*) continue ;; esac
+        [[ $target != "$sys_root" ]] || found_root=1
+        mount -o remount,bind,ro -- "$target" || die "无法将容器内核接口设为只读：$target"
+    done <<<"$mounts"
+    ((found_root)) || die '缺少容器 /sys 根挂载'
+    # Older images may expose a second SELinux mount at /selinux.
+    if [[ -d $ROOTFS/selinux ]]; then
+        [[ ! -L $ROOTFS/selinux ]] || die '/selinux 不能是符号链接'
+        mount --bind "$ROOTFS/selinux" "$ROOTFS/selinux" || die '无法隔离容器 /selinux'
+        mount -o remount,bind,ro -- "$ROOTFS/selinux" || die '无法保护容器 /selinux'
+    fi
+    ok '容器 /sys 及其非 cgroup 子挂载已设为只读；不修改宿主 SELinux 模式或 policy'
+}
+
+systemd_guest_init_script() {
+    cat <<'GUEST_INIT'
+set -Eeuo pipefail
+# procfs must describe the new PID namespace. Silently using Android's procfs
+# here can confuse both systemd's chroot and container detection.
+mount -t proc proc /proc || { printf '无法挂载容器 PID namespace 的 /proc\n' >&2; exit 1; }
+[[ $$ == 1 ]] || { printf '拒绝启动：systemd 启动 Shell 不是容器 PID 1\n' >&2; exit 1; }
+[[ ${container:-} == xtmoe ]] || { printf '缺少 XTMOE 容器环境标识\n' >&2; exit 1; }
+install -d -m 0755 /run/host
+printf 'xtmoe\n' >/run/host/container-manager
+exec /sbin/init --unit=multi-user.target
+GUEST_INIT
+}
+
 systemd_namespace_launch() {
     local config=${1:-}
+    [[ $(readlink /proc/self/ns/mnt) != "$(readlink /proc/1/ns/mnt)" ]] || die '拒绝在宿主 mount namespace 内启动 systemd'
     mount --make-rprivate / || die '无法隔离 mount namespace 的挂载传播'
-    mount_all "$config" 0
-    ensure_cgroup_mount
-    exec chroot "$ROOTFS" /bin/bash -c \
-        'mount -t proc proc /proc 2>/dev/null || true; exec /sbin/init --unit=multi-user.target'
+    mount_all "$config" 0 || die '准备 systemd 挂载失败'
+    ensure_cgroup_mount || die '准备 systemd cgroup 失败'
+    systemd_protect_kernel_views || die '保护宿主内核接口失败'
+    exec chroot "$ROOTFS" /usr/bin/env -i \
+        HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        LANG=C.UTF-8 container=xtmoe \
+        /bin/bash -c "$(systemd_guest_init_script)"
 }
 
 systemd_start() {
@@ -597,10 +641,13 @@ systemd_start() {
         fi
     done
     helper_path=$(realpath -m -- "${BASH_SOURCE[0]}")
+    [[ ! -L $SYSTEMD_LOG_FILE && ( ! -e $SYSTEMD_LOG_FILE || -f $SYSTEMD_LOG_FILE ) ]] || die '不安全的 systemd 日志路径'
+    printf '\n[XTMOE %s] systemd start; container=xtmoe; namespaces=%s; host-selinux-enforce=%s\n' \
+        "$(date -Iseconds)" "${namespace_args[*]}" "$(cat /sys/fs/selinux/enforce 2>/dev/null || printf unavailable)" >>"$SYSTEMD_LOG_FILE"
     nohup unshare "${namespace_args[@]}" --fork --kill-child \
         "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" \
         _systemd-launch "$BASE" "$CONTAINER_NAME" "$config" \
-        >"$SYSTEMD_LOG_FILE" 2>&1 &
+        </dev/null >>"$SYSTEMD_LOG_FILE" 2>&1 &
     launcher_pid=$!
     printf '%s\n' "$launcher_pid" >"$LAUNCHER_PID_FILE"
     target_pid=''

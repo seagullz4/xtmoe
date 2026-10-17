@@ -112,8 +112,19 @@ proot_test() {
     say 'SMOKE PASS: PRoot install/exec/backup/restore/remove'
 }
 
+smoke_host_selinux() {
+    local mode backend
+    for backend in su tsu; do
+        command -v "$backend" >/dev/null 2>&1 || continue
+        if mode=$("$backend" -c /system/bin/getenforce 2>/dev/null); then
+            case "$mode" in Enforcing|Permissive|Disabled) printf '%s' "$mode"; return 0 ;; esac
+        fi
+    done
+    return 1
+}
+
 chroot_test() {
-    local systemd_state install_status
+    local systemd_state install_status selinux_before selinux_after
     [[ ${XTMOE_SMOKE_ACCEPT_CHROOT_RISK:-} == YES ]] || die 'Chroot 测试需要设置 XTMOE_SMOKE_ACCEPT_CHROOT_RISK=YES'
     doctor_test
     mkdir -p "$WORK_DIR" "$HOST_SHARE"
@@ -121,10 +132,13 @@ chroot_test() {
     trap cleanup_chroot EXIT INT TERM
 
     xtmoe chroot prepare
+    selinux_before=$(smoke_host_selinux) || die '无法记录安装前宿主 SELinux 模式'
     set +e
     xtmoe chroot install --yes --accept-host-network-changes ubuntu 24.04 "$CHROOT_NAME"
     install_status=$?
     set -e
+    selinux_after=$(smoke_host_selinux) || die '无法记录安装后宿主 SELinux 模式'
+    [[ $selinux_before == "$selinux_after" ]] || die "宿主 SELinux 模式发生变化：$selinux_before -> $selinux_after；停止测试，不自动改变模式"
     [[ $install_status == 0 || $install_status == 2 ]] || die "Chroot 初始化失败，状态：$install_status"
     xtmoe list --all --no-prompt | grep -Fq "$CHROOT_NAME" || die '统一列表没有显示新 Chroot'
     xtmoe chroot network-check "$CHROOT_NAME"
@@ -133,6 +147,8 @@ chroot_test() {
     [[ $(xtmoe chroot systemd-exec "$CHROOT_NAME" -- readlink -f /bin/sh) == /usr/bin/bash ]] || die '/bin/sh 未切换为 Bash'
     systemd_state=$(xtmoe chroot systemd-exec "$CHROOT_NAME" -- systemctl is-system-running || true)
     [[ $systemd_state == running || $systemd_state == degraded ]] || die "systemd 状态异常：$systemd_state"
+    xtmoe chroot systemd-exec "$CHROOT_NAME" -- /bin/bash -lc 'test "$(cat /run/host/container-manager)" = xtmoe && tr "\0" "\n" </proc/1/environ | grep -qx container=xtmoe'
+    xtmoe chroot systemd-exec "$CHROOT_NAME" -- /bin/bash -lc 'set -euo pipefail; findmnt -n -o VFS-OPTIONS /sys | grep -Eq "(^|,)ro(,|$)"; if test -e /sys/fs/selinux/enforce; then findmnt -n -o VFS-OPTIONS /sys/fs/selinux | grep -Eq "(^|,)ro(,|$)"; fi'
     xtmoe chroot systemd-exec "$CHROOT_NAME" -- /usr/sbin/iptables --version
     if [[ $install_status == 0 ]]; then
         xtmoe chroot docker-status "$CHROOT_NAME"
@@ -149,6 +165,8 @@ chroot_test() {
     xtmoe chroot bind "$CHROOT_NAME" "$HOST_SHARE" /mnt/xtmoe-smoke ro
     xtmoe chroot systemd-stop "$CHROOT_NAME"
     xtmoe chroot systemd-start "$CHROOT_NAME"
+    selinux_after=$(smoke_host_selinux) || die '无法记录重新启动后的宿主 SELinux 模式'
+    [[ $selinux_before == "$selinux_after" ]] || die '重新启动改变了宿主 SELinux 模式；不自动修改模式'
     if [[ $install_status == 0 ]]; then
         xtmoe chroot systemd-exec "$CHROOT_NAME" -- timeout 60 /bin/bash -c 'until systemctl is-active --quiet docker.service && docker info >/dev/null 2>&1; do sleep 2; done'
     fi

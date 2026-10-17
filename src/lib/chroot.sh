@@ -401,15 +401,77 @@ chroot_basic_repair() (
 )
 
 chroot_systemd_verify() {
-    chroot_systemd_exec "$1" -- /bin/bash -lc '
-state=$(timeout --kill-after=2 60 systemctl is-system-running --wait 2>/dev/null || true)
-printf "systemd: %s\n" "$state"
-case "$state" in running|degraded) :;; *) systemctl --failed --no-pager; exit 1;; esac
-for unit in basic.target dbus.service systemd-journald.service; do
-    systemctl is-active --quiet "$unit" || { systemctl status "$unit" --no-pager; exit 1; }
+    chroot_systemd_exec "$1" -- /bin/bash -lc "$(chroot_systemd_verify_script)"
+}
+
+chroot_systemd_verify_script() {
+    cat <<'SYSTEMD_VERIFY'
+set -uo pipefail
+export SYSTEMD_PAGER=cat SYSTEMD_COLORS=0
+for tool in timeout systemctl date mktemp; do
+    command -v "$tool" >/dev/null 2>&1 || { printf 'systemd 验证缺少命令：%s\n' "$tool" >&2; exit 1; }
 done
-if [ "$state" = degraded ]; then systemctl --failed --no-pager; printf "systemd 可操作且基础单元正常，但存在其他失败单元；未标记为 running。\n" >&2; fi
-'
+errors=$(mktemp /run/xtmoe-systemd-verify.XXXXXX) || exit 1
+trap 'rm -f -- "$errors"' EXIT
+started=$(date +%s)
+deadline=$((started + 120))
+state=unknown
+result=0
+verify_run() {
+    local seconds=$1 remaining
+    shift
+    remaining=$((deadline - $(date +%s)))
+    ((remaining > 0)) || return 124
+    ((seconds <= remaining)) || seconds=$remaining
+    timeout --kill-after=2 "$seconds" "$@"
+}
+diagnose() {
+    printf 'systemd 验证未通过：state=%s，probe_exit=%s\n' "${state:-无响应}" "$result" >&2
+    if [ -s "$errors" ]; then cat "$errors" >&2; fi
+    printf '%s\n' '--- 未完成的启动任务（不一定属于 failed 单元）---' >&2
+    timeout --kill-after=2 5 systemctl list-jobs --no-pager >&2 || true
+    printf '%s\n' '--- failed units ---' >&2
+    timeout --kill-after=2 5 systemctl --failed --no-pager >&2 || true
+    printf '%s\n' '--- 基础服务状态 ---' >&2
+    timeout --kill-after=2 5 systemctl status basic.target dbus.service systemd-journald.service --no-pager >&2 || true
+    printf '%s\n' '--- 最近 systemd journal ---' >&2
+    timeout --kill-after=2 5 journalctl -b -n 40 --no-pager >&2 || true
+}
+while true; do
+    result=0
+    state=$(verify_run 8 systemctl is-system-running 2>"$errors") || result=$?
+    printf 'systemd: %s（探测退出码 %s，%s/120 秒）\n' "${state:-无响应}" "$result" "$(( $(date +%s) - started ))"
+    case "$state:$result" in
+        running:0|degraded:1) break ;;
+        initializing:1|starting:1) : ;;
+        :124|:137) printf 'systemctl 单次探测超时，仍在总等待时限内重试。\n' >&2 ;;
+        *)
+            printf 'systemctl 未返回可接受的状态；保留错误，不把空输出当成成功。\n' >&2
+            diagnose; exit 1
+            ;;
+    esac
+    remaining=$((deadline - $(date +%s)))
+    if ((remaining <= 0)); then
+        printf 'systemd 在 120 秒内未完成启动；保留容器，请先查看下列待完成任务。\n' >&2
+        diagnose; exit 1
+    fi
+    if [ -s "$errors" ]; then cat "$errors" >&2; fi
+    pause=5; ((pause <= remaining)) || pause=$remaining
+    sleep "$pause"
+done
+for unit in basic.target dbus.service systemd-journald.service; do
+    result=0
+    verify_run 8 systemctl is-active --quiet "$unit" 2>"$errors" || result=$?
+    if ((result != 0)); then
+        printf '基础单元未就绪：%s\n' "$unit" >&2
+        diagnose; exit 1
+    fi
+done
+if [ "$state" = degraded ]; then
+    timeout --kill-after=2 5 systemctl --failed --no-pager || true
+    printf 'systemd 可操作且基础单元正常，但存在其他失败单元；未标记为 running。\n' >&2
+fi
+SYSTEMD_VERIFY
 }
 chroot_login() {
     require_arg_range 0 1 "$#" 'xtmoe chroot login [名称]'

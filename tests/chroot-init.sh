@@ -98,6 +98,10 @@ assert_ok 'Chroot DNS failure prevents APT and strict source failure propagates'
 assert_ok 'Chroot systemd verification accepts running and qualified degraded, not critical failures' bash -c '
     source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
     SYSTEMD_FIXTURE_STATE=running; SYSTEMD_FIXTURE_BAD_UNIT=""; export SYSTEMD_FIXTURE_STATE SYSTEMD_FIXTURE_BAD_UNIT
+    SYSTEMD_FIXTURE_TMP="$2/systemd-basic"; SYSTEMD_FIXTURE_TIME=0; export SYSTEMD_FIXTURE_TMP SYSTEMD_FIXTURE_TIME
+    mktemp() { command mktemp "$SYSTEMD_FIXTURE_TMP.XXXXXX"; }
+    date() { printf "%s\n" "$SYSTEMD_FIXTURE_TIME"; }
+    sleep() { SYSTEMD_FIXTURE_TIME=$((SYSTEMD_FIXTURE_TIME + $1)); }
     systemctl() {
         case "$1" in
             is-system-running) printf "%s\n" "$SYSTEMD_FIXTURE_STATE"; [[ $SYSTEMD_FIXTURE_STATE == running ]];;
@@ -105,7 +109,8 @@ assert_ok 'Chroot systemd verification accepts running and qualified degraded, n
             --failed) return 0;; status) return 1;; *) return 1;;
         esac
     }
-    timeout() { shift 2; "$@"; }; export -f systemctl timeout
+    journalctl() { printf "fixture journal\n"; }
+    timeout() { shift 2; "$@"; }; export -f systemctl timeout mktemp date sleep journalctl
     chroot_systemd_exec() { bash -c "$5"; }
     chroot_systemd_verify init-order || exit 1
     SYSTEMD_FIXTURE_STATE=degraded
@@ -114,7 +119,78 @@ assert_ok 'Chroot systemd verification accepts running and qualified degraded, n
     if chroot_systemd_verify init-order; then exit 1; fi
     SYSTEMD_FIXTURE_STATE=starting
     if chroot_systemd_verify init-order; then exit 1; fi
-' _ "$ROOT_DIR"
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+# Focused guest-side verifier scenarios: fake time avoids a 120-second real
+# wait, but execute the production generated script rather than copying it.
+systemd_verifier_fixture() (
+    source "$ROOT_DIR/src/lib/common.sh"
+    source "$ROOT_DIR/src/lib/chroot.sh"
+    SYSTEMD_VERIFY_SCENARIO=$1
+    SYSTEMD_VERIFY_FIXTURE="$TEST_TMP/systemd-$1"
+    SYSTEMD_VERIFY_TIME=0
+    export SYSTEMD_VERIFY_SCENARIO SYSTEMD_VERIFY_FIXTURE SYSTEMD_VERIFY_TIME
+    printf 0 >"$SYSTEMD_VERIFY_FIXTURE.probes"
+    mktemp() { command mktemp "$SYSTEMD_VERIFY_FIXTURE.XXXXXX"; }
+    date() { printf '%s\n' "$SYSTEMD_VERIFY_TIME"; }
+    sleep() { SYSTEMD_VERIFY_TIME=$((SYSTEMD_VERIFY_TIME + $1)); }
+    timeout() { shift 2; "$@"; }
+    journalctl() { printf 'fixture journal diagnostic\n'; }
+    systemctl() {
+        if [[ $1 == is-system-running ]]; then
+            # --wait is precisely what the regression must not reintroduce.
+            [[ $* != *--wait* ]] || return 9
+            local count
+            count=$(( $(<"$SYSTEMD_VERIFY_FIXTURE.probes") + 1 ))
+            printf '%s' "$count" >"$SYSTEMD_VERIFY_FIXTURE.probes"
+            case "$SYSTEMD_VERIFY_SCENARIO" in
+                ready-after-starting)
+                    if ((count == 1)); then printf 'starting\n'; return 1; fi
+                    printf 'running\n'; return 0 ;;
+                timeout-then-ready)
+                    if ((count == 1)); then printf 'fixture timeout detail\n' >&2; return 124; fi
+                    printf 'running\n'; return 0 ;;
+                pending-job) printf 'starting\n'; return 1 ;;
+                bus-error) printf 'Failed to connect to bus: Permission denied\n' >&2; return 1 ;;
+                empty-success) return 0 ;;
+                empty-timeout) return 124 ;;
+                missing-command) printf 'fixture exec failure\n' >&2; return 127 ;;
+            esac
+            return 9
+        fi
+        case "$1" in
+            is-active) return 0 ;;
+            list-jobs) printf 'fixture wait-online.service start running\n' ;;
+            --failed) printf '0 loaded units listed.\n' ;;
+            status) printf 'fixture basic services diagnostic\n' ;;
+            *) return 9 ;;
+        esac
+    }
+    export -f mktemp date sleep timeout systemctl journalctl
+    chroot_systemd_exec() { bash -c "$5"; }
+    result=0
+    chroot_systemd_verify fixture >"$SYSTEMD_VERIFY_FIXTURE.out" 2>"$SYSTEMD_VERIFY_FIXTURE.err" || result=$?
+    case "$SYSTEMD_VERIFY_SCENARIO" in
+        ready-after-starting)
+            [[ $result == 0 ]] && grep -q 'systemd: starting' "$SYSTEMD_VERIFY_FIXTURE.out" && grep -q 'systemd: running' "$SYSTEMD_VERIFY_FIXTURE.out" ;;
+        timeout-then-ready)
+            [[ $result == 0 && $(<"$SYSTEMD_VERIFY_FIXTURE.probes") == 2 ]] && grep -q 'fixture timeout detail' "$SYSTEMD_VERIFY_FIXTURE.err" ;;
+        pending-job|empty-timeout)
+            [[ $result == 1 && $(<"$SYSTEMD_VERIFY_FIXTURE.probes") -le 25 ]] && grep -q '120 秒内未完成启动' "$SYSTEMD_VERIFY_FIXTURE.err" && grep -q 'fixture wait-online.service' "$SYSTEMD_VERIFY_FIXTURE.err" && grep -q '0 loaded units' "$SYSTEMD_VERIFY_FIXTURE.err" ;;
+        bus-error)
+            [[ $result == 1 && $(<"$SYSTEMD_VERIFY_FIXTURE.probes") == 1 ]] && grep -q 'Failed to connect to bus: Permission denied' "$SYSTEMD_VERIFY_FIXTURE.err" ;;
+        empty-success|missing-command)
+            [[ $result == 1 && $(<"$SYSTEMD_VERIFY_FIXTURE.probes") == 1 ]] && grep -q 'systemd: 无响应' "$SYSTEMD_VERIFY_FIXTURE.out" ;;
+    esac
+)
+
+assert_ok 'Systemd verifier reports starting and polls to running without --wait' systemd_verifier_fixture ready-after-starting
+assert_ok 'Systemd verifier retries bounded probe timeout and retains stderr' systemd_verifier_fixture timeout-then-ready
+assert_ok 'Systemd verifier lists pending jobs even when failed units are empty' systemd_verifier_fixture pending-job
+assert_ok 'Systemd verifier preserves bus permission errors and stops immediately' systemd_verifier_fixture bus-error
+assert_ok 'Systemd verifier refuses empty output even with successful exit status' systemd_verifier_fixture empty-success
+assert_ok 'Systemd verifier bounds repeated empty timeouts instead of blank status' systemd_verifier_fixture empty-timeout
+assert_ok 'Systemd verifier distinguishes command execution failure' systemd_verifier_fixture missing-command
 
 assert_ok 'Chroot repair does not silently enable systemd on a basic-only installation' bash -c '
     source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
@@ -297,3 +373,71 @@ assert_ok 'Chroot guest path resolution follows alternatives and rejects escape 
     ln -s /usr "$fixture/absolute-directory"
     [[ $(rootfs_resolve_path "$fixture" /absolute-directory/sbin/iptables) == "$fixture/usr/sbin/xtables-nft-multi" ]]
 ' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Systemd launcher passes clean container identity before executing guest PID 1' bash -c '
+    source <(awk "/^\\[\\[ .*id -u/ {skip=1} /^valid_name\\(\\)/ {skip=0} /^ACTION=/ {exit} !skip {print}" "$1/src/lib/xtmoe-root")
+    fixture="$2/systemd-launch-fixture"; mkdir -p "$fixture/bin"
+    ROOTFS="$fixture/rootfs"; export SYSTEMD_LAUNCH_FIXTURE_LOG="$fixture/steps" SYSTEMD_LAUNCH_FIXTURE_ARGS="$fixture/args"
+    cat >"$fixture/bin/chroot" <<"MOCK_CHROOT"
+#!/usr/bin/env bash
+printf "%s\n" "$@" >"$SYSTEMD_LAUNCH_FIXTURE_ARGS"
+printf "exec\n" >>"$SYSTEMD_LAUNCH_FIXTURE_LOG"
+MOCK_CHROOT
+    chmod +x "$fixture/bin/chroot"; export PATH="$fixture/bin:$PATH"
+    readlink() { if [[ $1 == /proc/self/ns/mnt ]]; then printf private-mnt; else printf host-mnt; fi; }
+    mount() { printf "isolate\n" >>"$SYSTEMD_LAUNCH_FIXTURE_LOG"; }
+    mount_all() { [[ $2 == 0 ]] || exit 9; printf "mounts\n" >>"$SYSTEMD_LAUNCH_FIXTURE_LOG"; }
+    ensure_cgroup_mount() { printf "cgroup\n" >>"$SYSTEMD_LAUNCH_FIXTURE_LOG"; }
+    systemd_protect_kernel_views() { printf "protect\n" >>"$SYSTEMD_LAUNCH_FIXTURE_LOG"; }
+    (systemd_namespace_launch fixture.binds) || exit 1
+    [[ $(tr "\n" " " <"$SYSTEMD_LAUNCH_FIXTURE_LOG") == "isolate mounts cgroup protect exec " ]] || exit 1
+    grep -qx container=xtmoe "$SYSTEMD_LAUNCH_FIXTURE_ARGS" && grep -qx /usr/bin/env "$SYSTEMD_LAUNCH_FIXTURE_ARGS" && grep -qx -- -i "$SYSTEMD_LAUNCH_FIXTURE_ARGS" && grep -q /run/host/container-manager "$SYSTEMD_LAUNCH_FIXTURE_ARGS"
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Systemd launcher refuses the host mount namespace before any mount' bash -c '
+    source <(awk "/^\\[\\[ .*id -u/ {skip=1} /^valid_name\\(\\)/ {skip=0} /^ACTION=/ {exit} !skip {print}" "$1/src/lib/xtmoe-root")
+    readlink() { printf same-mnt; }
+    mount() { printf forbidden >"$2"; }
+    if (systemd_namespace_launch); then exit 1; fi
+' _ "$ROOT_DIR"
+
+assert_ok 'Systemd sysfs protection remounts only guest non-cgroup views read-only' bash -c '
+    source <(awk "/^\\[\\[ .*id -u/ {skip=1} /^valid_name\\(\\)/ {skip=0} /^ACTION=/ {exit} !skip {print}" "$1/src/lib/xtmoe-root")
+    ROOTFS="$2/systemd sysfs/rootfs"
+    mkdir -p "$ROOTFS/sys/fs/selinux" "$ROOTFS/sys/fs/cgroup" "$ROOTFS/selinux"
+    SYSTEMD_MOUNT_TEST_LOG="$2/sysfs-remounts"
+    awk() {
+        if [[ ${1:-} == -v && ${2:-} == p=* ]]; then
+            for target in "$ROOTFS/sys" "$ROOTFS/sys/fs/selinux" "$ROOTFS/sys/fs/cgroup" "$ROOTFS/sys/fs/cgroup/pids"; do mount_path_encode "$target"; printf "\n"; done
+        else command awk "$@"; fi
+    }
+    mount() { printf "%s\n" "$*" >>"$SYSTEMD_MOUNT_TEST_LOG"; }
+    systemd_protect_kernel_views || exit 1
+    grep -Fxq -- "-o remount,bind,ro -- $ROOTFS/sys/fs/selinux" "$SYSTEMD_MOUNT_TEST_LOG" && grep -Fxq -- "-o remount,bind,ro -- $ROOTFS/sys" "$SYSTEMD_MOUNT_TEST_LOG" && grep -Fxq -- "-o remount,bind,ro -- $ROOTFS/selinux" "$SYSTEMD_MOUNT_TEST_LOG" || exit 1
+    ! grep -q /fs/cgroup "$SYSTEMD_MOUNT_TEST_LOG" && ! grep -Fxq -- "-o remount,bind,ro -- /sys" "$SYSTEMD_MOUNT_TEST_LOG"
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Systemd sysfs protection fails closed when a read-only remount is denied' bash -c '
+    source <(awk "/^\\[\\[ .*id -u/ {skip=1} /^valid_name\\(\\)/ {skip=0} /^ACTION=/ {exit} !skip {print}" "$1/src/lib/xtmoe-root")
+    ROOTFS="$2/systemd-ro-fail/rootfs"; mkdir -p "$ROOTFS/sys"
+    awk() { if [[ ${1:-} == -v ]]; then mount_path_encode "$ROOTFS/sys"; printf "\n"; else command awk "$@"; fi; }
+    mount() { return 1; }
+    if (systemd_protect_kernel_views); then exit 1; fi
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Systemd guest bootstrap refuses proc mount failure and never loads policy' bash -c '
+    source <(awk "/^\\[\\[ .*id -u/ {skip=1} /^valid_name\\(\\)/ {skip=0} /^ACTION=/ {exit} !skip {print}" "$1/src/lib/xtmoe-root")
+    script=$(systemd_guest_init_script)
+    bash -n -c "$script" || exit 1
+    [[ $script == *"mount -t proc proc /proc ||"* && $script == *"container:-"* && $script == *"exec /sbin/init"* ]] || exit 1
+    if grep -Eq "setenforce|load_policy|SELINUX=disabled|mount -t selinuxfs" <<<"$script"; then exit 1; fi
+    mount() { return 1; }; export -f mount
+    if bash -c "$script"; then exit 1; fi
+' _ "$ROOT_DIR"
+
+assert_ok 'Root dispatch falls back to su when tsu Shell invocation fails' bash -c '
+    source "$1/src/lib/common.sh"
+    tsu() { printf "unknown option\n" >&2; return 2; }
+    su() { [[ $1 == -c ]] || return 9; if [[ $2 == "id -u" ]]; then printf "0\n"; else bash -c "$2"; fi; }
+    [[ $(run_root printf "%s" "argument with spaces") == "argument with spaces" ]]
+' _ "$ROOT_DIR"

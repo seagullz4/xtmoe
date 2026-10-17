@@ -218,6 +218,41 @@ xtmoe chroot systemd-status ubuntu
 
 若 `systemd-check` 报缺失，说明 Android 内核条件不满足；切换 Shell 不能修复 cgroup、PID namespace 或 systemd 缺失。
 
+## systemd-verify 显示空状态或一直等待
+
+旧版验证使用 `timeout 60 systemctl is-system-running --wait`，同时丢弃标准错误和退出码。`--wait` 在开机任务完成之前可能不输出状态，超时或命令失败就会留下空白的 `systemd:`。空白不是有效的 manager 状态，不能据此判断 systemd 已损坏或已经 running。
+
+新验证改成不带 `--wait` 的有界轮询，总等待最多 120 秒，输出状态和退出码，失败时保留原始错误并列出待完成任务和 journal。进程与 manager socket 就绪只表示可以尝试管理服务，不保证开机任务全部完成。
+
+不需要重装。先在普通 Termux 中对实际容器执行这些只读命令（示例名称 `ubuntu`）：
+
+```sh
+xtmoe chroot systemd-exec ubuntu -- timeout --kill-after=2 10 systemctl is-system-running
+xtmoe chroot systemd-exec ubuntu -- timeout --kill-after=2 10 systemctl list-jobs --no-pager
+xtmoe chroot systemd-exec ubuntu -- timeout --kill-after=2 10 systemctl --failed --no-pager
+xtmoe chroot systemd-exec ubuntu -- timeout --kill-after=2 10 journalctl -b -n 60 --no-pager
+```
+
+`--failed` 显示 `0 loaded units listed` 并不排除 `starting`：还在运行的启动任务尚未失败。根据 `list-jobs`/journal 排查具体任务；不要未经判断就禁用 wait-online、udev 或其他系统服务。若显示 `Failed to connect to bus`，按原始错误检查 namespace、socket 或权限；若状态查询本身超时，先诊断 manager 响应，不继续 Docker 安装。确认外部条件解决、已安装修正版命令后，再执行 `xtmoe chroot repair ubuntu`。
+
+## systemd 启动日志出现 SELinux policy 缺失
+
+例如 `Could not open policy file <= /etc/selinux/targeted/policy/policy.33`。这说明启动过程中发生了发行版 SELinux policy 加载尝试，但单行日志不等同于已确认的退出原因；不要据此安装 `selinux-policy-*`、执行 `load_policy`，也不要为了 Chroot 修改宿主 enforcing 状态。
+
+启动器需要明确设置容器 PID 1 的 `container=xtmoe` 并保护容器视图中的 sysfs/SELinux 接口。systemd 的容器路径与宿主启动路径不同，缺少标识会使环境探测依赖回退启发式，可能走错宿主级初始化逻辑。新版已显式设置标识并要求只读保护成功，仍需在真实设备确认 PID 存活、systemd 状态和宿主模式未改变，不能只用离线测试宣称成功。
+
+若 `systemd-exec` 已报告进程退出，先读宿主侧日志，不能依赖已退出的 manager 运行 journalctl。若 `tsu -c` 报 `/system/bin/sh ... unknown option`，说明该次提权命令尚未执行目标操作；可先检查 `su -c 'id'`，确认 Root 后使用绝对命令路径：
+
+```sh
+su -c '/data/data/com.termux/files/usr/bin/tail -n 160 /data/data/com.termux/files/home/.local/share/xtmoe/chroot/ubuntu/.xtmoe-systemd.log'
+su -c '/system/bin/getenforce'
+su -c '/system/bin/dmesg' | grep -iE 'avc:.*denied|systemd|unshare|killed process|out of memory|oom' | tail -n 80
+```
+
+替换示例中的实际容器名称。管道无输出只表示没有匹配行，不足以排除所有错误。`Permissive` 只说明当前宿主模式；没有启动前读数时，不能断定是 XTMOE、Root 模块或原始系统设置造成，也不要在不了解设备依赖时盲目切换为 Enforcing。修复代码不会自动恢复或改变未知的历史安全设置。
+
+`exec /sbin/init --unit=multi-user.target` 不是 Termux 修复命令，只应由容器启动器在正确的 namespace、rootfs 和环境中执行；在 Termux 报文件不存在不代表 Ubuntu 缺少 systemd。
+
 ## Docker 检查报告缺少 iptables
 
 先区分软件包缺失、alternatives 多层绝对链接被旧版误判，以及内核 NAT/权限受限。不要直接清空宿主规则、切换 legacy/nft 后端或关闭 iptables。升级已安装命令后，已有容器可以执行：

@@ -123,11 +123,23 @@ xtmoe chroot systemd-status ubuntu
 xtmoe chroot systemd-login ubuntu
 ```
 
+上述命令均在普通 Termux 中执行。`/sbin/init` 是容器内的路径，不要把文档或日志里出现的 `exec /sbin/init ...` 复制到 Termux 宿主运行。
+
+启动器按 [systemd 容器接口](https://systemd.io/CONTAINER_INTERFACE/) 清理继承环境并向容器 PID 1 传入 `container=xtmoe`，同时写入容器自己的 `/run/host/container-manager`。容器 `/proc` 必须在新 PID namespace 内成功挂载，失败则停止，不静默沿用 Android 的 procfs。
+
+在私有 mount namespace 中，容器 `/sys` 及其非 cgroup 子挂载（含 SELinux 接口）执行只读 bind remount，cgroup 挂载单独保留；保护失败则拒绝继续启动。这里不执行宿主 `setenforce`，不加载 policy，不通过修改 Ubuntu SELinux 配置来关闭宿主 SELinux。该保护不是安全沙箱或完整内核隔离承诺：Chroot 仍共享内核和高权限，标准 Docker bridge 仍可能改变已明确同意的宿主网络设置。
+
+`.xtmoe-systemd.log` 按启动次数追加记录，每次有时间、namespace 与宿主 SELinux enforce 读数；不会因为重试覆盖上一轮日志。若看见 `SELinux: Could not open policy file ...`，先查看 [SELinux 与提权排障](TROUBLESHOOTING.md#systemd-启动日志出现-selinux-policy-缺失)，不要安装其他发行版 policy 或改变宿主安全模式。
+
 在 systemd 会话中可以直接使用 `systemctl`、`journalctl` 等命令。结束时执行：
 
 ```sh
 xtmoe chroot systemd-stop ubuntu
 ```
+
+“已启动并就绪”表示嵌套 PID 与 manager socket 就绪，并不等于全部开机任务完成。完整初始化的 `systemd-verify` 会在最多 120 秒内轮询 `systemctl is-system-running`，逐次显示 `starting`/`initializing` 等真实状态，每次查询也有单独超时。只有 `running`，或基础单元正常的 `degraded` 才能继续；不会把空输出或超时当作成功。
+
+验证失败时显示探测退出码、原始错误、`list-jobs`、failed units、基础服务和最近 journal。`0 loaded units listed` 若来自 `--failed`，只说明没有已失败单元；仍可能有未完成的启动任务。先检查任务和日志，不要重装、批量屏蔽服务或将 `starting` 伪报成 `running`，详见 [systemd 验证排障](TROUBLESHOOTING.md#systemd-verify-显示空状态或一直等待)。
 
 嵌套 systemd 不等于 Android 原生启动服务，也不会绕过缺少 pids cgroup 等内核限制。只要 `systemd-check` 出现 `[缺失]`，就不应继续安装 Docker 或 1Panel。
 

@@ -13,6 +13,8 @@ bash tests/run.sh
 - PRoot 安装、执行、状态、系统更新、重装、名称校验和删除确认；
 - Chroot 阶段元数据、Docker 网络确认、严格能力门控、绑定配置和路径校验；
 - `tests/chroot-init.sh` 覆盖新安装预检、init/repair 阶段顺序与幂等续跑、偏好保留、失败阻断、锁冲突、重装预检保留数据、Docker 依赖顺序/错误分类、APT 服务策略恢复、NSS 修复和 alternatives 链接；不执行真实包安装或挂载；
+- systemd 验证使用生产生成脚本与模拟时钟，覆盖 starting 转 running、探测超时重试、没有 failed 单元但存在待完成任务、D-Bus 权限错误、空输出、总等待超时和命令执行失败；不再用始终直接返回 running 的夹具代替启动阶段验证；
+- systemd 启动适配覆盖清理环境后传入容器身份、拒绝宿主 mount namespace、只读保护非 cgroup sysfs 子挂载、保护失败中止、procfs 挂载失败阻断，以及 tsu 失败后 su 回退；真实挂载与宿主 SELinux 模式保持不变另由 Android 冒烟测试验收；
 - QEMU 架构、配置、端口、向导、Cloud Image 与生命周期参数校验；
 - `tests/audit.sh` 由主测试载入，集中覆盖菜单失败中止、配置/端口注入拒绝、归档预检、Docker 部分失败与重装保留旧盘等失败路径；
 - QEMU 离线回归覆盖启动返回成功但进程未就绪、PID 无末尾换行、磁盘字段重排、PID 复用/权限受限、跟踪文件保护、SSH 与 cloud-init 阶段区分、认证失败快速退出、进程中途退出和初始化超时保留磁盘；使用进程参数夹具、模拟 SSH 与时钟，不启动真实 VM、不访问网络；
