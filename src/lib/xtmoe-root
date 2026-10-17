@@ -679,6 +679,7 @@ direct_docker_start() {
     mkdir -p "$(dirname -- "$DIRECT_DOCKER_LOG_FILE")"
     rm -f -- "$DIRECT_DOCKER_PID_FILE" "$DIRECT_DOCKER_LAUNCHER_PID_FILE"
     helper_path=$(realpath -m -- "${BASH_SOURCE[0]}")
+    ok '正在启动 direct dockerd（等待进程，最长约 5 秒）'
     nohup unshare --mount --fork \
         "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" \
         _docker-direct-launch "$BASE" "$CONTAINER_NAME" "$config" \
@@ -696,6 +697,7 @@ direct_docker_start() {
         die "无法定位直接启动的 dockerd；查看 $DIRECT_DOCKER_LOG_FILE"
     fi
     printf '%s\n' "$target_pid" >"$DIRECT_DOCKER_PID_FILE"
+    ok 'dockerd 进程已找到；正在等待 Docker socket（最长约 15 秒）'
     for ((attempt = 0; attempt < 150; attempt++)); do
         [[ -S /proc/$target_pid/root/var/run/docker.sock ]] && break
         process_alive "$target_pid" || break
@@ -705,8 +707,9 @@ direct_docker_start() {
     if [[ ! -S /proc/$target_pid/root/var/run/docker.sock ]]; then
         die "dockerd 未在 15 秒内创建 socket；查看 $DIRECT_DOCKER_LOG_FILE"
     fi
-    if ! direct_docker_exec /usr/bin/docker info >/dev/null 2>&1; then
-        die "dockerd 已创建 socket 但 API 不可用；查看 $DIRECT_DOCKER_LOG_FILE"
+    ok 'Docker socket 已创建；正在验证 docker info（最长约 15 秒）'
+    if ! direct_docker_exec /usr/bin/timeout 15 /usr/bin/docker info >/dev/null 2>&1; then
+        die "dockerd API 在 15 秒内不可用；查看 $DIRECT_DOCKER_LOG_FILE"
     fi
     ok "直接 dockerd 已启动并可响应（宿主 PID $target_pid）"
 }
@@ -726,7 +729,7 @@ direct_docker_status() {
     local pid
     pid=$(direct_docker_target_pid)
     printf 'direct running pid=%s\n' "$pid"
-    direct_docker_exec /usr/bin/docker info
+    direct_docker_exec /usr/bin/timeout 15 /usr/bin/docker info
 }
 
 direct_docker_stop() {
@@ -765,7 +768,7 @@ docker_state() {
         return 0
     fi
     if direct_docker_running; then
-        if direct_docker_exec /usr/bin/docker info >/dev/null 2>&1; then
+        if direct_docker_exec /usr/bin/timeout 15 /usr/bin/docker info >/dev/null 2>&1; then
             printf 'direct-ready\n'
         else
             printf 'direct-unresponsive\n'

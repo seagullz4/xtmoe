@@ -193,6 +193,8 @@ xtmoe chroot docker-direct-stop ubuntu
 
 `docker-direct-status` 等价验证 `docker info`，只说明 daemon API 可用；`docker-direct-run-test` 运行 `docker run --rm hello-world`，才验证 containerd、runc、namespace、挂载和实际容器链路。若前者成功而后者失败，应报告为“daemon 可用、容器运行未验证/失败”，不能据此宣称 Docker 或 1Panel 完全可用。direct 模式与嵌套 systemd 模式不能并存；`chroot stop` 会停止任一种已受 XTMOE 管理的 daemon。
 
+direct 启动会显示三个阶段：寻找 daemon 进程（最长约 5 秒）、等待 Docker socket（最长约 15 秒）、带 15 秒超时的 `docker info` 验证。任何阶段失败都会停止等待并提示查看 `docker-direct-logs`，不会无期限卡住。
+
 每次登录会受控挂载 rootfs 自身、`/proc`、`/sys`、`/dev` 和 `/run`。Shell 正常退出后会尝试卸载；如果容器中留下后台进程，卸载可能失败。
 
 交互登录通过 Termux `util-linux` 提供的 `script` 创建独立伪终端。Ctrl+C 只中断容器内当前前台命令并返回提示符，不会退出容器；使用 `exit` 或 Ctrl+D 才结束登录。`xtmoe chroot exec` 保持非交互模式，不分配伪终端。

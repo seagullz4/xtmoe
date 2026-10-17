@@ -303,7 +303,7 @@ assert_contains 'Docker gate checks network namespace creation' 'namespace_check
 assert_contains 'Docker gate requires pids controller' 'pids cgroup controller' "$ROOT_HELPER"
 assert_contains 'Systemd stop orders Docker shutdown first' 'systemctl stop docker.service containerd.service' "$ROOT_HELPER"
 assert_contains 'Direct Docker launch uses explicit iptables mode' '--iptables=true --host=unix:///var/run/docker.sock' "$ROOT_HELPER"
-assert_contains 'Direct Docker verifies daemon API before success' 'direct_docker_exec /usr/bin/docker info' "$ROOT_HELPER"
+assert_contains 'Direct Docker bounds daemon API verification' 'direct_docker_exec /usr/bin/timeout 15 /usr/bin/docker info' "$ROOT_HELPER"
 assert_contains 'Direct Docker run test verifies a real container' 'docker run --rm hello-world' "$ROOT_HELPER"
 
 rootfs_fixture_lifecycle() {
