@@ -121,14 +121,16 @@ apply_bind_config() {
 }
 
 mount_all() {
-    local config=${1:-}
+    local config=${1:-} mount_proc=${2:-1}
     rootfs_has_shell "$ROOTFS" || die "无效 rootfs：$ROOTFS（缺少可执行的 /bin/sh）"
     mkdir -p "$ROOTFS"/{dev,proc,sys,run,tmp}
     if ! is_mounted "$ROOTFS"; then
         mount --bind "$ROOTFS" "$ROOTFS"
         mount --make-private "$ROOTFS" 2>/dev/null || true
     fi
-    is_mounted "$ROOTFS/proc" || mount -t proc proc "$ROOTFS/proc"
+    if [[ $mount_proc == 1 ]]; then
+        is_mounted "$ROOTFS/proc" || mount -t proc proc "$ROOTFS/proc"
+    fi
     if ! is_mounted "$ROOTFS/sys"; then
         mount --rbind /sys "$ROOTFS/sys"
         mount --make-rslave "$ROOTFS/sys" 2>/dev/null || mount --make-private "$ROOTFS/sys" 2>/dev/null || true
@@ -187,7 +189,7 @@ process_alive() {
 }
 
 find_child_pid() {
-    local parent=$1 proc ppid child actual_root expected_root
+    local parent=$1 proc ppid child comm actual_root expected_root
     expected_root=$(realpath -m "$ROOTFS")
     for proc in /proc/[0-9]*; do
         [[ -r $proc/status ]] || continue
@@ -196,6 +198,8 @@ find_child_pid() {
         child=${proc##*/}
         actual_root=$(realpath -m "/proc/$child/root")
         [[ $actual_root == "$expected_root" ]] || continue
+        comm=$(cat "/proc/$child/comm" 2>/dev/null || true)
+        [[ $comm == systemd || $comm == init ]] || continue
         printf '%s\n' "$child"
         return 0
     done
@@ -203,25 +207,29 @@ find_child_pid() {
 }
 
 systemd_running() {
-    local pid actual_root expected_root
+    local pid comm actual_root expected_root
     systemd_pid_files
     [[ -r $PID_FILE ]] || return 1
     IFS= read -r pid <"$PID_FILE"
     process_alive "$pid" || return 1
     actual_root=$(realpath -m "/proc/$pid/root")
     expected_root=$(realpath -m "$ROOTFS")
-    [[ $actual_root == "$expected_root" ]]
+    [[ $actual_root == "$expected_root" ]] || return 1
+    comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
+    [[ $comm == systemd || $comm == init ]]
 }
 
 systemd_target_pid() {
-    local pid actual_root expected_root
+    local pid comm actual_root expected_root
     systemd_pid_files
     [[ -r $PID_FILE ]] || die '嵌套 systemd 未启动'
     IFS= read -r pid <"$PID_FILE"
     process_alive "$pid" || die '嵌套 systemd 进程已退出'
     actual_root=$(realpath -m "/proc/$pid/root")
     expected_root=$(realpath -m "$ROOTFS")
-    [[ $actual_root == "$expected_root" ]] || die 'systemd PID 与当前容器不匹配'
+    [[ $actual_root == "$expected_root" ]] || die
+    comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
+    [[ $comm == systemd || $comm == init ]] || die "systemd PID 进程类型不匹配：$comm" 'systemd PID 与当前容器不匹配'
     printf '%s\n' "$pid"
 }
 
@@ -291,7 +299,7 @@ systemd_start() {
     if is_mounted "$ROOTFS"; then
         mounted_here=0
     else
-        mount_all "$config"
+        mount_all "$config" 0
         mounted_here=1
     fi
     rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
@@ -301,8 +309,9 @@ systemd_start() {
             namespace_args=("${candidate_args[@]}")
         fi
     done
-    nohup unshare "${namespace_args[@]}" --fork --mount-proc \
-        chroot "$ROOTFS" /sbin/init --unit=multi-user.target \
+    nohup unshare "${namespace_args[@]}" --fork \
+        chroot "$ROOTFS" /bin/bash -c \
+        'mount -t proc proc /proc 2>/dev/null || true; exec /sbin/init --unit=multi-user.target' \
         >"$SYSTEMD_LOG_FILE" 2>&1 &
     launcher_pid=$!
     printf '%s\n' "$launcher_pid" >"$LAUNCHER_PID_FILE"
@@ -318,8 +327,8 @@ systemd_start() {
         die "无法定位嵌套 systemd 进程；查看 $SYSTEMD_LOG_FILE"
     fi
     printf '%s\n' "$target_pid" >"$PID_FILE"
-    for ((attempt = 0; attempt < 50; attempt++)); do
-        [[ -S $ROOTFS/run/systemd/private ]] && break
+    for ((attempt = 0; attempt < 300; attempt++)); do
+        [[ -S $ROOTFS/run/systemd/private && -d $ROOTFS/run/systemd/system ]] && break
         process_alive "$target_pid" || break
         sleep 0.1
     done
@@ -328,15 +337,28 @@ systemd_start() {
         ((mounted_here)) && unmount_all "$ROOTFS" || true
         die "systemd 已退出；查看 $SYSTEMD_LOG_FILE"
     fi
-    [[ -S $ROOTFS/run/systemd/private ]] || warn 'systemd 已启动，但 D-Bus/private socket 尚未就绪'
-    ok "嵌套 systemd 已启动（宿主 PID $target_pid）"
+    if [[ ! -S $ROOTFS/run/systemd/private || ! -d $ROOTFS/run/systemd/system ]]; then
+        kill -TERM "$target_pid" 2>/dev/null || true
+        kill -TERM "$launcher_pid" 2>/dev/null || true
+        sleep 1
+        process_alive "$target_pid" && kill -KILL "$target_pid" 2>/dev/null || true
+        rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
+        ((mounted_here)) && unmount_all "$ROOTFS" || true
+        die "systemd manager 未就绪；查看 $SYSTEMD_LOG_FILE"
+    fi
+    ok "嵌套 systemd 已启动并就绪（宿主 PID $target_pid）"
 }
 
 systemd_exec() {
     local pid
+    local -a nsenter_args
     (($#)) || die '缺少要在 systemd 容器内执行的命令'
     pid=$(systemd_target_pid)
-    nsenter --target "$pid" --pid --mount -- \
+    nsenter_args=(--target "$pid" --pid --mount --ipc --uts)
+    if nsenter --help 2>&1 | grep -q -- '--cgroup'; then
+        nsenter_args+=(--cgroup)
+    fi
+    nsenter "${nsenter_args[@]}" -- \
         chroot "$ROOTFS" /usr/bin/env -i \
         HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
