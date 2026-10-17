@@ -263,7 +263,7 @@ xtmoe chroot docker-check ubuntu
 xtmoe chroot docker-install ubuntu
 ```
 
-第一步补齐网络、基础包、systemd 及 iptables；第三步仍需单独接受 Docker bridge 风险。新版安装先做内核预检和用户态准备，再实测临时 namespace 中的 addrtype/NAT/bridge 操作；当前后端不兼容而 legacy 通过时，备份 alternatives 后选择 legacy。检查命令本身不切换后端。最后才添加 Docker 源。缺包/APT/服务异常返回 `1`，内核/Root 权限失败返回 `2`，不能混报。
+第一步补齐网络、基础包、systemd 及 iptables；第三步会显示 Docker bridge 风险并默认执行。新版安装先做内核预检和用户态准备，再实测临时 namespace 中的 addrtype/NAT/bridge 操作；当前后端不兼容而 legacy 通过时，备份 alternatives 后选择 legacy。检查命令本身不切换后端。最后才添加 Docker 源。缺包/APT/服务异常返回 `1`，内核/Root 权限失败返回 `2`，不能混报。
 
 如果 NAT 查询失败，保留检查的原始错误；可能是后端不受支持、内核模块或权限受限。安装 iptables 软件包不能保证内核 netfilter 可用，只有 daemon 和真实容器测试通过才算 Docker 完全可用。
 

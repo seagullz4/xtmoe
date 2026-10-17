@@ -65,11 +65,11 @@ assert_ok 'Chroot systemd verification failure prevents Docker and records exact
     [[ ! -e $INIT_TEST_LOG && $(chroot_meta_get init-systemd failed_stage) == systemd-verify ]]
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
-assert_fail 'Chroot init refuses unattended Docker consent before changing configuration' bash -c '
+assert_ok 'Chroot init accepts default network preparation without reading stdin' bash -c '
     source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
     mkdir -p "$(chroot_base)/init-consent"; touch "$(chroot_base)/init-consent/.xtmoe-chroot"
-    chroot_bootstrap() { exit 0; }
-    chroot_init init-consent
+    chroot_bootstrap() { [[ $* == *--accept-host-network-changes* ]]; }
+    chroot_init init-consent </dev/null
 ' _ "$ROOT_DIR"
 
 assert_ok 'Chroot init declining bridge changes still allows Ubuntu/systemd initialization' bash -c '
@@ -353,7 +353,7 @@ assert_ok 'Chroot gate classifies software failure separately and probes NAT onl
     rootfs_has_executable() { return 0; }
     timeout() { printf "%s\n" "$*" >>"$GATE_TEST_LOG"; printf "fixture-version\n"; }
     docker_gate || exit 1
-    grep -q -- "20 unshare --net chroot /fixture /bin/bash -c" "$GATE_TEST_LOG" && grep -q -- "-m addrtype --dst-type LOCAL" "$GATE_TEST_LOG" || exit 1
+    grep -q -- "20 unshare --net chroot /fixture /usr/bin/env -i" "$GATE_TEST_LOG" && grep -q -- "-m addrtype --dst-type LOCAL" "$GATE_TEST_LOG" || exit 1
     timeout() { [[ $* != *" unshare "* ]]; }
     result=0; docker_gate || result=$?
     [[ $result == 2 ]]

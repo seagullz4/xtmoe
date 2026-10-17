@@ -20,7 +20,7 @@ Docker 管理先选择 Chroot 容器，再显示带目标名称的页面：
 
 操作后停留在当前分类，`0` 或回车返回上一级；取消容器选择不执行操作，不沿用旧目标。输入关闭时安全退出菜单，不重复读取。重装/卸载放在数据分类并标注数据删除风险，公共命令仍要求原有确认，不因从向导进入而省略。
 
-菜单编号在本轮调整过，自动化应使用原来的直接命令，不应脚本化模拟菜单编号。菜单没有复制安装、挂载、删除和 Docker 逻辑，后端参数、安全检查和宿主网络风险确认保持不变。
+菜单编号在本轮调整过，自动化应使用原来的直接命令，不应脚本化模拟菜单编号。菜单没有复制安装、挂载、删除和 Docker 逻辑，后端参数和安全检查保持不变；Chroot 普通安装默认执行并显示宿主网络风险，重装/卸载仍要求确认。
 
 ## Chroot 一键初始化与续跑
 
@@ -96,7 +96,7 @@ xtmoe chroot docker-check ubuntu
 xtmoe chroot cgroup-check ubuntu
 ```
 
-检查没有 `[缺失]` 后，可以显式安装并确认标准 bridge 对 Android 宿主 iptables/IP forwarding 的影响：
+检查没有 `[缺失]` 后，可以执行安装（默认进行并显示标准 bridge 对 Android 宿主 iptables/IP forwarding 的影响）：
 
 ```sh
 xtmoe chroot docker-install ubuntu

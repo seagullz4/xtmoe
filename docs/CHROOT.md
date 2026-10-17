@@ -52,7 +52,7 @@ xtmoe chroot install ubuntu 24.04 ubuntu
 9. Docker 先做内核/权限检查，再补齐用户态依赖；在临时网络 namespace 中实际创建 addrtype/NAT、bridge/veth；当前后端不兼容且 legacy 实测通过时，备份 alternatives 后切换；同时探测目标数据文件系统的 OverlayFS 挂载；
 10. 启用 `containerd`/`docker`，并通过 `docker info` 和 `hello-world` 实际验收。
 
-创建确认和 Docker 宿主网络风险确认各自独立，`--yes` 不能代替后者。拒绝 Docker 风险仍可完成 Ubuntu/systemd。`--skip-systemd` 则仅准备基础 rootfs 与网络，同时跳过 Docker；后续可使用 `init` 补全。
+全新安装及 init/repair 默认执行，不再读取 y；安装前显示 Docker 对宿主网络的影响。不需要 Docker 使用 `--skip-docker`，原 `--yes` 和 `--accept-host-network-changes` 参数仍兼容。重装和卸载仍保留破坏性确认。`--skip-systemd` 则仅准备基础 rootfs 与网络，同时跳过 Docker；后续可使用 `init` 补全。
 
 阶段状态包括 `extracting`、`base-ready`、`network-ready`、`packages-ready`、`system-ready`、`docker-ready`、`ready` 和 `partial`。元数据还保存 `current_stage`、`last_completed_stage`、`failed_stage` 与 systemd/Bash/Docker 安装选择。网络、APT、systemd 或 Docker 中途失败时保留 rootfs，修复外部条件后继续：
 
@@ -60,7 +60,7 @@ xtmoe chroot install ubuntu 24.04 ubuntu
 xtmoe chroot repair ubuntu
 ```
 
-如果该容器期望安装 Docker，非交互修复还需要显式确认宿主网络变化：
+已有自动化命令仍可显式标记宿主网络范围（也可直接执行 repair）：
 
 ```sh
 xtmoe chroot repair --accept-host-network-changes ubuntu
@@ -76,7 +76,7 @@ xtmoe chroot repair --accept-host-network-changes ubuntu
 xtmoe chroot init ubuntu
 # 不安装 Docker，仍完整配置网络、Ubuntu 基础组件和 systemd：
 xtmoe chroot init --skip-docker ubuntu
-# 自动化完整配置；单独接受宿主网络风险：
+# 自动化完整配置；兼容原网络范围参数：
 xtmoe chroot init --accept-host-network-changes ubuntu
 # 不改变原 /bin/sh：
 xtmoe chroot init --skip-docker --skip-bash-sh ubuntu
@@ -171,7 +171,7 @@ xtmoe chroot use-bash-sh ubuntu
 xtmoe chroot docker-check ubuntu
 ```
 
-它实际尝试创建 mount、PID、network、IPC 和 UTS namespace，并检查 cgroup hierarchy、`pids`、v1 `devices`、OverlayFS、IPv4 转发、iptables 和嵌套 systemd。iptables 的绝对路径/alternatives 链接按容器根目录解析，不会错误解析到 Android 的 `/etc`。仅列出 NAT 表可能漏报不支持 addrtype/NAT 规则的内核，因此检查现在在独立临时网络 namespace 中真正创建并测试规则、bridge/veth，namespace 退出后全部消失。`docker-check` 不修改宿主规则，也不切换后端；安装在已接受网络风险后才会备份并选择实测可用的 legacy。两个后端都失败则停止，不能通过关闭 iptables 伪报可用。
+它实际尝试创建 mount、PID、network、IPC 和 UTS namespace，并检查 cgroup hierarchy、`pids`、v1 `devices`、OverlayFS、IPv4 转发、iptables 和嵌套 systemd。iptables 的绝对路径/alternatives 链接按容器根目录解析，不会错误解析到 Android 的 `/etc`。仅列出 NAT 表可能漏报不支持 addrtype/NAT 规则的内核，因此检查现在在独立临时网络 namespace 中真正创建并测试规则、bridge/veth，namespace 退出后全部消失。`docker-check` 不修改宿主规则，也不切换后端；安装会提前显示网络风险，再备份并选择实测可用的 legacy。两个后端都失败则停止，不能通过关闭 iptables 伪报可用。
 
 全新且无已有数据/daemon.json 时，会在目标数据文件系统创建临时 lower/upper/work 目录，并在私有 mount namespace 实测 OverlayFS。不能挂载时写入经典 VFS 配置，同时关闭 Docker 29 默认的 containerd snapshotter。VFS 较慢、占用更多空间；不会覆盖用户已有 JSON，也不会自动切换已有数据仓库，以免隐藏原镜像/容器。已有配置仍以实际容器运行验收为准。
 
@@ -189,7 +189,7 @@ xtmoe chroot systemd-exec ubuntu -- systemctl restart xtmoe-docker-routing.servi
 xtmoe chroot docker-install ubuntu
 ```
 
-Docker 标准 bridge 会影响 Android 宿主共享网络 namespace 中的 iptables 和 IP forwarding，交互安装必须确认。自动化使用：
+Docker 标准 bridge 会影响 Android 宿主共享网络 namespace 中的 iptables 和 IP forwarding，安装默认执行并提前提示；不希望修改网络应使用 --skip-docker。旧自动化参数仍可使用：
 
 ```sh
 xtmoe chroot docker-install --accept-host-network-changes ubuntu
@@ -217,7 +217,7 @@ Docker 有四种必须区分的结果：完全通过；systemd 可用但内核�
 xtmoe chroot docker-direct-install ubuntu
 ```
 
-该命令会要求确认 Docker bridge 对 Android 宿主 iptables/IP forwarding 的影响，安装 Docker 官方仓库版本，停止已有的嵌套 systemd 会话，然后在独立 mount namespace 内按等价于下列逻辑启动：
+该命令会提前提示 Docker bridge 对 Android 宿主 iptables/IP forwarding 的影响并默认执行，安装 Docker 官方仓库版本，停止已有的嵌套 systemd 会话，然后在独立 mount namespace 内按等价于下列逻辑启动：
 
 ```sh
 dockerd --iptables=true --host=unix:///var/run/docker.sock
@@ -346,7 +346,7 @@ xtmoe chroot install --yes --skip-docker ubuntu 24.04 ubuntu
 xtmoe chroot install --yes --skip-systemd --skip-bash-sh ubuntu 24.04 ubuntu
 ```
 
-`--yes` 接受普通默认项，但不会代替 `--accept-host-network-changes` 这一高风险确认。手机重启或 Termux 被 Android 杀死后，需要重新执行 `xtmoe chroot systemd-start ubuntu`；嵌套 systemd 不是 Android 启动服务。
+普通安装现已默认执行，原 `--yes` 和 `--accept-host-network-changes` 保留兼容；破坏性删除/重装的 --yes 仍只用于显式确认。手机重启或 Termux 被 Android 杀死后，需要重新执行 `xtmoe chroot systemd-start ubuntu`；嵌套 systemd 不是 Android 启动服务。
 
 更新或不备份直接重装：
 

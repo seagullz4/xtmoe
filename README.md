@@ -156,7 +156,7 @@ xtmoe chroot stop ubuntu
 xtmoe uninstall chroot ubuntu
 ```
 
-安装过程从 Ubuntu 官方发布页选择最新的 24.04.x Ubuntu Base 原生架构镜像，并使用官方 `SHA256SUMS` 校验后才解压。全新交互安装默认初始化 Ubuntu 标准组件、嵌套 systemd、Bash `/bin/sh`，并在内核严格检查通过后安装 Docker Engine。Docker 标准 bridge 会修改 Android 宿主网络规则，因此自动化完整安装必须同时使用：
+安装过程从 Ubuntu 官方发布页选择最新的 24.04.x Ubuntu Base 原生架构镜像，并使用官方 `SHA256SUMS` 校验后才解压。全新交互安装默认初始化 Ubuntu 标准组件、嵌套 systemd、Bash `/bin/sh`，并在内核严格检查通过后安装 Docker Engine。全新安装默认直接执行、不再要求输入 y。Docker 标准 bridge 的宿主网络风险会提前显示；不需要 Docker 使用 --skip-docker。原确认参数保留兼容，以下命令仍可用：
 
 ```sh
 xtmoe chroot install --yes --accept-host-network-changes ubuntu 24.04 ubuntu
@@ -170,7 +170,7 @@ xtmoe chroot install --yes --skip-docker ubuntu 24.04 ubuntu
 
 安装会在下载前检查 Root、依赖和存储空间，自动补齐缺少的 Termux 依赖；配置 DNS 后通过真实 APT update 验证网络，再安装基础包并验证 systemd。iptables 等用户态依赖会先准备，再执行 Docker 完整门控，不再把缺包一概误报成内核缺失。
 
-Docker 网络门控会在临时 namespace 实测规则而非只查询 NAT 列表，必要时在已确认风险后选择测试通过的 legacy 后端。全新无用户配置/数据时实测目标 OverlayFS，不能挂载则使用经典 VFS。Android 默认 IPv4 bridge 路由辅助服务随 Docker 启停并跟随宿主当前 VPN/出口；自定义网络仍需单独验收。真机结果与限制见 [Android 验收记录](docs/ANDROID_VALIDATION.md)。
+Docker 网络门控会在临时 namespace 实测规则而非只查询 NAT 列表，必要时在显示网络范围后选择测试通过的 legacy 后端。全新无用户配置/数据时实测目标 OverlayFS，不能挂载则使用经典 VFS。Android 默认 IPv4 bridge 路由辅助服务随 Docker 启停并跟随宿主当前 VPN/出口；自定义网络仍需单独验收。真机结果与限制见 [Android 验收记录](docs/ANDROID_VALIDATION.md)。
 
 已有 Ubuntu 无需重装，使用一键配置：
 

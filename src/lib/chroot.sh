@@ -132,7 +132,7 @@ chroot_prepare() {
 chroot_install_preflight() {
     local available_kb command missing=0
     require_termux
-    for command in tsu mount umount unshare nsenter chroot flock curl tar sha256sum realpath df; do
+    for command in tsu mount umount unshare nsenter chroot flock curl tar sha256sum realpath df install timeout; do
         command_exists "$command" || missing=1
     done
     if ((missing)); then
@@ -140,7 +140,7 @@ chroot_install_preflight() {
         chroot_prepare || return 1
     fi
     require_chroot || return 1
-    for command in mount umount unshare nsenter chroot flock curl tar sha256sum realpath df; do
+    for command in mount umount unshare nsenter chroot flock curl tar sha256sum realpath df install timeout; do
         require_command "$command" '请执行 xtmoe chroot prepare'
     done
     ubuntu_arch >/dev/null
@@ -231,9 +231,6 @@ chroot_install() (
         info '已选择跳过 systemd，因此同时跳过 Docker。'
     fi
     ((skip_docker)) && docker_requested=no
-    if ((skip_docker == 0 && accept_network == 0)) && [[ ! -t 0 ]]; then
-        die '非交互完整安装必须添加 --accept-host-network-changes；如不安装 Docker，请使用 --skip-docker。'
-    fi
     ((yes)) && export XTMOE_YES=1
     if ((skip_docker == 0 && accept_network == 0)); then
         if chroot_confirm_network_changes 0; then accept_network=1; else skip_docker=1; docker_requested=no; fi
@@ -245,7 +242,7 @@ chroot_install() (
     exec {CHROOT_INSTALL_LOCK_FD}>"$config_base/$name.install.lock"
     flock -n "$CHROOT_INSTALL_LOCK_FD" || die '该名称正在执行另一项安装；请等待后重试。'
     [[ ! -e $base/$name && ! -L $base/$name ]] || die "Chroot 容器已存在：$name"
-    confirm "创建 Chroot '$name' 并下载、初始化 Ubuntu 24.04？" || { info '已取消'; return 0; }
+    info "默认执行全新安装：Chroot '$name'，Ubuntu 24.04；不会覆盖已有同名容器。"
     archive=$(download_ubuntu_base "$version") || return 1
     chroot_meta_initialize "$name" "$version" "$(ubuntu_arch)" "$docker_requested"
     chroot_meta_set "$name" systemd_requested "$((1 - skip_systemd))"
@@ -379,8 +376,8 @@ chroot_init() {
     done
     require_name "$name"
     [[ -f $(chroot_base)/$name/.xtmoe-chroot ]] || die "Chroot 容器不存在：$name"
-    # Resolve bridge consent before making configuration changes, not halfway
-    # through APT/systemd setup. --yes never substitutes for this consent.
+    # Display the bridge scope before configuration. Defaults execute without
+    # reading stdin; --skip-docker is the explicit installation opt-out.
     if [[ " ${args[*]} " != *' --skip-docker '* && " ${args[*]} " != *' --accept-host-network-changes '* ]]; then
         if chroot_confirm_network_changes 0; then args+=(--accept-host-network-changes); else args+=(--skip-docker); fi
     fi
@@ -584,7 +581,8 @@ chroot_setup() {
     chroot_exec "$name" -- /bin/bash -lc "$(chroot_apt_guard_script)
 dpkg --configure -a
 apt-get -o APT::Update::Error-Mode=any update
-apt-get install -y ubuntu-standard ca-certificates curl locales openssh-server sudo systemd-sysv dbus bash procps util-linux kmod mount iproute2 iptables iputils-ping
+apt-get install -y ubuntu-standard coreutils ca-certificates curl locales openssh-server sudo systemd-sysv dbus bash procps util-linux kmod mount iproute2 iptables iputils-ping
+for tool in install timeout mktemp flock ip getent; do command -v \"\$tool\" || exit 1; done
 command -v systemctl
 /usr/sbin/iptables --version
 "
@@ -703,12 +701,10 @@ chroot_docker_check() {
 }
 
 chroot_confirm_network_changes() {
-    local accepted=$1 answer
+    local accepted=$1
     ((accepted)) && return 0
-    [[ -t 0 ]] || die 'Docker 标准 bridge 会修改 Android 宿主网络规则；非交互模式必须添加 --accept-host-network-changes。'
-    printf 'Docker 标准 bridge 会修改 Android 宿主 iptables 和 IP 转发。继续？ [y/N] ' >&2
-    IFS= read -r answer
-    [[ $answer == y || $answer == Y || $answer == yes || $answer == YES ]]
+    warn '默认执行 Docker 网络准备：标准 bridge 会影响 Android 宿主 iptables、IP 转发及默认 bridge 精确策略路由；不需要 Docker 请使用 --skip-docker。'
+    return 0
 }
 
 chroot_docker_packages_script() {
@@ -721,7 +717,7 @@ for package in docker.io docker-compose docker-compose-v2 docker-doc podman-dock
     fi
 done
 apt-get -o APT::Update::Error-Mode=any update
-DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl iptables iproute2
+DEBIAN_FRONTEND=noninteractive apt-get install -y coreutils ca-certificates curl iptables iproute2
 install -m 0755 -d /etc/apt/keyrings
 tmp_key=/etc/apt/keyrings/docker.asc.xtmoe.tmp
 trap "rm -f -- $tmp_key; cleanup_policy" EXIT
@@ -750,7 +746,7 @@ chroot_docker_compat_prepare() {
 }
 
 chroot_docker_dependencies() {
-    local name=$1 mode=${2:-systemd} packages='ca-certificates curl iptables iproute2'
+    local name=$1 mode=${2:-systemd} packages='coreutils util-linux ca-certificates curl iptables iproute2'
     chroot_network_preflight "$name" || return 1
     [[ $mode != systemd ]] || packages+=' systemd-sysv dbus'
     info '先补齐 Docker 用户态依赖，再检查 iptables 和 systemd……'
@@ -1039,9 +1035,6 @@ chroot_reinstall() {
     done
     require_name "$name"
     [[ -f $(chroot_base)/$name/.xtmoe-chroot ]] || die "Chroot 容器不存在：$name"
-    if ((skip_docker == 0 && accept_network == 0)) && [[ ! -t 0 ]]; then
-        die '非交互重装必须添加 --accept-host-network-changes；如不安装 Docker，请使用 --skip-docker。'
-    fi
     ((yes)) && export XTMOE_YES=1
     confirm "重装 Chroot 容器 '$name'？rootfs 和 Docker 数据都会永久删除且不会自动备份" || { info '已取消'; return 0; }
     chroot_install_preflight || return 1

@@ -46,7 +46,7 @@ xtmoe doctor
 
 只有 `doctor` 完成且未报告基础环境错误后，才开始使用 `xtmoe on`、`xtmoe list`、PRoot、Chroot 或 QEMU 管理命令。基础安装器只复制 QEMU 模块，不下载大型虚拟机依赖；使用时执行 `xtmoe qemu prepare`。
 
-Chroot 全新安装会自动检查并补齐宿主依赖，在下载前检查 Root、原生架构及空间，默认完成网络、Ubuntu 标准组件、systemd、Bash 和严格 Docker 初始化。自动化完整安装除 `--yes` 外还必须显式确认 Docker bridge 风险：
+Chroot 全新安装会自动检查并补齐宿主依赖，在下载前检查 Root、原生架构及空间，默认完成网络、Ubuntu 标准组件、systemd、Bash 和严格 Docker 初始化。普通安装不再要求输入 y，网络影响会提前提示；不需要 Docker 用 --skip-docker。旧自动化参数仍兼容：
 
 ```sh
 xtmoe chroot install --yes --accept-host-network-changes ubuntu 24.04 ubuntu

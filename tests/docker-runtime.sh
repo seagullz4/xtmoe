@@ -7,6 +7,14 @@ assert_ok 'Docker network rule probe checks addrtype/NAT/bridge, not list-only s
     bash -n -c "$script" && grep -q -- "-A PREROUTING -m addrtype" <<<"$script" && grep -q -- "-j MASQUERADE" <<<"$script" && grep -q "type veth" <<<"$script"
 ' _ "$ROOT_DIR"
 
+assert_ok 'Guest compatibility backup gets Ubuntu PATH instead of Android PATH' bash -c '
+    source <(awk "/^\\[\\[ .*id -u/ {skip=1} /^valid_name\\(\\)/ {skip=0} /^ACTION=/ {exit} !skip {print}" "$1/src/lib/xtmoe-root")
+    ROOTFS=/fixture; COMPAT_TEST_LOG="$2/guest-environment"
+    chroot() { printf "%s\n" "$@" >"$COMPAT_TEST_LOG"; }
+    docker_guest_exec /bin/bash -ec "install -d /var/lib/xtmoe" || exit 1
+    grep -qx /usr/bin/env "$COMPAT_TEST_LOG" && grep -qx -- -i "$COMPAT_TEST_LOG" && grep -qx PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "$COMPAT_TEST_LOG"
+' _ "$ROOT_DIR" "$TEST_TMP"
+
 assert_ok 'Docker compatible current backend is not switched' bash -c '
     source <(awk "/^\\[\\[ .*id -u/ {skip=1} /^valid_name\\(\\)/ {skip=0} /^ACTION=/ {exit} !skip {print}" "$1/src/lib/xtmoe-root")
     ROOTFS=/fixture; rootfs_has_executable() { return 0; }

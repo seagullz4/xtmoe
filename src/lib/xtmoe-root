@@ -476,10 +476,20 @@ NETWORK_PROBE
 
 docker_network_probe() {
     local ipv4=$1 ipv6=${2:-}
-    timeout --kill-after=2 20 unshare --net chroot "$ROOTFS" /bin/bash -c "$(docker_network_probe_script)" _ "$ipv4" "$ipv6"
+    timeout --kill-after=2 20 unshare --net chroot "$ROOTFS" /usr/bin/env -i \
+        HOME=/root USER=root LOGNAME=root LANG=C.UTF-8 \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        /bin/bash -c "$(docker_network_probe_script)" _ "$ipv4" "$ipv6"
 }
 
-# Called only by install after explicit acceptance of host network changes.
+# A non-login guest shell must not inherit Android's executable search paths.
+docker_guest_exec() {
+    chroot "$ROOTFS" /usr/bin/env -i \
+        HOME=/root USER=root LOGNAME=root LANG=C.UTF-8 \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "$@"
+}
+
+# Called by installation after displaying its host-network scope.
 # docker-check remains diagnostic: it does not select a different backend.
 docker_network_prepare() {
     local output ipv6='' previous mode
@@ -497,9 +507,9 @@ docker_network_prepare() {
         warn '当前后端和 legacy 均未通过真实网络规则测试；不安装 Docker'
         return 2
     fi
-    previous=$(chroot "$ROOTFS" /usr/bin/readlink -f /usr/sbin/iptables) || return 1
-    mode=$(chroot "$ROOTFS" /usr/bin/update-alternatives --query iptables | awk '$1 == "Status:" {print $2}') || return 1
-    chroot "$ROOTFS" /bin/bash -ec '
+    previous=$(docker_guest_exec /usr/bin/readlink -f /usr/sbin/iptables) || return 1
+    mode=$(docker_guest_exec /usr/bin/update-alternatives --query iptables | awk '$1 == "Status:" {print $2}') || return 1
+    docker_guest_exec /bin/bash -ec '
 umask 077
 install -d /var/lib/xtmoe
 backup=$(mktemp -d /var/lib/xtmoe/iptables-backup.XXXXXX)
@@ -507,12 +517,12 @@ update-alternatives --query iptables >"$backup/iptables"
 if update-alternatives --query ip6tables >"$backup/ip6tables"; then :; else rm -f "$backup/ip6tables"; fi
 printf "iptables alternatives backup: %s\n" "$backup"
 ' || return 1
-    chroot "$ROOTFS" /usr/bin/update-alternatives --set iptables /usr/sbin/iptables-legacy || return 1
-    if [[ -n $ipv6 ]] && ! chroot "$ROOTFS" /usr/bin/update-alternatives --set ip6tables "$ipv6"; then
+    docker_guest_exec /usr/bin/update-alternatives --set iptables /usr/sbin/iptables-legacy || return 1
+    if [[ -n $ipv6 ]] && ! docker_guest_exec /usr/bin/update-alternatives --set ip6tables "$ipv6"; then
         if [[ $mode == auto ]]; then
-            chroot "$ROOTFS" /usr/bin/update-alternatives --auto iptables || true
+            docker_guest_exec /usr/bin/update-alternatives --auto iptables || true
         else
-            chroot "$ROOTFS" /usr/bin/update-alternatives --set iptables "$previous" || true
+            docker_guest_exec /usr/bin/update-alternatives --set iptables "$previous" || true
         fi
         return 1
     fi

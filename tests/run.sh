@@ -237,10 +237,15 @@ assert_fail 'Chroot invalid container name rejected' bash "$CLI" chroot bind '..
 assert_fail 'Chroot refuses whole host root bind' bash "$CLI" chroot bind demo / /mnt/host rw
 assert_fail 'Chroot status rejects extra arguments' bash "$CLI" chroot status demo extra
 assert_fail 'Chroot unbind rejects relative target' bash "$CLI" chroot unbind demo relative
-assert_fail 'Non-interactive full Chroot install requires explicit Docker network consent' bash -c '
+assert_ok 'Chroot full install defaults to execution without reading a yes prompt' bash -c '
     source "$1/src/lib/common.sh"
     source "$1/src/lib/chroot.sh"
-    chroot_install --yes ubuntu 24.04 consent-demo
+    chroot_install_preflight() { :; }
+    download_ubuntu_base() { printf /tmp/fixture.tar.gz; }
+    chroot_root() { :; }
+    confirm() { exit 9; }
+    chroot_bootstrap() { [[ $* == *--accept-host-network-changes* ]]; }
+    chroot_install ubuntu 24.04 consent-demo </dev/null
 ' _ "$ROOT_DIR"
 assert_ok 'Chroot metadata updates atomically and remains readable' bash -c '
     source "$1/src/lib/common.sh"
@@ -252,7 +257,7 @@ assert_ok 'Chroot metadata updates atomically and remains readable' bash -c '
 ' _ "$ROOT_DIR"
 mkdir -p "$XTMOE_DATA_DIR/chroot/docker-gate/rootfs"
 printf 'xtmoe-chroot-format-1\n' >"$XTMOE_DATA_DIR/chroot/docker-gate/.xtmoe-chroot"
-assert_fail 'Non-interactive Chroot reinstall validates Docker consent before deletion' bash "$CLI" chroot reinstall --yes docker-gate
+assert_fail 'Non-interactive Chroot reinstall still requires destructive confirmation' bash "$CLI" chroot reinstall docker-gate
 [[ -f $XTMOE_DATA_DIR/chroot/docker-gate/.xtmoe-chroot ]] && pass 'Rejected reinstall preserves existing Chroot' || fail 'Rejected reinstall preserves existing Chroot'
 DOCKER_MUTATION_LOG="$TEST_TMP/docker-mutation.log"
 export DOCKER_MUTATION_LOG
