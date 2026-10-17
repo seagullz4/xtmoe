@@ -219,6 +219,10 @@ systemd_running() {
     [[ $comm == systemd || $comm == init ]]
 }
 
+systemd_manager_ready() {
+    [[ -S $ROOTFS/run/systemd/private && -d $ROOTFS/run/systemd/system ]]
+}
+
 systemd_target_pid() {
     local pid comm actual_root expected_root
     systemd_pid_files
@@ -227,9 +231,9 @@ systemd_target_pid() {
     process_alive "$pid" || die '嵌套 systemd 进程已退出'
     actual_root=$(realpath -m "/proc/$pid/root")
     expected_root=$(realpath -m "$ROOTFS")
-    [[ $actual_root == "$expected_root" ]] || die
+    [[ $actual_root == "$expected_root" ]] || die 'systemd PID 与当前容器不匹配'
     comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
-    [[ $comm == systemd || $comm == init ]] || die "systemd PID 进程类型不匹配：$comm" 'systemd PID 与当前容器不匹配'
+    [[ $comm == systemd || $comm == init ]] || die "systemd PID 进程类型不匹配：$comm"
     printf '%s\n' "$pid"
 }
 
@@ -292,9 +296,9 @@ systemd_start() {
     local -a namespace_args=(--mount --pid) candidate_args
     systemd_check
     systemd_pid_files
-    if [[ -r $PID_FILE ]]; then
-        IFS= read -r target_pid <"$PID_FILE"
-        process_alive "$target_pid" && die '嵌套 systemd 已在运行'
+    if systemd_running; then
+        systemd_manager_ready && { ok '嵌套 systemd 已在运行并就绪'; return 0; }
+        die '嵌套 systemd 进程存在，但 manager 尚未就绪'
     fi
     if is_mounted "$ROOTFS"; then
         mounted_here=0
@@ -328,7 +332,7 @@ systemd_start() {
     fi
     printf '%s\n' "$target_pid" >"$PID_FILE"
     for ((attempt = 0; attempt < 300; attempt++)); do
-        [[ -S $ROOTFS/run/systemd/private && -d $ROOTFS/run/systemd/system ]] && break
+        systemd_manager_ready && break
         process_alive "$target_pid" || break
         sleep 0.1
     done
@@ -337,7 +341,7 @@ systemd_start() {
         ((mounted_here)) && unmount_all "$ROOTFS" || true
         die "systemd 已退出；查看 $SYSTEMD_LOG_FILE"
     fi
-    if [[ ! -S $ROOTFS/run/systemd/private || ! -d $ROOTFS/run/systemd/system ]]; then
+    if ! systemd_manager_ready; then
         kill -TERM "$target_pid" 2>/dev/null || true
         kill -TERM "$launcher_pid" 2>/dev/null || true
         sleep 1
@@ -380,6 +384,13 @@ systemd_status() {
 
 systemd_stop() {
     local pid attempt
+    if ! systemd_running; then
+        systemd_pid_files
+        rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
+        is_mounted "$ROOTFS" && unmount_all "$ROOTFS" || true
+        ok '嵌套 systemd 未运行'
+        return 0
+    fi
     pid=$(systemd_target_pid)
     systemd_exec /usr/bin/systemctl poweroff >/dev/null 2>&1 || kill -TERM "$pid" 2>/dev/null || true
     for ((attempt = 0; attempt < 100; attempt++)); do
@@ -558,7 +569,11 @@ case "$ACTION" in
         ;;
     login)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
-        run_chroot "${3:-}"
+        if systemd_running; then
+            systemd_login
+        else
+            run_chroot "${3:-}"
+        fi
         ;;
     exec)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
@@ -573,8 +588,11 @@ case "$ACTION" in
     stop)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
         [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
-        systemd_running && die '嵌套 systemd 正在运行；请先执行 xtmoe chroot systemd-stop'
-        unmount_all "$ROOTFS" || die '部分挂载无法卸载，可能仍有进程占用'
+        if systemd_running; then
+            systemd_stop
+        else
+            unmount_all "$ROOTFS" || die '部分挂载无法卸载，可能仍有进程占用'
+        fi
         ;;
     status)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"

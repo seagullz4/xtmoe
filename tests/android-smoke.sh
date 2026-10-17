@@ -96,9 +96,8 @@ chroot_test() {
     fi
     [[ ! -e $HOST_SHARE/must-not-exist ]] || die '只读绑定在宿主产生了文件'
 
-    xtmoe chroot systemd-stop "$CHROOT_NAME"
     xtmoe chroot stop "$CHROOT_NAME"
-    [[ $(xtmoe chroot status "$CHROOT_NAME") == stopped ]] || die 'Chroot 未完全停止'
+    [[ $(xtmoe chroot status "$CHROOT_NAME") == stopped ]] || die '统一 stop 未停止 systemd 并卸载 Chroot'
     xtmoe chroot backup "$CHROOT_NAME" "$CHROOT_BACKUP"
     [[ -s $CHROOT_BACKUP ]] || die 'Chroot 备份为空'
     xtmoe chroot remove --yes "$CHROOT_NAME"

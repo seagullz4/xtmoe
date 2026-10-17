@@ -59,7 +59,7 @@ xtmoe chroot systemd-login ubuntu
 xtmoe chroot systemd-exec ubuntu -- uname -a
 ```
 
-普通 Chroot Shell 仍可用于修复或维护：
+`chroot login` 在 systemd 运行时会自动进入同一个嵌套 systemd 会话；只有 systemd 未运行时才使用普通 Chroot Shell。普通模式仍可用于修复或维护：
 
 ```sh
 xtmoe chroot login ubuntu
@@ -123,7 +123,7 @@ xtmoe chroot list
 
 进行备份、恢复或删除前，`status` 应显示 `stopped`。
 
-若提示 busy，先返回容器停止服务和后台进程，再执行 `stop`。不要跳过检查直接删除目录。
+`chroot stop` 是统一停止入口：嵌套 systemd 运行时会先正常关闭 systemd，再卸载全部挂载；未运行时只清理挂载。重复执行是安全的。若提示 busy，先返回容器停止服务和后台进程，再执行 `stop`。不要跳过检查直接删除目录。
 
 ## 配置绑定挂载
 

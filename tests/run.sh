@@ -191,6 +191,8 @@ fi
 assert_contains 'Interactive login allocates a PTY' '"$script_bin" -q -e /dev/null --' "$ROOT_HELPER"
 assert_contains 'Systemd mounts proc inside its PID namespace' 'mount -t proc proc /proc' "$ROOT_HELPER"
 assert_contains 'Systemd startup avoids inherited parent proc mount' 'mount_all "$config" 0' "$ROOT_HELPER"
+assert_contains 'Chroot login reuses running systemd session' 'systemd_login' "$ROOT_HELPER"
+assert_contains 'Unified Chroot stop stops nested systemd' 'systemd_stop' "$ROOT_HELPER"
 
 rootfs_fixture_lifecycle() {
     local fixture="$TEST_TMP/rootfs-fixture" archive="$TEST_TMP/rootfs-fixture.tar.gz"
