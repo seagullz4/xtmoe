@@ -33,3 +33,34 @@
 - 重装、备份恢复、卸载无残留的完整破坏性矩阵：没有为了验收而删除用户现有容器。
 
 本次未禁用 SELinux、刷写内核、清空宿主防火墙或删除用户 Docker 数据。后端和路由修改有明确授权；运行时备份保存于用户设备，不上传到仓库。
+
+## 2026-10-18：删除旧容器、重新克隆后的首次安装
+
+同一设备上，用户另行明确授权删除 `ubuntu` 并从 GitHub 重新拉取项目。旧源码改名保留，诊断日志放在容器外；本节不是用前面已修复的 rootfs 重跑验收。
+
+### 真实复现的首次安装缺陷
+
+- `install: command not found`：Ubuntu 已存在 `/usr/bin/install`，但旧 compatibility 分支的非登录 chroot Shell 继承 Android/Termux PATH。修复为统一清理环境并传入 Ubuntu PATH；显式安装并验证 coreutils、util-linux 等基础工具。
+- 安装初期固定 DNS 正常，`systemd-resolved` 包配置随后将 resolv.conf 换成 `127.0.0.53` stub，造成 systemd 启动后 Docker 依赖阶段解析失败。`policy-rc.d` 不能阻止配置文件变更；增加包安装后和 systemd 启动后的 DNS 恢复/实际源访问复验，Docker 依赖与系统更新也恢复 DNS。
+- 普通 Chroot install/init/repair 默认执行，不再读取 y，开始前显示宿主网络影响；原确认参数保留兼容，`--skip-docker` 可选择不安装 Docker。破坏性重装/卸载仍保留确认。
+
+### 首次安装证据
+
+代码提交：`8c46a4e7b6783baba77c63f250be9274325260ae`，包含 PATH 修复提交 `24f4d0962cfbe60ecc1b4dd497fe2a266ba321f3`。第一次全新测试暴露 resolved 覆盖后已删除测试容器，再次从 GitHub 克隆上述修正版，使用新的空缓存与新 rootfs；未向新 rootfs 手工补配置。
+
+正常流程为 `sh termux.sh` → `xtmoe doctor` → `xtmoe chroot install ubuntu 24.04 ubuntu </dev/null`。没有使用 --yes，也没有通过管道输入确认。安装直接返回 0，并自动完成：官方镜像重新下载与 SHA-256 校验、基础包、DNS/NSS、systemd、legacy 实测/选择、目标文件系统 OverlayFS 探测与 VFS 配置、Docker 官方源/软件包、registry 拉取、真实 hello-world 运行。安装元数据由公共流程生成 `state=ready`、`docker_state=ready`、`failed_stage` 为空。
+
+安装后的独立验收：
+
+- resolv.conf 为普通文件，固定 DNS 两项存在；NSS 为 `hosts: files dns`。
+- install、timeout、mktemp、flock、ip、getent、systemctl 可执行；基础依赖和包状态正常。
+- 严格 APT update 访问 Ubuntu 与 Docker 源成功。
+- systemd 为 running，docker/containerd/路由服务 active，失败单元为 0；实际使用经典 VFS、systemd cgroup v2。
+- hello-world 返回 0；BusyBox 默认 bridge 的 DNS/HTTP 和本机端口映射成功；测试容器、端口已清理。
+- 默认 `xtmoe chroot update-system ubuntu </dev/null`、`xtmoe chroot repair ubuntu </dev/null` 均成功，没有再出现 PATH 或 stub DNS 故障。
+- 公共 stop 清理旧 PID、挂载和精确路由；systemd-start 后 Docker 自动恢复。重启后的 APT、DNS、hello-world、bridge 网络再次通过。
+- 运行时源树保持干净，安装代码来自 GitHub 克隆；未上传私有诊断日志、PROJECT_STATE.md 或 push_github.py。
+
+补充：ADB 的简单 su 切 UID 会遗漏 Android 应用的 inet 等附加组，导致宿主 git/curl 解析失败；测试采用真实应用 UID/GID 及附加组运行安装器，而不是修改 Android DNS 或关闭 VPN。此问题与容器 DNS 覆盖缺陷分别诊断。
+
+本轮按授权实际删除了旧容器及失败的首次测试 rootfs，保留了旧源码和外部诊断日志；不是声称完成跨设备或所有模式矩阵。前节列出的性能、IPv6、自定义网络、其他 Root/机型及 1Panel 限制仍适用。

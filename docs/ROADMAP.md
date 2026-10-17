@@ -23,6 +23,8 @@ XTMOE 直接采用可测试的模块化实现；当前开发版本为 `0.4.0-dev
 - [x] DNS/NSS 修复、真实严格 APT 源验证、包安装服务策略恢复、阶段失败记录及初始化并发拒绝。
 - [x] Docker 内核/权限预检与用户态依赖拆分；alternatives 多层链接按容器根解析，临时网络 namespace 中探测 NAT。
 - [x] Chroot 固定公共 DNS，并提供可复现的网络诊断。
+- [x] 修复 non-login chroot 继承 Android PATH 导致 install 缺失，以及 systemd-resolved 包配置覆盖固定 DNS；包安装/服务启动后复验网络。
+- [x] 普通 Chroot 安装默认无 y 确认，保留 skip 选项及重装/卸载破坏性确认；已在授权设备上删除旧容器、重新克隆并完成空缓存首次安装、更新/修复与重启验收，详见实测记录。
 - [x] 增加 cgroup v1/v2 检查和 Chroot cgroup 挂载尝试。
 - [x] 增加 Docker 官方源安装、systemd 自动启动、服务管理、日志和 `hello-world` 验收。
 - [x] Docker 安装前严格检查 namespace、cgroup、iptables 和 IP forwarding；硬阻断返回状态 2。
