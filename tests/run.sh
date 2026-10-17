@@ -76,6 +76,7 @@ assert_contains 'CLI help mentions program uninstall' 'xtmoe uninstall-app' "$TE
 assert_ok 'CLI version' bash "$CLI" version
 assert_contains 'CLI reports version 0.2.2-dev' 'xtmoe 0.2.2-dev' "$TEST_TMP/stdout"
 assert_ok 'PRoot help' bash "$CLI" proot help
+assert_ok 'Chroot setup function is defined' bash -c 'source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"; declare -F chroot_setup >/dev/null' _ "$ROOT_DIR"
 assert_ok 'Chroot help' bash "$CLI" chroot help
 assert_contains 'Chroot help mentions Docker readiness check' 'docker-check' "$TEST_TMP/stdout"
 assert_contains 'Chroot help mentions nested systemd' 'systemd-check' "$TEST_TMP/stdout"

@@ -233,6 +233,12 @@ chroot_systemd_stop() {
     chroot_root systemd-stop "$(chroot_base)" "${1:-ubuntu}"
 }
 
+chroot_setup() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot setup [名称]'
+    local name=${1:-ubuntu}
+    chroot_exec "$name" -- /bin/bash -lc 'set -Eeuo pipefail; policy_created=0; cleanup_policy() { if [ "$policy_created" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi; }; trap cleanup_policy EXIT; if [ ! -e /usr/sbin/policy-rc.d ]; then printf "#!/bin/sh\\nexit 101\\n" > /usr/sbin/policy-rc.d; chmod 0755 /usr/sbin/policy-rc.d; policy_created=1; fi; apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y ubuntu-standard ca-certificates curl locales openssh-server sudo systemd-sysv dbus bash procps util-linux kmod mount'
+}
+
 chroot_use_bash_sh() {
     require_arg_range 0 1 "$#" 'xtmoe chroot use-bash-sh [名称]'
     local name=${1:-ubuntu}
@@ -391,7 +397,7 @@ chroot_list() {
 }
 
 chroot_main() {
-    local action=${1:-help} name
+    local action=${1:-help}
     shift || true
     [[ $action == help || $action == -h || $action == --help ]] && { chroot_help; return; }
     [[ $action == prepare ]] && { chroot_prepare; return; }
@@ -401,11 +407,7 @@ chroot_main() {
         install|add) chroot_install "$@" ;;
         login|shell) chroot_login "$@" ;;
         exec) chroot_exec "$@" ;;
-        setup)
-            require_arg_range 0 1 "$#" 'xtmoe chroot setup [名称]'
-            name=${1:-ubuntu}
-            chroot_exec "$name" -- /bin/bash -lc 'set -Eeuo pipefail; policy_created=0; cleanup_policy() { if [ "$policy_created" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi; }; trap cleanup_policy EXIT; if [ ! -e /usr/sbin/policy-rc.d ]; then printf "#!/bin/sh\\nexit 101\\n" > /usr/sbin/policy-rc.d; chmod 0755 /usr/sbin/policy-rc.d; policy_created=1; fi; apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y ubuntu-standard ca-certificates curl locales openssh-server sudo systemd-sysv dbus bash procps util-linux kmod mount'
-            ;;
+        setup) chroot_setup "$@" ;;
         docker-check) chroot_docker_check "$@" ;;
         systemd-check) chroot_systemd_check "$@" ;;
         systemd-start) chroot_systemd_start "$@" ;;
