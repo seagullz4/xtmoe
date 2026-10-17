@@ -57,9 +57,19 @@ Chroot 共用 Android 内核，安装 Docker 软件包不能补上缺失的 name
 
 ```sh
 xtmoe chroot docker-check ubuntu
+xtmoe chroot cgroup-check ubuntu
 ```
 
-Docker 客户端存在不等于 daemon 可用；只有 `docker info` 能连接 `/var/run/docker.sock` 才说明 daemon 正常。普通 Chroot 的 PID 1 通常是 Android `init`，不是 systemd；当 `systemctl is-system-running` 显示 `offline` 时，1Panel 的 systemd 服务管理路径不可用。
+检查没有 `[缺失]` 后，可以显式安装并确认标准 bridge 对 Android 宿主 iptables/IP forwarding 的影响：
+
+```sh
+xtmoe chroot docker-install ubuntu
+xtmoe chroot docker-status ubuntu
+```
+
+Docker 客户端存在不等于 daemon 可用；只有 socket、`docker info` 和实际 `hello-world` 都通过才是完全可用。daemon 正常但 registry 访问失败时应标记为“daemon 可用、registry 未验证”。普通 Chroot 的 PID 1 通常是 Android `init`；XTMOE 必须进入嵌套 systemd namespace。`systemctl is-system-running` 显示 `offline` 时，1Panel 的 systemd 服务管理路径不可用。
+
+XTMOE 不自动执行 1Panel 第三方安装脚本。只有 Docker 完整验收通过后，才应按 1Panel 官方文档人工安装。
 
 ## Python 和编译环境
 

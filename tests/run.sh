@@ -52,6 +52,8 @@ cat >"$TEST_TMP/mock-bin/proot-distro" <<'MOCK'
 #!/usr/bin/env bash
 if [[ ${1:-} == --version ]]; then printf 'proot-distro test\n'; exit 0; fi
 if [[ ${1:-} == install && ${2:-} == --help ]]; then printf '%s\n' '--name NAME'; exit 0; fi
+if [[ ${1:-} == help ]]; then printf '%s\n' 'install login list ps reset remove'; exit 0; fi
+if [[ ${1:-} == ps ]]; then printf '%s' "${MOCK_PROOT_PS:-PID CONTAINER TYPE USER UPTIME COMMAND\n}"; exit 0; fi
 printf '%s\n' "$*" >>"$MOCK_LOG"
 MOCK
 
@@ -69,18 +71,22 @@ export MOCK_LOG="$TEST_TMP/proot.log"
 : >"$MOCK_LOG"
 
 assert_ok 'CLI help' bash "$CLI" help
-assert_contains 'CLI help uses current version variable' 'XTMOE 0.2.2-dev' "$TEST_TMP/stdout"
+assert_contains 'CLI help uses current version variable' 'XTMOE 0.3.0-dev' "$TEST_TMP/stdout"
 assert_contains 'CLI help mentions PRoot' 'xtmoe proot' "$TEST_TMP/stdout"
+assert_contains 'CLI help mentions unified wizard' 'xtmoe on' "$TEST_TMP/stdout"
+assert_contains 'CLI help mentions unified list' 'xtmoe list' "$TEST_TMP/stdout"
 assert_contains 'CLI help mentions updater' 'xtmoe update' "$TEST_TMP/stdout"
 assert_contains 'CLI help mentions program uninstall' 'xtmoe uninstall-app' "$TEST_TMP/stdout"
 assert_ok 'CLI version' bash "$CLI" version
-assert_contains 'CLI reports version 0.2.2-dev' 'xtmoe 0.2.2-dev' "$TEST_TMP/stdout"
+assert_contains 'CLI reports version 0.3.0-dev' 'xtmoe 0.3.0-dev' "$TEST_TMP/stdout"
 assert_ok 'PRoot help' bash "$CLI" proot help
 assert_ok 'Chroot setup function is defined' bash -c 'source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"; declare -F chroot_setup >/dev/null' _ "$ROOT_DIR"
 assert_ok 'Chroot help' bash "$CLI" chroot help
 assert_contains 'Chroot help mentions Docker readiness check' 'docker-check' "$TEST_TMP/stdout"
 assert_contains 'Chroot help mentions nested systemd' 'systemd-check' "$TEST_TMP/stdout"
 assert_contains 'Chroot help mentions Bash compatibility switch' 'use-bash-sh' "$TEST_TMP/stdout"
+assert_contains 'Chroot help mentions Docker installer' 'docker-install' "$TEST_TMP/stdout"
+assert_contains 'Chroot help mentions repair workflow' 'repair' "$TEST_TMP/stdout"
 old_prefix=$PREFIX
 export PREFIX="$TEST_TMP/not-termux"
 mkdir -p "$PREFIX/bin"
@@ -97,7 +103,7 @@ assert_ok 'Fresh install bootstraps systemd and Bash by default' bash -c '
     chroot_setup() { printf "setup\\n" >>"$BOOTSTRAP_LOG"; }
     chroot_use_bash_sh() { printf "bash\\n" >>"$BOOTSTRAP_LOG"; }
     chroot_systemd_start() { printf "start\\n" >>"$BOOTSTRAP_LOG"; }
-    chroot_install --yes ubuntu 24.04 bootstrap-demo
+    chroot_install --yes --skip-docker ubuntu 24.04 bootstrap-demo
 ' _ "$ROOT_DIR"
 [[ $(tr '\n' ' ' <"$BOOTSTRAP_LOG") == 'setup bash start ' ]] && pass 'Fresh install bootstrap order is correct' || fail 'Fresh install bootstrap order is correct'
 : >"$BOOTSTRAP_LOG"
@@ -118,6 +124,18 @@ assert_fail 'PRoot install rejects extra arguments' bash "$CLI" proot install ub
 assert_contains 'PRoot install keeps image and name' 'install --name demo ubuntu:24.04' "$MOCK_LOG"
 assert_ok 'PRoot exec dispatch' bash "$CLI" proot exec demo -- uname -a
 assert_contains 'PRoot exec keeps argument boundary' 'login demo -- uname -a' "$MOCK_LOG"
+mkdir -p "$PREFIX/var/lib/proot-distro/containers/demo/rootfs"
+export MOCK_PROOT_PS=$'PID CONTAINER TYPE USER UPTIME COMMAND\n12345 demo login root 1m /bin/bash\n12346 demo run root 1m sleep\n'
+assert_ok 'Unified list shows running PRoot container' bash "$CLI" list --no-prompt
+assert_contains 'Unified list includes running session count' 'running(2)' "$TEST_TMP/stdout"
+assert_ok 'Unified enter dispatches to PRoot login' bash "$CLI" enter proot demo
+assert_contains 'Unified enter preserves selected container' 'login demo' "$MOCK_LOG"
+assert_ok 'PRoot status reports active sessions' bash "$CLI" proot status demo
+assert_contains 'PRoot status counts active sessions' 'running sessions=2' "$TEST_TMP/stdout"
+assert_ok 'PRoot system update dispatch' bash "$CLI" proot update-system demo
+assert_ok 'PRoot reinstall accepts explicit confirmation' bash "$CLI" proot reinstall --yes demo
+assert_contains 'PRoot reinstall uses backend reset' 'reset demo' "$MOCK_LOG"
+unset MOCK_PROOT_PS
 assert_fail 'PRoot invalid name rejected' bash "$CLI" proot install ubuntu:24.04 '../escape'
 assert_fail 'PRoot non-interactive remove requires --yes' bash "$CLI" proot remove demo
 assert_ok 'PRoot explicit remove accepted' bash "$CLI" proot remove --yes demo
@@ -136,6 +154,58 @@ assert_fail 'Chroot invalid container name rejected' bash "$CLI" chroot bind '..
 assert_fail 'Chroot refuses whole host root bind' bash "$CLI" chroot bind demo / /mnt/host rw
 assert_fail 'Chroot status rejects extra arguments' bash "$CLI" chroot status demo extra
 assert_fail 'Chroot unbind rejects relative target' bash "$CLI" chroot unbind demo relative
+assert_fail 'Non-interactive full Chroot install requires explicit Docker network consent' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/chroot.sh"
+    chroot_install --yes ubuntu 24.04 consent-demo
+' _ "$ROOT_DIR"
+assert_ok 'Chroot metadata updates atomically and remains readable' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/chroot.sh"
+    chroot_meta_initialize meta-demo 24.04 amd64 yes
+    chroot_meta_set meta-demo state partial
+    [[ $(chroot_meta_get meta-demo state) == partial ]]
+    [[ $(grep -c "^state=" "$XTMOE_CONFIG_DIR/chroot/meta-demo.meta") == 1 ]]
+' _ "$ROOT_DIR"
+mkdir -p "$XTMOE_DATA_DIR/chroot/docker-gate/rootfs"
+printf 'xtmoe-chroot-format-1\n' >"$XTMOE_DATA_DIR/chroot/docker-gate/.xtmoe-chroot"
+assert_fail 'Non-interactive Chroot reinstall validates Docker consent before deletion' bash "$CLI" chroot reinstall --yes docker-gate
+[[ -f $XTMOE_DATA_DIR/chroot/docker-gate/.xtmoe-chroot ]] && pass 'Rejected reinstall preserves existing Chroot' || fail 'Rejected reinstall preserves existing Chroot'
+DOCKER_MUTATION_LOG="$TEST_TMP/docker-mutation.log"
+export DOCKER_MUTATION_LOG
+: >"$DOCKER_MUTATION_LOG"
+assert_ok 'Docker hard gate returns partial status before package mutation' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/chroot.sh"
+    chroot_systemd_start() { :; }
+    chroot_docker_check() { return 1; }
+    chroot_systemd_exec() { printf "mutation\n" >>"$DOCKER_MUTATION_LOG"; }
+    set +e
+    chroot_docker_install --accept-host-network-changes docker-gate
+    status=$?
+    set -e
+    [[ $status == 2 && ! -s $DOCKER_MUTATION_LOG ]]
+' _ "$ROOT_DIR"
+assert_ok 'Embedded Docker repository installer is valid Bash' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/chroot.sh"
+    parsed=0
+    chroot_systemd_start() { :; }
+    chroot_docker_check() { :; }
+    chroot_systemd_exec() {
+        if [[ ${3:-} == /bin/bash && ${4:-} == -lc ]]; then
+            bash -n -c "$5"
+            parsed=1
+            return 1
+        fi
+        return 0
+    }
+    set +e
+    chroot_docker_install --accept-host-network-changes docker-gate
+    status=$?
+    set -e
+    [[ $status == 1 && $parsed == 1 ]]
+' _ "$ROOT_DIR"
 
 printf '<a>ubuntu-base-24.04.3-base-amd64.tar.gz</a>\n<a>ubuntu-base-24.04.5-base-amd64.tar.gz</a>\n' >"$TEST_TMP/ubuntu-index"
 printf 'fake ubuntu base archive\n' >"$TEST_TMP/ubuntu-archive"
@@ -191,8 +261,12 @@ fi
 assert_contains 'Interactive login allocates a PTY' '"$script_bin" -q -e /dev/null --' "$ROOT_HELPER"
 assert_contains 'Systemd mounts proc inside its PID namespace' 'mount -t proc proc /proc' "$ROOT_HELPER"
 assert_contains 'Systemd startup avoids inherited parent proc mount' 'mount_all "$config" 0' "$ROOT_HELPER"
+assert_contains 'Systemd mounts are prepared by namespaced launcher' '_systemd-launch "$BASE" "$CONTAINER_NAME" "$config"' "$ROOT_HELPER"
 assert_contains 'Chroot login reuses running systemd session' 'systemd_login' "$ROOT_HELPER"
 assert_contains 'Unified Chroot stop stops nested systemd' 'systemd_stop' "$ROOT_HELPER"
+assert_contains 'Docker gate checks network namespace creation' 'namespace_check --net network' "$ROOT_HELPER"
+assert_contains 'Docker gate requires pids controller' 'pids cgroup controller' "$ROOT_HELPER"
+assert_contains 'Systemd stop orders Docker shutdown first' 'systemctl stop docker.service containerd.service' "$ROOT_HELPER"
 
 rootfs_fixture_lifecycle() {
     local fixture="$TEST_TMP/rootfs-fixture" archive="$TEST_TMP/rootfs-fixture.tar.gz"
@@ -292,6 +366,7 @@ export XTMOE_ALLOW_NON_TERMUX=1
 assert_ok 'Local installer completes' sh "$ROOT_DIR/termux.sh"
 [[ -x "$PREFIX/bin/xtmoe" ]] && pass 'Installer creates executable command' || fail 'Installer creates executable command'
 [[ -r "$PREFIX/libexec/xtmoe/lib/chroot.sh" ]] && pass 'Installer copies libraries' || fail 'Installer copies libraries'
+[[ -r "$PREFIX/libexec/xtmoe/lib/manager.sh" ]] && pass 'Installer copies unified manager module' || fail 'Installer copies unified manager module'
 [[ $(<"$PREFIX/libexec/xtmoe/source-root") == "$ROOT_DIR" ]] && pass 'Installer records source root' || fail 'Installer records source root'
 if compgen -G "$PREFIX/bin/xtmoe.tmp.*" >/dev/null || compgen -G "$PREFIX/libexec/xtmoe/*.tmp.*" >/dev/null; then
     fail 'Installer leaves no temporary files'
@@ -335,7 +410,7 @@ assert_contains 'Doctor reports source root' '源码目录：' "$TEST_TMP/stdout
 proot_actions=$(grep -rhoE 'xtmoe[[:space:]]+proot[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
 for action in $proot_actions; do
     case "$action" in
-        install|login|exec|list|ps|stop|backup|restore|remove|raw) ;;
+        install|login|exec|list|ps|stop|backup|restore|update-system|reinstall|status|remove|raw) ;;
         *) fail "Documentation references unknown PRoot action: $action" ;;
     esac
 done
@@ -344,7 +419,7 @@ pass 'Documented PRoot actions map to CLI'
 chroot_actions=$(grep -rhoE 'xtmoe[[:space:]]+chroot[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
 for action in $chroot_actions; do
     case "$action" in
-        prepare|install|login|exec|setup|docker-check|systemd-check|systemd-start|systemd-login|systemd-exec|systemd-status|systemd-stop|use-bash-sh|status|list|stop|bind|unbind|backup|restore|remove) ;;
+        prepare|install|login|exec|setup|repair|update-system|reinstall|network-check|cgroup-check|docker-check|docker-install|docker-start|docker-stop|docker-restart|docker-status|docker-logs|systemd-check|systemd-start|systemd-login|systemd-exec|systemd-status|systemd-stop|use-bash-sh|status|list|stop|bind|unbind|backup|restore|remove) ;;
         *) fail "Documentation references unknown Chroot action: $action" ;;
     esac
 done
@@ -358,7 +433,7 @@ pass 'README documentation targets exist'
 top_actions=$(grep -rhoE 'xtmoe[[:space:]]+[a-z][a-z-]*' "$README_FILE" "$ROOT_DIR/docs" "$ROOT_DIR/tests/README.md" | awk '{print $2}' | sort -u)
 for action in $top_actions; do
     case "$action" in
-        doctor|proot|chroot|uninstall|update|uninstall-app|version|help) ;;
+        doctor|on|list|enter|proot|chroot|uninstall|update|uninstall-app|version|help) ;;
         *) fail "Documentation references unknown top-level action: $action" ;;
     esac
 done

@@ -80,6 +80,7 @@ container_paths() {
         *) die "拒绝操作非 XTMOE Chroot 目录：$BASE" ;;
     esac
     CONTAINER=$(realpath -m -- "$BASE/$requested_name")
+    CONTAINER_NAME=$requested_name
     parent=$(dirname -- "$CONTAINER")
     [[ $parent == "$BASE" && $CONTAINER != / ]] || die '容器路径越界'
     ROOTFS="$CONTAINER/rootfs"
@@ -173,9 +174,104 @@ ensure_hosts_config() {
     fi
 }
 
+set_dns_config() {
+    local rootfs=$1 dns file tmp
+    shift
+    file="$rootfs/etc/resolv.conf"
+    [[ -d $rootfs/etc ]] || die 'rootfs 缺少 /etc'
+    [[ ! -d $file ]] || die '/etc/resolv.conf 不能是目录'
+    tmp="$rootfs/etc/.resolv.conf.xtmoe.$$"
+    : >"$tmp"
+    for dns in "$@"; do
+        [[ $dns =~ ^[0-9A-Fa-f:.]+$ ]] || { rm -f -- "$tmp"; die "非法 DNS 地址：$dns"; }
+        printf 'nameserver %s\n' "$dns" >>"$tmp"
+    done
+    [[ -s $tmp ]] || { rm -f -- "$tmp"; die '至少需要一个 DNS 地址'; }
+    rm -f -- "$file"
+    mv -- "$tmp" "$file"
+    chmod 0644 "$file"
+    ok '已写入固定 DNS：1.1.1.1、8.8.8.8'
+}
+
 systemd_check_pass() { printf '[通过] %s\n' "$1"; }
 systemd_check_fail() { printf '[缺失] %s\n' "$1" >&2; }
 systemd_check_note() { printf '[警告] %s\n' "$1"; }
+
+cgroup_mode() {
+    if [[ -r /sys/fs/cgroup/cgroup.controllers ]] || awk '$3 == "cgroup2" { found=1 } END { exit !found }' /proc/mounts; then
+        printf 'v2'
+    elif awk '$3 == "cgroup" { found=1 } END { exit !found }' /proc/mounts; then
+        printf 'v1'
+    elif grep -qw cgroup2 /proc/filesystems; then
+        printf 'v2-unmounted'
+    elif grep -qw cgroup /proc/filesystems; then
+        printf 'v1-unmounted'
+    else
+        printf 'none'
+    fi
+}
+
+cgroup_has_controller() {
+    local controller=$1 mode
+    mode=$(cgroup_mode)
+    case "$mode" in
+        v2|v2-unmounted) grep -qw "$controller" /sys/fs/cgroup/cgroup.controllers 2>/dev/null ;;
+        v1|v1-unmounted) awk -v expected="$controller" '$1 == expected && $4 == 1 { found=1 } END { exit !found }' /proc/cgroups ;;
+        *) return 1 ;;
+    esac
+}
+
+cgroup_v1_controller_mounted() {
+    local controller=$1
+    awk -v expected="$controller" '
+        $3 == "cgroup" {
+            count=split($4, options, ",")
+            for (index=1; index <= count; index++) if (options[index] == expected) found=1
+        }
+        END { exit !found }
+    ' /proc/mounts
+}
+
+cgroup_check() {
+    local mode controllers=''
+    mode=$(cgroup_mode)
+    printf 'Kernel: %s\nMode: %s\nMounts:\n' "$(uname -r)" "$mode"
+    awk '$3 == "cgroup" || $3 == "cgroup2" { print "  " $2 " (" $3 ")" }' /proc/mounts
+    if [[ -r /sys/fs/cgroup/cgroup.controllers ]]; then
+        controllers=$(cat /sys/fs/cgroup/cgroup.controllers)
+        printf 'Available controllers: %s\n' "${controllers:-none}"
+        printf 'Enabled subtree controllers: %s\n' "$(cat /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || printf unavailable)"
+    else
+        printf 'Enabled v1 controllers:\n'
+        awk 'NR > 1 && $4 == 1 { print "  " $1 }' /proc/cgroups
+    fi
+    [[ -e /proc/self/ns/cgroup ]] && printf '[通过] cgroup namespace 文件存在\n' || printf '[警告] cgroup namespace 不存在\n'
+    if unshare --cgroup --fork /bin/true >/dev/null 2>&1; then
+        printf '[通过] 可创建 cgroup namespace\n'
+    else
+        printf '[警告] 无法创建 cgroup namespace，将使用兼容视图\n'
+    fi
+    case "$mode" in
+        none) printf '[缺失] 内核未提供 cgroup 文件系统\n' >&2; return 1 ;;
+        *-unmounted) printf '[警告] cgroup 文件系统尚未挂载，将在 systemd mount namespace 内尝试挂载\n' ;;
+    esac
+    if cgroup_has_controller pids; then
+        printf '[通过] pids controller\n'
+    else
+        printf '[缺失] pids controller\n' >&2
+        return 1
+    fi
+}
+
+namespace_check() {
+    local option=$1 label=$2
+    if unshare "$option" --fork /bin/true >/dev/null 2>&1; then
+        printf '[通过] namespace: %s\n' "$label"
+        return 0
+    fi
+    printf '[缺失] namespace: %s\n' "$label" >&2
+    return 1
+}
 
 systemd_pid_files() {
     PID_FILE="$CONTAINER/.xtmoe-systemd.pid"
@@ -220,7 +316,12 @@ systemd_running() {
 }
 
 systemd_manager_ready() {
-    [[ -S $ROOTFS/run/systemd/private && -d $ROOTFS/run/systemd/system ]]
+    local pid
+    systemd_pid_files
+    [[ -r $PID_FILE ]] || return 1
+    IFS= read -r pid <"$PID_FILE"
+    process_alive "$pid" || return 1
+    [[ -S /proc/$pid/root/run/systemd/private && -d /proc/$pid/root/run/systemd/system ]]
 }
 
 systemd_target_pid() {
@@ -274,6 +375,8 @@ systemd_check() {
         systemd_check_pass '可写 cgroup2'
     elif grep -qw cgroup /proc/filesystems && [[ -w /sys/fs/cgroup ]]; then
         systemd_check_note '使用 cgroup v1；systemd 兼容性取决于挂载的 controllers'
+    elif grep -Eqw 'cgroup|cgroup2' /proc/filesystems; then
+        systemd_check_note 'cgroup 未挂载或不可写；将为 Chroot 尝试独立挂载，Docker 仍需严格检查'
     else
         systemd_check_fail '可写 cgroup/cgroup2'; ((failures += 1))
     fi
@@ -290,8 +393,112 @@ systemd_check() {
     printf 'systemd 前置检查通过；可尝试嵌套启动\n'
 }
 
+docker_gate() {
+    local failures=0 mode ip_forward
+    printf 'Kernel: %s\nArchitecture: %s\n' "$(uname -r)" "$(uname -m)"
+    namespace_check --mount mount || ((failures += 1))
+    namespace_check --pid pid || ((failures += 1))
+    namespace_check --net network || ((failures += 1))
+    namespace_check --ipc ipc || ((failures += 1))
+    namespace_check --uts uts || ((failures += 1))
+    [[ -e /proc/self/ns/user ]] && printf '[通过] namespace: user（可选）\n' || printf '[警告] namespace: user 不存在（rootful Docker 可选）\n'
+
+    mode=$(cgroup_mode)
+    case "$mode" in
+        v1|v2) printf '[通过] cgroup hierarchy: %s\n' "$mode" ;;
+        v1-unmounted|v2-unmounted) printf '[缺失] cgroup hierarchy 未挂载\n' >&2; ((failures += 1)) ;;
+        *) printf '[缺失] cgroup hierarchy\n' >&2; ((failures += 1)) ;;
+    esac
+    if cgroup_has_controller pids && { [[ $mode != v1 ]] || cgroup_v1_controller_mounted pids; }; then
+        printf '[通过] pids cgroup controller\n'
+    else
+        printf '[缺失] pids cgroup controller\n' >&2
+        ((failures += 1))
+    fi
+    if [[ $mode == v1 ]]; then
+        if cgroup_has_controller devices && cgroup_v1_controller_mounted devices; then
+            printf '[通过] devices cgroup v1 controller\n'
+        else
+            printf '[缺失] devices cgroup v1 controller\n' >&2
+            ((failures += 1))
+        fi
+    elif [[ $mode == v2 ]]; then
+        printf '[警告] cgroup v2 devices 由 BPF/runc 实测确认\n'
+    fi
+
+    grep -qw overlay /proc/filesystems && printf '[通过] OverlayFS\n' || printf '[警告] OverlayFS 缺失，将尝试 vfs 存储驱动\n'
+    ip_forward=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || printf 0)
+    if [[ $ip_forward == 1 ]]; then
+        printf '[通过] IPv4 forwarding\n'
+    elif [[ -w /proc/sys/net/ipv4/ip_forward ]]; then
+        printf '[警告] IPv4 forwarding 未启用，但当前可写；dockerd 可能启用它\n'
+    else
+        printf '[缺失] IPv4 forwarding 未启用且不可写\n' >&2
+        ((failures += 1))
+    fi
+    if rootfs_has_executable "$ROOTFS" /usr/sbin/iptables || rootfs_has_executable "$ROOTFS" /usr/bin/iptables; then
+        printf '[通过] 容器内 iptables\n'
+    else
+        printf '[缺失] 容器内 iptables\n' >&2
+        ((failures += 1))
+    fi
+    if systemd_running && systemd_manager_ready; then
+        printf '[通过] 嵌套 systemd manager\n'
+    else
+        printf '[缺失] 嵌套 systemd manager\n' >&2
+        ((failures += 1))
+    fi
+    printf 'Summary: failures=%s\n' "$failures"
+    ((failures == 0))
+}
+
+ensure_cgroup_mount() {
+    local target="$ROOTFS/sys/fs/cgroup" mode controller hierarchy
+    mkdir -p "$target"
+    mode=$(cgroup_mode)
+    if [[ $mode == v2 && -e /proc/1/ns/cgroup && -e /proc/self/ns/cgroup &&
+        $(readlink /proc/1/ns/cgroup) != "$(readlink /proc/self/ns/cgroup)" ]]; then
+        umount "$target" 2>/dev/null || true
+        if mount -t cgroup2 -o nosuid,nodev,noexec cgroup2 "$target" 2>/dev/null; then
+            ok "已在独立 cgroup namespace 重新挂载 cgroup2：$target"
+            return 0
+        fi
+    fi
+    if is_mounted "$target"; then
+        ok "cgroup 已挂载：$target"
+        return 0
+    fi
+    case "$mode" in
+        v2|v2-unmounted)
+            mount -t cgroup2 -o nosuid,nodev,noexec cgroup2 "$target" || {
+                warn '无法在 Chroot 挂载 cgroup2；systemd 将使用宿主兼容视图'
+                return 0
+            }
+            ;;
+        v1|v1-unmounted)
+            mount -t tmpfs -o mode=755,nosuid,nodev,noexec cgroup_root "$target" || return 0
+            while read -r controller hierarchy; do
+                [[ $hierarchy != 0 ]] || continue
+                mkdir -p "$target/$controller"
+                mount -t cgroup -o "$controller" cgroup "$target/$controller" 2>/dev/null ||
+                    warn "无法挂载 cgroup v1 controller：$controller"
+            done < <(awk 'NR > 1 && $4 == 1 { print $1, $2 }' /proc/cgroups)
+            ;;
+        *) warn '内核没有可挂载的 cgroup 文件系统' ;;
+    esac
+}
+
+systemd_namespace_launch() {
+    local config=${1:-}
+    mount --make-rprivate / 2>/dev/null || true
+    mount_all "$config" 0
+    ensure_cgroup_mount
+    chroot "$ROOTFS" /bin/bash -c \
+        'mount -t proc proc /proc 2>/dev/null || true; exec /sbin/init --unit=multi-user.target'
+}
+
 systemd_start() {
-    local config=${1:-} launcher_pid target_pid mounted_here=0 attempt
+    local config=${1:-} launcher_pid target_pid attempt helper_path
     local extra
     local -a namespace_args=(--mount --pid) candidate_args
     systemd_check
@@ -300,12 +507,7 @@ systemd_start() {
         systemd_manager_ready && { ok '嵌套 systemd 已在运行并就绪'; return 0; }
         die '嵌套 systemd 进程存在，但 manager 尚未就绪'
     fi
-    if is_mounted "$ROOTFS"; then
-        mounted_here=0
-    else
-        mount_all "$config" 0
-        mounted_here=1
-    fi
+    is_mounted "$ROOTFS" && die '容器已有普通 Chroot 挂载；请先退出会话并执行 stop。'
     rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
     for extra in --ipc --uts --cgroup; do
         candidate_args=("${namespace_args[@]}" "$extra")
@@ -313,9 +515,10 @@ systemd_start() {
             namespace_args=("${candidate_args[@]}")
         fi
     done
+    helper_path=$(realpath -m -- "${BASH_SOURCE[0]}")
     nohup unshare "${namespace_args[@]}" --fork \
-        chroot "$ROOTFS" /bin/bash -c \
-        'mount -t proc proc /proc 2>/dev/null || true; exec /sbin/init --unit=multi-user.target' \
+        "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" \
+        _systemd-launch "$BASE" "$CONTAINER_NAME" "$config" \
         >"$SYSTEMD_LOG_FILE" 2>&1 &
     launcher_pid=$!
     printf '%s\n' "$launcher_pid" >"$LAUNCHER_PID_FILE"
@@ -327,7 +530,6 @@ systemd_start() {
     done
     if [[ -z $target_pid ]]; then
         kill -TERM "$launcher_pid" 2>/dev/null || true
-        ((mounted_here)) && unmount_all "$ROOTFS" || true
         die "无法定位嵌套 systemd 进程；查看 $SYSTEMD_LOG_FILE"
     fi
     printf '%s\n' "$target_pid" >"$PID_FILE"
@@ -338,7 +540,6 @@ systemd_start() {
     done
     if ! process_alive "$target_pid"; then
         rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
-        ((mounted_here)) && unmount_all "$ROOTFS" || true
         die "systemd 已退出；查看 $SYSTEMD_LOG_FILE"
     fi
     if ! systemd_manager_ready; then
@@ -347,7 +548,6 @@ systemd_start() {
         sleep 1
         process_alive "$target_pid" && kill -KILL "$target_pid" 2>/dev/null || true
         rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
-        ((mounted_here)) && unmount_all "$ROOTFS" || true
         die "systemd manager 未就绪；查看 $SYSTEMD_LOG_FILE"
     fi
     ok "嵌套 systemd 已启动并就绪（宿主 PID $target_pid）"
@@ -392,6 +592,9 @@ systemd_stop() {
         return 0
     fi
     pid=$(systemd_target_pid)
+    if rootfs_has_executable "$ROOTFS" /usr/bin/docker; then
+        systemd_exec /usr/bin/systemctl stop docker.service containerd.service >/dev/null 2>&1 || true
+    fi
     systemd_exec /usr/bin/systemctl poweroff >/dev/null 2>&1 || kill -TERM "$pid" 2>/dev/null || true
     for ((attempt = 0; attempt < 100; attempt++)); do
         process_alive "$pid" || break
@@ -405,6 +608,24 @@ systemd_stop() {
     rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
     unmount_all "$ROOTFS" || warn 'systemd 已停止，但部分挂载未卸载'
     ok '嵌套 systemd 已停止'
+}
+
+docker_state() {
+    if ! rootfs_has_executable "$ROOTFS" /usr/bin/docker; then
+        printf 'not-installed\n'
+        return 0
+    fi
+    if ! systemd_running; then
+        printf 'installed-stopped\n'
+        return 0
+    fi
+    if systemd_exec /usr/bin/docker info >/dev/null 2>&1; then
+        printf 'ready\n'
+    elif [[ -S /proc/$(systemd_target_pid)/root/run/docker.sock ]]; then
+        printf 'unresponsive\n'
+    else
+        printf 'inactive\n'
+    fi
 }
 
 install_rootfs() {
@@ -476,6 +697,7 @@ run_chroot() {
 backup_container() {
     local output=$1 owner_uid=$2 owner_gid=$3 canonical_output partial_output
     [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器标记不存在，拒绝备份'
+    systemd_running && die '嵌套 systemd 仍在运行；请先执行 stop'
     is_mounted "$ROOTFS" && die '容器仍有挂载；请先执行 stop'
     canonical_output=$(realpath -m -- "$output")
     [[ $canonical_output != "$CONTAINER" && $canonical_output != "$CONTAINER"/* ]] || die '备份文件不能写入被备份的容器内部'
@@ -510,6 +732,7 @@ restore_container() {
 
 remove_container() {
     [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器标记不存在，拒绝删除'
+    systemd_running && die '嵌套 systemd 仍在运行；请先执行 xtmoe chroot stop'
     is_mounted "$ROOTFS" && die '容器仍有挂载；请先执行 xtmoe chroot stop'
     rm -rf --one-file-system -- "$CONTAINER"
 }
@@ -536,6 +759,33 @@ case "$ACTION" in
         [[ ${XTMOE_INTERNAL_TEST:-0} == 1 ]] || die '内部测试操作不可用'
         rootfs_has_shell "${1:?缺少测试 rootfs}" || die '测试 rootfs 缺少可执行的 /bin/sh'
         ok 'rootfs shell check passed'
+        ;;
+    _systemd-launch)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        systemd_namespace_launch "${3:-}"
+        ;;
+    set-dns)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        shift 2
+        (($#)) || die '缺少 DNS 地址'
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        set_dns_config "$ROOTFS" "$@"
+        ;;
+    cgroup-check)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        cgroup_check
+        ;;
+    docker-check)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        docker_gate
+        ;;
+    docker-state)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        docker_state
         ;;
     systemd-check)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"

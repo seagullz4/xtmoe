@@ -28,6 +28,13 @@ xtmoe proot exec ubuntu -- uname -a
 xtmoe proot exec ubuntu -- /bin/bash -lc 'apt-get update && apt-get upgrade -y'
 ```
 
+也可以通过统一列表或直接入口进入：
+
+```sh
+xtmoe list
+xtmoe enter proot ubuntu
+```
+
 退出交互式 Shell：
 
 ```sh
@@ -67,6 +74,21 @@ xtmoe proot raw login --help
 xtmoe proot ps
 xtmoe proot stop ubuntu
 ```
+
+查看单个容器状态：
+
+```sh
+xtmoe proot status ubuntu
+```
+
+## 更新与重装
+
+```sh
+xtmoe proot update-system ubuntu
+xtmoe proot reinstall ubuntu
+```
+
+`update-system` 会识别 APT、DNF、Pacman、APK 或 Zypper；无法识别时停止，不猜测更新命令。`reinstall` 使用 `proot-distro reset` 按原镜像重建，会永久删除容器数据且不自动备份；非交互执行必须显式添加 `--yes`。
 
 `stop` 会让 `proot-distro` 停止该容器已登记的活动会话。需要使用更高级的后台、入口点或会话参数时，可直接调用：
 

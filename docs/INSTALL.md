@@ -38,7 +38,13 @@ sh termux.sh
 ~/.cache/xtmoe
 ```
 
-Chroot 全新安装由 `xtmoe chroot install` 默认询问并完成 Ubuntu 标准组件、systemd 和 Bash Shell 初始化；自动化使用 `--yes`，显式跳过使用 `--skip-systemd`、`--skip-bash-sh`。
+Chroot 全新安装由 `xtmoe chroot install` 默认询问并完成 Ubuntu 标准组件、systemd、Bash Shell 和 Docker 初始化。自动化完整安装除 `--yes` 外还必须显式确认 Docker bridge 风险：
+
+```sh
+xtmoe chroot install --yes --accept-host-network-changes ubuntu 24.04 ubuntu
+```
+
+不需要 Docker 时使用 `--skip-docker`；`--skip-systemd` 会同时跳过 Docker。
 
 安装完成后必须运行：
 
@@ -66,6 +72,25 @@ xtmoe doctor
 ```
 
 重新执行安装器只更新程序文件，不删除容器、配置或备份。安装器先替换库文件，最后原子替换命令入口；安装结束会比较源码版本和已安装版本。
+
+`xtmoe update` 只更新 XTMOE 管理程序，不更新容器内软件。容器系统更新使用独立命令：
+
+```sh
+xtmoe proot update-system ubuntu
+xtmoe chroot update-system ubuntu
+```
+
+## 统一向导、列表与进入
+
+```sh
+xtmoe on
+xtmoe list
+xtmoe list --all --no-prompt
+xtmoe enter proot ubuntu
+xtmoe enter chroot ubuntu
+```
+
+`xtmoe list` 默认只显示正在运行的系统，并在交互终端中允许输入编号进入。脚本、管道环境或 `--no-prompt` 只输出表格，不读取标准输入。
 
 ## 切换 Termux 镜像
 

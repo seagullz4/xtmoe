@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
 
-XTMOE_VERSION='0.2.2-dev'
+XTMOE_VERSION='0.3.0-dev'
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 if [[ -r "$SCRIPT_DIR/../lib/common.sh" ]]; then
@@ -13,12 +13,16 @@ fi
 source "$XTMOE_LIB_DIR/common.sh"
 source "$XTMOE_LIB_DIR/proot.sh"
 source "$XTMOE_LIB_DIR/chroot.sh"
+source "$XTMOE_LIB_DIR/manager.sh"
 
 show_help() {
     printf 'XTMOE %s\n\n' "$XTMOE_VERSION"
     cat <<'EOF'
 用法：
   xtmoe doctor
+  xtmoe on
+  xtmoe list [--all|--running] [--no-prompt]
+  xtmoe enter <proot|chroot> <名称>
   xtmoe proot  <操作> [参数]
   xtmoe chroot <操作> [参数]
   xtmoe uninstall [--yes] <proot|chroot> <名称>
@@ -28,6 +32,10 @@ show_help() {
   xtmoe help
 
 常用示例：
+  xtmoe on
+  xtmoe list
+  xtmoe list --all --no-prompt
+  xtmoe enter chroot ubuntu
   xtmoe proot install ubuntu:24.04 ubuntu
   xtmoe proot login ubuntu
   xtmoe proot exec ubuntu -- uname -a
@@ -228,6 +236,9 @@ main() {
     shift || true
     case "$command" in
         doctor) doctor "$@" ;;
+        on) on_main "$@" ;;
+        list) list_main "$@" ;;
+        enter) enter_main "$@" ;;
         proot) proot_main "$@" ;;
         chroot) chroot_main "$@" ;;
         uninstall) uninstall_main "$@" ;;

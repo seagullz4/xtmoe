@@ -98,6 +98,7 @@ tsu -c 'id; getenforce; mount --version'
 
 ```sh
 xtmoe chroot docker-check ubuntu
+xtmoe chroot docker-status ubuntu
 ```
 
 如果输出存在 `[缺失]`，说明 Android 内核缺少 Docker 必需能力。仅安装 `docker`/`dockerd`/`wmdocker` 用户空间程序不能补上内核中的 namespace 或 cgroup controller。
@@ -150,11 +151,37 @@ xtmoe chroot login ubuntu
 ## apt 无法解析域名
 
 ```sh
-cat /etc/resolv.conf
-getent hosts archive.ubuntu.com
+xtmoe chroot network-check ubuntu
 ```
 
-Chroot 初始化会写入公共 DNS。若当前网络阻止这些 DNS，可在容器内按网络环境更换 `/etc/resolv.conf`。
+Chroot 初始化固定写入 `1.1.1.1` 和 `8.8.8.8`。`network-check` 会完整打印 resolv.conf、`ports.ubuntu.com` 解析、数字 IP Ping、Ubuntu 源 HTTP 访问和代理变量状态。若当前 VPN、私有 DNS 或运营商阻止公共 DNS，初始化会停止并把容器标记为 `partial`；修正网络后执行：
+
+```sh
+xtmoe chroot repair ubuntu
+```
+
+不要在 DNS 仍失败时反复安装 Docker；APT 网络失败和 Docker 内核阻断是两类独立问题。
+
+## Docker 安装返回状态 2
+
+状态 `2` 表示 Ubuntu 和嵌套 systemd 已完成，但 Docker 因 Android 内核硬阻断被严格跳过。查看详细原因：
+
+```sh
+xtmoe chroot cgroup-check ubuntu
+xtmoe chroot docker-check ubuntu
+```
+
+常见阻断包括无法创建 IPC/network namespace、缺少 `pids` controller、cgroup v1 缺少 `devices`、IP forwarding 不可写或容器内缺少 iptables。安装 `dockerd` 用户空间程序不能修复这些内核能力。
+
+## Docker 已安装但服务失败
+
+```sh
+xtmoe chroot docker-status ubuntu
+xtmoe chroot docker-logs ubuntu
+xtmoe chroot systemd-status ubuntu
+```
+
+`docker-status` 只有在 containerd、docker.service、socket 和 `docker info` 都正常时才成功。若 daemon 可响应但 `hello-world` 失败，优先检查 registry DNS、HTTPS、VPN 和代理，不要把它误判为 daemon 已崩溃。
 
 ## `sudo` 提示无法解析 `localhost`
 

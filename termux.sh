@@ -54,6 +54,7 @@ mkdir -p "$BIN_DIR" "$LIB_DIR/lib"
 atomic_install "$SOURCE_DIR/lib/common.sh" "$LIB_DIR/lib/common.sh" 0644
 atomic_install "$SOURCE_DIR/lib/proot.sh" "$LIB_DIR/lib/proot.sh" 0644
 atomic_install "$SOURCE_DIR/lib/chroot.sh" "$LIB_DIR/lib/chroot.sh" 0644
+atomic_install "$SOURCE_DIR/lib/manager.sh" "$LIB_DIR/lib/manager.sh" 0644
 atomic_install "$SOURCE_DIR/lib/xtmoe-root" "$LIB_DIR/xtmoe-root" 0755
 
 SOURCE_ROOT_FILE="$LIB_DIR/source-root"

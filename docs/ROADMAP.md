@@ -1,6 +1,6 @@
 # 优化计划与验收状态
 
-XTMOE 直接采用可测试的模块化实现；当前开发版本为 `0.2.2-dev`。
+XTMOE 直接采用可测试的模块化实现；当前开发版本为 `0.3.0-dev`。
 
 ## 已实施
 
@@ -16,6 +16,13 @@ XTMOE 直接采用可测试的模块化实现；当前开发版本为 `0.2.2-dev
 - [x] 支持登录、单命令、停止、状态、绑定目录、备份、恢复和删除。
 - [x] 不再自动修改 Termux 镜像、字体、颜色和键盘布局。
 - [x] 重写安装、PRoot、Chroot、日常操作和故障排查文档。
+- [x] 增加 `xtmoe on` 完整管理向导，以及统一 `list`/`enter`。
+- [x] PRoot 增加状态、系统更新和确认后重装。
+- [x] Chroot 增加阶段元数据、`repair`、系统更新和确认后重装。
+- [x] Chroot 固定公共 DNS，并提供可复现的网络诊断。
+- [x] 增加 cgroup v1/v2 检查和 Chroot cgroup 挂载尝试。
+- [x] 增加 Docker 官方源安装、systemd 自动启动、服务管理、日志和 `hello-world` 验收。
+- [x] Docker 安装前严格检查 namespace、cgroup、iptables 和 IP forwarding；硬阻断返回状态 2。
 
 ## 自动验证门槛
 
@@ -33,6 +40,9 @@ XTMOE 直接采用可测试的模块化实现；当前开发版本为 `0.2.2-dev
 - [ ] Android 8–11、Android 12–14、Android 15+ 至少各一台或对应测试环境。
 - [ ] `aarch64` PRoot：安装、登录、执行、停止、备份、恢复、删除。
 - [ ] `aarch64` Chroot：Ubuntu 24.04 安装、SHA 校验、登录、DNS、apt、停止。
+- [ ] 有完整 namespace/cgroup 能力的设备：Docker 官方源安装、重启自动拉起、`docker info`、`hello-world`。
+- [ ] 缺少 pids/devices/IPC 能力的设备：Docker 严格跳过，Ubuntu/systemd 仍保持可用。
+- [ ] cgroup v1、v2 和 hybrid 设备分别验证挂载、停止清理和重复启动。
 - [ ] 在 Android/Linux 文件系统运行真实 Ubuntu Base 的 `tests/rootfs-lifecycle.sh`；Windows/MSYS 因不能创建 Linux 符号链接而不作为通过证据。
 - [ ] Chroot 自定义只读/读写挂载及越界拒绝测试。
 - [ ] Chroot 中途下载失败、解压失败、Root 拒绝和挂载失败的恢复测试。

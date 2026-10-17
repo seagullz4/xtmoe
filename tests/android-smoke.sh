@@ -74,6 +74,7 @@ proot_test() {
 }
 
 chroot_test() {
+    local systemd_state install_status
     [[ ${XTMOE_SMOKE_ACCEPT_CHROOT_RISK:-} == YES ]] || die 'Chroot 测试需要设置 XTMOE_SMOKE_ACCEPT_CHROOT_RISK=YES'
     doctor_test
     mkdir -p "$WORK_DIR" "$HOST_SHARE"
@@ -81,10 +82,26 @@ chroot_test() {
     trap cleanup_chroot EXIT INT TERM
 
     xtmoe chroot prepare
-    xtmoe chroot install --yes ubuntu 24.04 "$CHROOT_NAME"
+    set +e
+    xtmoe chroot install --yes --accept-host-network-changes ubuntu 24.04 "$CHROOT_NAME"
+    install_status=$?
+    set -e
+    [[ $install_status == 0 || $install_status == 2 ]] || die "Chroot 初始化失败，状态：$install_status"
+    xtmoe list --all --no-prompt | grep -Fq "$CHROOT_NAME" || die '统一列表没有显示新 Chroot'
+    xtmoe chroot network-check "$CHROOT_NAME"
+    xtmoe chroot cgroup-check "$CHROOT_NAME" || true
     [[ $(xtmoe chroot systemd-exec "$CHROOT_NAME" -- readlink -f /bin/sh) == /usr/bin/bash ]] || die '/bin/sh 未切换为 Bash'
     systemd_state=$(xtmoe chroot systemd-exec "$CHROOT_NAME" -- systemctl is-system-running || true)
     [[ $systemd_state == running || $systemd_state == degraded || $systemd_state == starting ]] || die "systemd 状态异常：$systemd_state"
+    if [[ $install_status == 0 ]]; then
+        xtmoe chroot docker-status "$CHROOT_NAME"
+        xtmoe chroot systemd-exec "$CHROOT_NAME" -- docker info >/dev/null
+    else
+        if xtmoe chroot systemd-exec "$CHROOT_NAME" -- /bin/bash -lc 'command -v dockerd' >/dev/null 2>&1; then
+            die '内核硬阻断时不应安装 dockerd'
+        fi
+        say 'Docker 按预期被内核能力门控跳过'
+    fi
     xtmoe chroot systemd-exec "$CHROOT_NAME" -- /bin/bash -lc \
         'grep -q "^ID=ubuntu" /etc/os-release && getent hosts archive.ubuntu.com >/dev/null && printf smoke-ok > /root/.xtmoe-smoke'
     xtmoe chroot bind "$CHROOT_NAME" "$HOST_SHARE" /mnt/xtmoe-smoke ro

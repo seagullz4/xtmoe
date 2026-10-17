@@ -9,10 +9,10 @@ bash tests/run.sh
 测试使用临时 HOME、PREFIX、`proot-distro` 和 `tsu` 模拟器，不会创建真实容器或执行真实挂载。覆盖范围：
 
 - 安装器复制布局；
-- 主命令和模式帮助；
-- PRoot 安装、执行、名称校验和删除确认；
-- Chroot 绑定配置、重复目标和路径校验；
-- Root 助手拒绝任意基础目录。
+- 主命令、统一向导、列表和模式帮助；
+- PRoot 安装、执行、状态、系统更新、重装、名称校验和删除确认；
+- Chroot 阶段元数据、Docker 网络确认、严格能力门控、绑定配置和路径校验；
+- Root 助手拒绝任意基础目录，并验证 namespaced systemd/cgroup 启动结构。
 
 测试不能替代 Android 真机上的 PRoot、Root、SELinux、挂载和网络验收，真机矩阵见 `docs/ROADMAP.md`。
 
@@ -31,7 +31,7 @@ Chroot 测试会执行真实 Root 挂载、备份、恢复和删除，只创建�
 XTMOE_SMOKE_ACCEPT_CHROOT_RISK=YES bash tests/android-smoke.sh chroot
 ```
 
-PRoot 测试覆盖 Ubuntu 安装、命令和文件读写、备份、删除、恢复；Chroot 测试额外覆盖 DNS、只读绑定、完整卸载和 Root 路径。
+PRoot 测试覆盖 Ubuntu 安装、命令和文件读写、备份、删除、恢复；Chroot 测试额外覆盖固定 DNS、Ubuntu 源、统一列表、cgroup 检查、Docker 严格门控、只读绑定、完整卸载和 Root 路径。在内核能力完整的设备上必须通过 `docker info`；能力不足时允许初始化返回状态 `2`，但必须验证没有把未安装或不可运行的 dockerd 伪装成可用。
 
 ## Ubuntu Base 文件系统生命周期
 

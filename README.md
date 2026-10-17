@@ -1,6 +1,6 @@
 # XTMOE
 
-XTMOE 是一个从零设计的 Android Termux Linux 环境管理工具，使用可诊断、可测试的命令式实现，并明确分离 **PRoot** 和 **Chroot** 两种模式。
+XTMOE 0.3.0-dev 是一个从零设计的 Android Termux Linux 环境管理工具，使用可诊断、可测试的命令式实现，并明确分离 **PRoot** 和 **Chroot** 两种模式。既可以使用 `xtmoe on` 交互向导，也可以使用完整子命令进行自动化。
 
 项目只实现当前架构。安装入口从已经下载的源码树安装，并且不会自动修改 Termux 软件源、字体、键盘布局或颜色主题。
 
@@ -14,9 +14,33 @@ XTMOE 是一个从零设计的 Android Termux Linux 环境管理工具，使用�
 | 性能 | 有系统调用转换开销 | 接近原生用户空间性能 |
 | 隔离性 | 不是强安全沙箱 | 不是安全沙箱，与 Android 共用内核 |
 | systemd | 通常不可用 | 默认尝试嵌套 systemd；能力取决于 Android 内核 |
+| Docker | 不支持 Docker daemon | 通过严格内核门控后可安装；不保证所有 Android 内核可用 |
 | 删除风险 | 较低 | 必须先卸载绑定挂载 |
 
 不确定时请选择 **PRoot**。
+
+## 统一管理向导
+
+安装 XTMOE 后，推荐直接运行：
+
+```sh
+xtmoe on
+```
+
+向导会先选择 PRoot 或 Chroot，再提供安装、进入、停止、更新系统、重装、备份、恢复、卸载和状态检查。菜单中的每项操作都对应可单独执行的公共子命令。
+
+查看当前正在运行的系统并选择进入：
+
+```sh
+xtmoe list
+```
+
+查看全部已安装系统但不进入交互选择：
+
+```sh
+xtmoe list --all --no-prompt
+xtmoe enter chroot ubuntu
+```
 
 ## 要求
 
@@ -74,6 +98,8 @@ xtmoe proot list
 xtmoe proot ps
 xtmoe proot stop ubuntu
 xtmoe proot backup ubuntu "$HOME/ubuntu-backup.tar.gz"
+xtmoe proot update-system ubuntu
+xtmoe proot status ubuntu
 ```
 
 卸载 PRoot 镜像及其全部数据：
@@ -109,7 +135,19 @@ xtmoe chroot stop ubuntu
 xtmoe uninstall chroot ubuntu
 ```
 
-安装过程从 Ubuntu 官方发布页选择最新的 24.04.x Ubuntu Base 原生架构镜像，并使用官方 `SHA256SUMS` 校验后才解压。全新安装默认询问并初始化 Ubuntu 标准组件、嵌套 systemd 和 Bash `/bin/sh`。自动化可使用 `--yes`，明确拒绝可使用 `--skip-systemd`、`--skip-bash-sh`。
+安装过程从 Ubuntu 官方发布页选择最新的 24.04.x Ubuntu Base 原生架构镜像，并使用官方 `SHA256SUMS` 校验后才解压。全新交互安装默认初始化 Ubuntu 标准组件、嵌套 systemd、Bash `/bin/sh`，并在内核严格检查通过后安装 Docker Engine。Docker 标准 bridge 会修改 Android 宿主网络规则，因此自动化完整安装必须同时使用：
+
+```sh
+xtmoe chroot install --yes --accept-host-network-changes ubuntu 24.04 ubuntu
+```
+
+不需要 Docker 时应明确使用：
+
+```sh
+xtmoe chroot install --yes --skip-docker ubuntu 24.04 ubuntu
+```
+
+若缺少 namespace、pids/devices cgroup controller 等内核能力，命令返回状态 `2`：Ubuntu 和 systemd 保持可用，但 XTMOE 不安装、不启动 Docker，也不会把它报告为可用。修复中断的 APT、systemd 或 Docker 初始化可执行 `xtmoe chroot repair ubuntu`。
 
 ## 文档
 

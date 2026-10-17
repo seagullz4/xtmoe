@@ -44,9 +44,23 @@ xtmoe chroot install ubuntu 24.04 ubuntu
 3. 下载官方 `SHA256SUMS`；
 4. 校验镜像；
 5. 以 Root 保留原始 UID/GID 解压；
-6. 优先读取 Android 当前 DNS，若系统未公开 DNS 属性则使用后备 DNS；
+6. 写入固定公共 DNS `1.1.1.1`、`8.8.8.8` 并验证 `ports.ubuntu.com`；
 7. 初始化 `/etc/hostname`、`/etc/hosts`、名称解析策略、`/etc/resolv.conf`、`/etc/mtab` 和运行目录；
-8. 默认确认后安装 Ubuntu 标准组件和 systemd，把 `/bin/sh` 切换为 Bash，并启动嵌套 systemd。
+8. 默认确认后安装 Ubuntu 标准组件和 systemd，把 `/bin/sh` 切换为 Bash，并启动嵌套 systemd；
+9. 检查 namespace、cgroup、iptables 和转发能力；只有检查通过才安装 Docker；
+10. 启用 `containerd`/`docker`，并通过 `docker info` 和 `hello-world` 实际验收。
+
+初始化阶段记录为 `base-ready`、`network-ready`、`system-ready`、`docker-ready`、`ready` 或 `partial`。网络、APT、systemd 或 Docker 中途失败时保留 rootfs，修复外部条件后继续：
+
+```sh
+xtmoe chroot repair ubuntu
+```
+
+如果该容器期望安装 Docker，非交互修复还需要显式确认宿主网络变化：
+
+```sh
+xtmoe chroot repair --accept-host-network-changes ubuntu
+```
 
 目前不支持跨架构 Chroot。需要跨架构时请使用 PRoot 加 QEMU。
 
@@ -66,7 +80,13 @@ xtmoe chroot login ubuntu
 xtmoe chroot setup ubuntu
 ```
 
-`setup` 会更新 apt，并安装 `ubuntu-standard`、CA 证书、curl、locale、OpenSSH Server、sudo、systemd、D-Bus、Bash、procps、util-linux、kmod 和 mount。安装期间临时阻止包脚本启动宿主服务，之后由嵌套 systemd 管理。
+`setup` 会更新 apt，并安装 `ubuntu-standard`、CA 证书、curl、locale、OpenSSH Server、sudo、systemd、D-Bus、Bash、procps、util-linux、kmod、mount、iproute2、iptables 和 iputils-ping。安装期间临时阻止包脚本启动宿主服务，之后由嵌套 systemd 管理。
+
+完整网络诊断会打印 DNS、域名解析、数字 IP Ping、Ubuntu 源 HTTP 访问和代理变量是否设置：
+
+```sh
+xtmoe chroot network-check ubuntu
+```
 
 初始化会保留镜像中已有的其他主机映射，并确保 `localhost` 同时映射到 `127.0.0.1` 和 `::1`。每次 `login`、`exec` 或 `setup` 还会自动补齐已有容器缺失的本机名称配置，这可以避免 `sudo: unable to resolve host localhost` 一类的错误。
 
@@ -89,6 +109,14 @@ xtmoe chroot systemd-stop ubuntu
 
 嵌套 systemd 不等于 Android 原生启动服务，也不会绕过缺少 pids cgroup 等内核限制。只要 `systemd-check` 出现 `[缺失]`，就不应继续安装 Docker 或 1Panel。
 
+查看 cgroup v1/v2、挂载点、controller 和 cgroup namespace 能力：
+
+```sh
+xtmoe chroot cgroup-check ubuntu
+```
+
+XTMOE 只挂载内核真实提供的 cgroup 文件系统。缺少的 `pids`、`devices` 或 namespace 不能通过用户空间脚本补造。
+
 ## Bash 作为 `/bin/sh`
 
 全新安装默认询问是否把 `/bin/sh` 切换为 Bash；接受后即可兼容声明 `#!/bin/sh` 却使用 Bash 数组的第三方脚本。也可以随时显式执行：
@@ -99,13 +127,41 @@ xtmoe chroot use-bash-sh ubuntu
 
 该命令通过 dash 的包配置切换默认 Shell，并把 `/bin/sh` 以相对链接指向 Bash，避免 usrmerge rootfs 在宿主侧被误判。原生 Ubuntu 默认使用 dash；XTMOE 专用容器默认选择 Bash，以兼容 1Panel 等安装器。拒绝切换时使用 `--skip-bash-sh`，或在安装确认提示中回答 `n`。
 
-在安装 Docker 或 1Panel 前运行只读内核检查：
+## Docker 生命周期
+
+在安装 Docker 或部署 1Panel 前运行只读内核检查：
 
 ```sh
 xtmoe chroot docker-check ubuntu
 ```
 
-它检查 namespace、cgroup controller、OverlayFS、IPv4 转发、iptables、dockerd、Docker socket 和 PID 1，不安装或更改 Docker。只要存在 `[缺失]`，就不应继续安装 1Panel。
+它实际尝试创建 mount、PID、network、IPC 和 UTS namespace，并检查 cgroup hierarchy、`pids`、v1 `devices`、OverlayFS、IPv4 转发、iptables 和嵌套 systemd。只要存在 `[缺失]`，Docker 安装就会被严格跳过。
+
+检查通过后安装 Docker 官方仓库版本：
+
+```sh
+xtmoe chroot docker-install ubuntu
+```
+
+Docker 标准 bridge 会影响 Android 宿主共享网络 namespace 中的 iptables 和 IP forwarding，交互安装必须确认。自动化使用：
+
+```sh
+xtmoe chroot docker-install --accept-host-network-changes ubuntu
+```
+
+服务管理和日志：
+
+```sh
+xtmoe chroot docker-start ubuntu
+xtmoe chroot docker-status ubuntu
+xtmoe chroot docker-restart ubuntu
+xtmoe chroot docker-logs ubuntu
+xtmoe chroot docker-stop ubuntu
+```
+
+安装成功后 `docker.service` 与 `containerd.service` 会被 enable，每次 `xtmoe chroot systemd-start ubuntu` 后由嵌套 systemd 自动拉起。这不等于 Android 开机自启。
+
+Docker 有四种必须区分的结果：完全通过；systemd 可用但内核阻断；daemon 可用但 registry/`hello-world` 未验证；软件已安装但 daemon 启动失败。XTMOE 不会把后三者显示为完全可用，也不会自动安装 1Panel。
 
 每次登录会受控挂载 rootfs 自身、`/proc`、`/sys`、`/dev` 和 `/run`。Shell 正常退出后会尝试卸载；如果容器中留下后台进程，卸载可能失败。
 
@@ -123,7 +179,7 @@ xtmoe chroot list
 
 进行备份、恢复或删除前，`status` 应显示 `stopped`。
 
-`chroot stop` 是统一停止入口：嵌套 systemd 运行时会先正常关闭 systemd，再卸载全部挂载；未运行时只清理挂载。重复执行是安全的。若提示 busy，先返回容器停止服务和后台进程，再执行 `stop`。不要跳过检查直接删除目录。
+`chroot stop` 是统一停止入口：嵌套 systemd 运行时先停止 Docker/containerd，再正常关闭 systemd，最后卸载 cgroup 和全部绑定挂载；未运行时只清理挂载。重复执行是安全的。若提示 busy，先返回容器停止服务和后台进程，再执行 `stop`。不要跳过检查直接删除目录。
 
 ## 配置绑定挂载
 
@@ -195,16 +251,31 @@ xtmoe uninstall --yes chroot ubuntu
 自动化环境使用：
 
 ```sh
-xtmoe chroot install --yes ubuntu 24.04 ubuntu
+xtmoe chroot install --yes --accept-host-network-changes ubuntu 24.04 ubuntu
 ```
 
-明确跳过可选初始化：
+不安装 Docker：
 
 ```sh
-xtmoe chroot install --skip-systemd --skip-bash-sh ubuntu 24.04 ubuntu
+xtmoe chroot install --yes --skip-docker ubuntu 24.04 ubuntu
 ```
 
-`--yes` 接受默认 systemd/Bash 初始化。手机重启或 Termux 被 Android 杀死后，需要重新执行 `xtmoe chroot systemd-start ubuntu`；嵌套 systemd 不是 Android 启动服务。
+明确跳过 systemd、Docker 和 Shell 切换：
+
+```sh
+xtmoe chroot install --yes --skip-systemd --skip-bash-sh ubuntu 24.04 ubuntu
+```
+
+`--yes` 接受普通默认项，但不会代替 `--accept-host-network-changes` 这一高风险确认。手机重启或 Termux 被 Android 杀死后，需要重新执行 `xtmoe chroot systemd-start ubuntu`；嵌套 systemd 不是 Android 启动服务。
+
+更新或不备份直接重装：
+
+```sh
+xtmoe chroot update-system ubuntu
+xtmoe chroot reinstall ubuntu
+```
+
+`reinstall` 会永久删除 rootfs、Docker 镜像、容器和卷，不自动备份；脚本化使用必须添加 `--yes`。
 
 ## systemd 兼容边界
 

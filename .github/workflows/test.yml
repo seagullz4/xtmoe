@@ -28,6 +28,7 @@ jobs:
             src/lib/common.sh \
             src/lib/proot.sh \
             src/lib/chroot.sh \
+            src/lib/manager.sh \
             src/lib/xtmoe-root \
             tests/run.sh \
             tests/android-smoke.sh \
@@ -42,6 +43,7 @@ jobs:
             src/lib/common.sh \
             src/lib/proot.sh \
             src/lib/chroot.sh \
+            src/lib/manager.sh \
             src/lib/xtmoe-root \
             tests/run.sh \
             tests/android-smoke.sh \
