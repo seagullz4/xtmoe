@@ -389,17 +389,89 @@ qemu_install() (
     qemu_wait_ready --timeout 1800 "$name"
 )
 
-qemu_pid_valid() {
-    local name=$1 dir pid binary disk cmdline
+# Keep procfs reads separate so offline tests can exercise real identity parsing
+# with NUL-delimited fixtures, without substituting a test procfs at runtime.
+qemu_process_cmdline() { cat -- "/proc/$1/cmdline"; }
+qemu_process_exists() { [[ -d /proc/$1 ]]; }
+qemu_process_alive() { kill -0 "$1" 2>/dev/null; }
+
+qemu_pid_inspect() {
+    local name=$1 dir binary disk cmdline argument previous='' field candidate='' matched=0
+    QEMU_PID_REASON=missing; QEMU_PID_VALUE=''
+    valid_name "$name" || { QEMU_PID_REASON=invalid-name; return 1; }
     dir=$(qemu_vm_dir "$name"); disk="$dir/disk.qcow2"
-    valid_name "$name" || return 1
-    [[ -r $dir/qemu.pid && ! -L $dir/qemu.pid ]] || return 1
-    IFS= read -r pid <"$dir/qemu.pid"
-    [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || return 1
+    [[ -e $dir/qemu.pid || -L $dir/qemu.pid ]] || return 1
+    QEMU_PID_REASON=unreadable-pidfile
+    [[ -f $dir/qemu.pid && -r $dir/qemu.pid && ! -L $dir/qemu.pid ]] || return 1
+    # QEMU pidfiles need not end in a newline. Do not let read's EOF status
+    # abort callers running with errexit.
+    QEMU_PID_VALUE=$(<"$dir/qemu.pid")
+    QEMU_PID_REASON=invalid-pid
+    [[ $QEMU_PID_VALUE =~ ^[1-9][0-9]*$ && $QEMU_PID_VALUE != 1 ]] || return 1
+    QEMU_PID_REASON=dead
+    if ! qemu_process_alive "$QEMU_PID_VALUE"; then
+        qemu_process_exists "$QEMU_PID_VALUE" && QEMU_PID_REASON=permission-denied
+        return 1
+    fi
     binary=$(basename -- "$(qemu_binary_for_arch "$(qemu_config_get "$name" arch)")")
-    cmdline=$(tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null) || return 1
-    grep -Fxq -- "file=$disk,format=qcow2,if=virtio" <<<"$cmdline" || return 1
-    [[ ${cmdline%%$'\n'*} == "$binary" || ${cmdline%%$'\n'*} == */"$binary" ]]
+    QEMU_PID_REASON=unreadable-cmdline
+    # Preserve argument boundaries while also preserving the reader's status.
+    cmdline=$(set -o pipefail; qemu_process_cmdline "$QEMU_PID_VALUE" 2>/dev/null | tr '\0' '\n') || return 1
+    [[ -n $cmdline ]] || return 1
+    QEMU_PID_REASON=executable-mismatch
+    [[ ${cmdline%%$'\n'*} == "$binary" || ${cmdline%%$'\n'*} == */"$binary" ]] || return 1
+    QEMU_PID_REASON='disk-mismatch'
+    while IFS= read -r argument; do
+        if [[ $previous == -drive ]]; then
+            candidate=''
+            local -a fields=()
+            IFS=',' read -r -a fields <<<"$argument"
+            for field in "${fields[@]}"; do [[ $field != file=* ]] || candidate=${field#file=}; done
+            if [[ -n $candidate && $candidate == "$disk" ]]; then matched=1; break; fi
+        fi
+        previous=$argument
+    done <<<"$cmdline"
+    ((matched)) || return 1
+    QEMU_PID_REASON=running
+}
+
+qemu_pid_valid() { qemu_pid_inspect "$1"; }
+
+qemu_diagnostics() {
+    local name=$1 dir file
+    dir=$(qemu_vm_dir "$name")
+    qemu_pid_inspect "$name" || true
+    warn "VM=$name PID=${QEMU_PID_VALUE:-无}，进程检查=$QEMU_PID_REASON；目录：$dir"
+    case "$QEMU_PID_REASON" in
+        dead) warn 'PID 对应的进程已退出；退出原因需结合日志及 Android 系统记录判断，不能仅据此认定内存不足。' ;;
+        permission-denied|unreadable-*) warn '无法读取或验证进程；不会把权限问题当作已停止，也不会自动删除 PID/socket。' ;;
+        *mismatch) warn 'PID 对应的程序或磁盘不匹配；拒绝操作该进程，请先核对 PID 与日志。' ;;
+    esac
+    for file in startup.log qemu.log serial.log readiness.log; do
+        [[ -f $dir/$file && ! -L $dir/$file && -s $dir/$file ]] || continue
+        printf '\n--- %s (last 20 lines) ---\n' "$file" >&2
+        tail -n 20 -- "$dir/$file" >&2 || true
+    done
+}
+
+qemu_not_running() { qemu_diagnostics "$1"; die "QEMU VM 未通过运行校验：$1；不要重装，请先检查上方原因和日志。"; }
+
+qemu_tracking_safe_to_clear() {
+    qemu_pid_inspect "$1" && return 1
+    [[ $QEMU_PID_REASON == missing || $QEMU_PID_REASON == dead ]]
+}
+
+qemu_wait_started() {
+    local name=$1 dir attempt
+    dir=$(qemu_vm_dir "$name")
+    for ((attempt = 0; attempt < 20; attempt++)); do
+        if qemu_pid_valid "$name" && [[ -S $dir/serial.sock && -S $dir/monitor.sock ]]; then
+            sleep 0.25
+            qemu_pid_valid "$name" && return 0
+        fi
+        sleep 0.25
+    done
+    return 1
 }
 
 qemu_build_netdev() {
@@ -420,7 +492,7 @@ qemu_start_with_accel() {
     dir=$(qemu_vm_dir "$name"); binary=$(qemu_binary_for_arch "$arch"); netdev=$(qemu_build_netdev "$name")
     args=(-name "xtmoe-$name" -smp "$cpus" -m "$memory" -display none -daemonize
         -pidfile "$dir/qemu.pid" -D "$dir/qemu.log"
-        -chardev "socket,id=serial0,path=$dir/serial.sock,server=on,wait=off" -serial chardev:serial0
+        -chardev "socket,id=serial0,path=$dir/serial.sock,server=on,wait=off,logfile=$dir/serial.log,logappend=on" -serial chardev:serial0
         -monitor "unix:$dir/monitor.sock,server=on,wait=off"
         -drive "file=$dir/disk.qcow2,format=qcow2,if=virtio"
         -drive "file=$dir/seed.iso,format=raw,if=virtio,readonly=on"
@@ -434,18 +506,22 @@ qemu_start_with_accel() {
         args=(-machine q35 "${args[@]}")
     fi
     if [[ $accel == kvm ]]; then args+=(-accel kvm -cpu host); else args+=(-accel "tcg,thread=multi" -cpu max); fi
-    "$binary" "${args[@]}"
+    "$binary" "${args[@]}" 2>>"$dir/startup.log"
 }
 
 qemu_start() {
     require_arg_range 0 1 "$#" 'xtmoe qemu start [名称]'
-    local name=${1:-ubuntu-qemu} dir arch binary ssh_port accel=tcg protocol host guest
+    local name=${1:-ubuntu-qemu} dir arch binary ssh_port accel=tcg protocol host guest file
     require_name "$name"; qemu_require; qemu_vm_exists "$name" || die "QEMU VM 不存在：$name"
     [[ $(qemu_config_get "$name" arch) == "$(qemu_arch)" ]] || die 'VM 架构与宿主不一致。'
     dir=$(qemu_vm_dir "$name")
     [[ $dir != *','* && $dir != *$'\n'* ]] || die 'QEMU 数据目录不能包含逗号或换行。'
     ((${#dir} + 13 < 104)) || die 'QEMU Unix socket 路径过长；请使用更短的 VM 名称或数据目录。'
     qemu_pid_valid "$name" && { ok "QEMU VM 已在运行：$name"; return 0; }
+    qemu_tracking_safe_to_clear "$name" || qemu_not_running "$name"
+    for file in startup.log serial.log qemu.log; do
+        [[ ! -L $dir/$file && ( ! -e $dir/$file || -f $dir/$file ) ]] || die "不安全的日志路径：$dir/$file"
+    done
     dir=$(qemu_vm_dir "$name"); rm -f -- "$dir/qemu.pid" "$dir/serial.sock" "$dir/monitor.sock"
     ssh_port=$(qemu_config_get "$name" ssh_port)
     qemu_port_in_use "$ssh_port" tcp && die "SSH 端口正在监听，无法启动：$ssh_port"
@@ -456,13 +532,18 @@ qemu_start() {
     arch=$(qemu_config_get "$name" arch); binary=$(qemu_binary_for_arch "$arch")
     if [[ -r /dev/kvm && -w /dev/kvm ]] && "$binary" -accel help 2>&1 | grep -qw kvm; then accel=kvm; fi
     info "启动 QEMU VM：$name（加速器：$accel）"
+    printf '\n[%s] start accelerator=%s\n' "$(date -Iseconds)" "$accel" >>"$dir/startup.log"
     if ! qemu_start_with_accel "$name" "$accel"; then
-        [[ $accel == kvm ]] || die "QEMU 启动失败；查看 $dir/qemu.log"
-        qemu_pid_valid "$name" && die 'KVM 启动返回异常但进程仍存在；拒绝重复启动。'
+        [[ $accel == kvm ]] || { qemu_config_set "$name" state failed; qemu_not_running "$name"; }
+        qemu_tracking_safe_to_clear "$name" || { qemu_diagnostics "$name"; die 'KVM 启动返回异常且无法确认进程已退出；拒绝重复启动。'; }
         rm -f -- "$dir/qemu.pid" "$dir/serial.sock" "$dir/monitor.sock"
         warn 'KVM 启动失败，回退到 TCG。'
-        qemu_start_with_accel "$name" tcg || die "QEMU TCG 启动失败；查看 $dir/qemu.log"
+        qemu_start_with_accel "$name" tcg || { qemu_config_set "$name" state failed; qemu_not_running "$name"; }
         accel=tcg
+    fi
+    if ! qemu_wait_started "$name"; then
+        qemu_config_set "$name" state failed
+        qemu_not_running "$name"
     fi
     qemu_config_set "$name" accelerator "$accel"
     qemu_config_set "$name" state running
@@ -509,8 +590,16 @@ qemu_verify_docker() {
     return "$result"
 }
 
+qemu_boot_phase() {
+    qemu_probe "$1" "$2" sudo sh -c '
+        if test -f /var/lib/xtmoe/bootstrap.done; then printf done;
+        elif test -f /var/lib/xtmoe/bootstrap.failed; then printf bootstrap-failed;
+        elif test -f /var/lib/cloud/instance/boot-finished; then printf incomplete;
+        else printf cloud-init-running; fi'
+}
+
 qemu_wait_ready() {
-    local timeout_seconds=1800 name=ubuntu-qemu name_set=0 start_time now remaining probe_seconds state
+    local timeout_seconds=1800 name=ubuntu-qemu name_set=0 start_time now remaining probe_seconds state dir phase result
     while (($#)); do
         case "$1" in
             --timeout) timeout_seconds=${2:?--timeout 缺少值}; shift ;;
@@ -521,7 +610,9 @@ qemu_wait_ready() {
     done
     qemu_validate_uint "$timeout_seconds" 10 7200 '等待秒数'
     qemu_vm_exists "$name" || die "QEMU VM 不存在：$name"
-    qemu_pid_valid "$name" || die "QEMU VM 未运行：$name"
+    qemu_pid_valid "$name" || qemu_not_running "$name"
+    dir=$(qemu_vm_dir "$name")
+    [[ ! -L $dir/readiness.log && ( ! -e $dir/readiness.log || -f $dir/readiness.log ) ]] || die '不安全的 readiness.log 路径。'
     local QEMU_PROBE_DEADLINE
     start_time=$(date +%s)
     QEMU_PROBE_DEADLINE=$((start_time + timeout_seconds))
@@ -529,12 +620,26 @@ qemu_wait_ready() {
         now=$(date +%s)
         if ((now - start_time >= timeout_seconds)); then
             qemu_config_set "$name" init_state initializing
-            die "等待 QEMU 初始化超时；VM 保持运行，可执行 qemu console 或再次 wait-ready。"
+            qemu_diagnostics "$name"
+            die "等待 QEMU 初始化超时；未停止或删除 VM，可执行 qemu console 或再次 wait-ready。"
         fi
-        qemu_pid_valid "$name" || { qemu_config_set "$name" state failed; die 'QEMU 进程已退出；请查看 qemu.log。'; }
+        qemu_pid_valid "$name" || { qemu_config_set "$name" state failed; qemu_not_running "$name"; }
         remaining=$((timeout_seconds - (now - start_time)))
         probe_seconds=10; ((remaining >= probe_seconds)) || probe_seconds=$remaining
-        if qemu_probe "$name" "$probe_seconds" test -f /var/lib/xtmoe/bootstrap.done 2>/dev/null; then
+        result=0
+        phase=$(qemu_boot_phase "$name" "$probe_seconds" 2>"$dir/readiness.log") || result=$?
+        if ((result != 0)); then
+            if grep -Eqi 'Permission denied \((publickey|password|keyboard-interactive)|Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED' "$dir/readiness.log"; then
+                qemu_diagnostics "$name"
+                die 'SSH 身份认证或主机密钥校验失败；继续等待不能修复，请检查该 VM 的专用 SSH 密钥。'
+            fi
+            if ((result != 255 && result != 124 && result != 137)); then
+                qemu_diagnostics "$name"
+                die "SSH/客体初始化探测失败（退出状态 $result）；请检查 readiness.log。"
+            fi
+            phase=waiting-ssh
+        fi
+        if [[ $phase == 'done' ]]; then
             qemu_config_set "$name" state running
             qemu_config_set "$name" init_state ready
             state=$(qemu_probe "$name" 10 systemctl is-system-running 2>/dev/null || true)
@@ -546,20 +651,27 @@ qemu_wait_ready() {
             ok 'QEMU Ubuntu、systemd、Docker daemon 和 hello-world 已通过验证。'
             return 0
         fi
-        if qemu_probe "$name" "$probe_seconds" test -f /var/lib/xtmoe/bootstrap.failed 2>/dev/null; then
+        if [[ $phase == bootstrap-failed ]]; then
             qemu_config_set "$name" state running
             qemu_config_set "$name" init_state ready
             qemu_config_set "$name" docker_state failed
             warn 'Ubuntu VM 可登录，但 Docker cloud-init 初始化失败；查看 /var/log/xtmoe-firstboot.log。'
             return 1
         fi
-        if qemu_probe "$name" "$probe_seconds" test -f /var/lib/cloud/instance/boot-finished 2>/dev/null; then
+        if [[ $phase == incomplete ]]; then
             qemu_config_set "$name" init_state failed
             qemu_config_set "$name" docker_state failed
             warn 'cloud-init 已结束但未完成 XTMOE 初始化；请查看 cloud-init-output.log。'
             return 1
         fi
-        info "等待 QEMU/cloud-init：$((now - start_time))/$timeout_seconds 秒"
+        case "$phase" in
+            waiting-ssh)
+                info "等待 SSH（客体启动/端口连通性）：$(( $(date +%s) - start_time ))/$timeout_seconds 秒"
+                [[ ! -s $dir/readiness.log ]] || tail -n 1 -- "$dir/readiness.log" >&2
+                ;;
+            cloud-init-running) info "SSH 已连通，等待 cloud-init/软件安装：$(( $(date +%s) - start_time ))/$timeout_seconds 秒" ;;
+            *) qemu_diagnostics "$name"; die "无法识别的客体初始化响应：$phase" ;;
+        esac
         now=$(date +%s); remaining=$((timeout_seconds - (now - start_time)))
         ((remaining > 0)) || continue
         ((remaining <= 10)) || remaining=10
@@ -570,7 +682,7 @@ qemu_wait_ready() {
 qemu_ssh() {
     require_arg_range 0 1 "$#" 'xtmoe qemu ssh [名称]'
     local name=${1:-ubuntu-qemu}
-    qemu_pid_valid "$name" || die "QEMU VM 未运行：$name"
+    qemu_pid_valid "$name" || qemu_not_running "$name"
     qemu_ssh_base_args "$name"
     ssh -t "${QEMU_SSH_ARGS[@]}"
 }
@@ -578,7 +690,7 @@ qemu_ssh() {
 qemu_exec() {
     local name=${1:?缺少 VM 名称} remote
     shift; [[ ${1:-} == -- ]] && shift; (($#)) || die '缺少远程命令'
-    qemu_pid_valid "$name" || die "QEMU VM 未运行：$name"
+    qemu_pid_valid "$name" || qemu_not_running "$name"
     qemu_ssh_base_args "$name"; remote=$(shell_quote_args "$@")
     ssh "${QEMU_SSH_ARGS[@]}" "$remote"
 }
@@ -586,7 +698,7 @@ qemu_exec() {
 qemu_console() {
     require_arg_range 0 1 "$#" 'xtmoe qemu console [名称]'
     local name=${1:-ubuntu-qemu} socket
-    qemu_pid_valid "$name" || die "QEMU VM 未运行：$name"
+    qemu_pid_valid "$name" || qemu_not_running "$name"
     socket="$(qemu_vm_dir "$name")/serial.sock"; [[ -S $socket ]] || die 'QEMU serial socket 不存在。'
     info '按 Ctrl+] 断开控制台；Ctrl+C 会传给客体前台程序。'
     socat STDIO,raw,echo=0,escape=0x1d "UNIX-CONNECT:$socket"
@@ -599,8 +711,8 @@ qemu_status_value() {
     if qemu_pid_valid "$name"; then
         state=$(qemu_config_get "$name" init_state 2>/dev/null || printf initializing)
         if [[ $state == ready ]]; then printf 'ready'; else printf 'initializing'; fi
-    elif [[ -e $dir/qemu.pid ]]; then
-        printf 'stale-pid'
+    elif [[ -e $dir/qemu.pid || -L $dir/qemu.pid ]]; then
+        if [[ $QEMU_PID_REASON == dead ]]; then printf 'stale-pid'; else printf 'unverified-pid'; fi
     else
         printf 'stopped'
     fi
@@ -612,6 +724,7 @@ qemu_status() {
     local state result=0
     state=$(qemu_status_value "$name") || result=$?
     printf '%s\n' "$state"
+    [[ $state != stale-pid && $state != unverified-pid ]] || qemu_diagnostics "$name"
     return "$result"
 }
 
@@ -643,8 +756,13 @@ qemu_stop() {
         esac
     done
     qemu_vm_exists "$name" || die "QEMU VM 不存在：$name"; dir=$(qemu_vm_dir "$name")
-    if ! qemu_pid_valid "$name"; then rm -f -- "$dir/qemu.pid" "$dir/serial.sock" "$dir/monitor.sock"; ok 'QEMU VM 未运行'; return 0; fi
-    IFS= read -r pid <"$dir/qemu.pid"
+    if ! qemu_pid_valid "$name"; then
+        qemu_tracking_safe_to_clear "$name" || qemu_not_running "$name"
+        rm -f -- "$dir/qemu.pid" "$dir/serial.sock" "$dir/monitor.sock"
+        qemu_config_set "$name" state stopped
+        ok 'QEMU VM 未运行'; return 0
+    fi
+    pid=$QEMU_PID_VALUE
     if ((force)); then
         kill -TERM "$pid" 2>/dev/null || true
     else
@@ -652,12 +770,14 @@ qemu_stop() {
         timeout 10 ssh "${QEMU_SSH_ARGS[@]}" sudo poweroff >/dev/null 2>&1 ||
             printf 'system_powerdown\n' | timeout --kill-after=2 5 socat - "UNIX-CONNECT:$dir/monitor.sock" >/dev/null 2>&1 || true
     fi
-    for ((attempt = 0; attempt < 300; attempt++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
-    if kill -0 "$pid" 2>/dev/null; then
+    for ((attempt = 0; attempt < 300; attempt++)); do qemu_pid_valid "$name" || break; sleep 0.1; done
+    if qemu_pid_valid "$name"; then
         ((force)) || die 'QEMU VM 未在 30 秒内关机；确认后使用 stop --force。'
         qemu_pid_valid "$name" || die 'QEMU PID 身份已变化，拒绝发送强制信号。'
         kill -KILL "$pid" 2>/dev/null || true
+        for ((attempt = 0; attempt < 20; attempt++)); do qemu_pid_valid "$name" || break; sleep 0.1; done
     fi
+    qemu_tracking_safe_to_clear "$name" || { qemu_diagnostics "$name"; die '无法确认 QEMU 已退出，保留 PID/socket。'; }
     rm -f -- "$dir/qemu.pid" "$dir/serial.sock" "$dir/monitor.sock"
     qemu_config_set "$name" state stopped
     ok "QEMU VM 已停止：$name"
@@ -696,7 +816,7 @@ qemu_update_system() { local name=${1:-ubuntu-qemu}; require_arg_range 0 1 "$#" 
 qemu_docker_status() {
     require_arg_range 0 1 "$#" 'xtmoe qemu docker-status [名称]'
     local name=${1:-ubuntu-qemu}
-    qemu_pid_valid "$name" || die "QEMU VM 未运行：$name"
+    qemu_pid_valid "$name" || qemu_not_running "$name"
     if qemu_probe "$name" 15 sudo docker info; then
         [[ $(qemu_config_get "$name" docker_state) == ready ]] || qemu_config_set "$name" docker_state daemon-ready
     else
@@ -707,7 +827,7 @@ qemu_docker_status() {
 qemu_docker_test() {
     require_arg_range 0 1 "$#" 'xtmoe qemu docker-test [名称]'
     local name=${1:-ubuntu-qemu}
-    qemu_pid_valid "$name" || die "QEMU VM 未运行：$name"
+    qemu_pid_valid "$name" || qemu_not_running "$name"
     qemu_verify_docker "$name"
 }
 

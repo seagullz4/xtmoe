@@ -14,6 +14,7 @@ bash tests/run.sh
 - Chroot 阶段元数据、Docker 网络确认、严格能力门控、绑定配置和路径校验；
 - QEMU 架构、配置、端口、向导、Cloud Image 与生命周期参数校验；
 - `tests/audit.sh` 由主测试载入，集中覆盖菜单失败中止、配置/端口注入拒绝、归档预检、Docker 部分失败与重装保留旧盘等失败路径；
+- QEMU 离线回归覆盖启动返回成功但进程未就绪、PID 无末尾换行、磁盘字段重排、PID 复用/权限受限、跟踪文件保护、SSH 与 cloud-init 阶段区分、认证失败快速退出、进程中途退出和初始化超时保留磁盘；使用进程参数夹具、模拟 SSH 与时钟，不启动真实 VM、不访问网络；
 - Root 助手拒绝任意基础目录，并验证 namespaced systemd/cgroup 启动结构。
 
 测试不能替代 Android 真机上的 PRoot、Root、SELinux、挂载和网络验收，真机矩阵见 `docs/ROADMAP.md`。

@@ -83,7 +83,30 @@ xtmoe qemu stop ubuntu-qemu
 xtmoe qemu stop --force ubuntu-qemu
 ```
 
-状态区分 `initializing`、`ready`、`stopped`、`stale-pid` 和失败状态。PID 校验同时检查进程和精确磁盘路径，避免误操作复用 PID。
+状态区分 `initializing`、`ready`、`stopped`、`stale-pid`、`unverified-pid` 和失败状态。PID 校验同时检查进程类型和独立的 `-drive` 磁盘参数，避免误操作复用 PID；PID 文件末尾没有换行、磁盘参数字段顺序变化不影响识别。
+
+`stale-pid` 表示保存的 PID 已经退出；`unverified-pid` 表示权限不足、PID 文件异常或进程身份不匹配，不能据此认定 VM 已停止。`status` 会在标准错误中显示具体检查原因和日志尾部。遇到无法验证的进程时，`start` 和 `stop` 都保留跟踪文件并拒绝操作，不会向身份不明的进程发送信号。
+
+## 等待初始化与离线诊断
+
+启动会等待 PID、进程身份及串口/monitor socket 就绪，然后才报告成功。`wait-ready` 每轮只发起一次初始化阶段探测，区分：
+
+- 等待 SSH：客体尚未启动到 SSH，或转发端口尚不可达，同时显示最近的 SSH 错误。
+- SSH 已连通、等待 cloud-init：系统正在执行初始化或软件安装。
+- SSH 认证/主机密钥失败：立即报错，不消耗完整等待时长。
+- QEMU 进程退出：立即停止等待并展示日志，不再误报为 cloud-init 慢。
+
+出现 `stale-pid` 时，先运行状态检查，不要删除系统盘或重新安装：
+
+```sh
+xtmoe qemu status ubuntu-qemu
+tail -n 60 "$HOME/.local/share/xtmoe/qemu/ubuntu-qemu/startup.log"
+tail -n 60 "$HOME/.local/share/xtmoe/qemu/ubuntu-qemu/serial.log"
+```
+
+`startup.log` 保存 QEMU 启动标准错误；`serial.log` 保存客体启动串口输出，即使未连接控制台也可追查；`qemu.log` 是 QEMU 调试日志，不等同于启动错误日志。`readiness.log` 保存最近一次 SSH/初始化阶段探测的错误。旧版本创建的 VM 在使用新版重新启动后开始记录新日志。
+
+确认状态是 `stale-pid`、日志无须先修复的问题后，可以尝试 `xtmoe qemu start ubuntu-qemu`，再执行 `xtmoe qemu wait-ready --timeout 1800 ubuntu-qemu`。超时保留 VM 和磁盘，可通过 `console` 继续查看。仅凭 `stale-pid` 无法判断是启动参数错误、Android 杀进程还是内存压力，必须结合日志和设备系统记录。
 
 ## 更新、备份、恢复和重装
 

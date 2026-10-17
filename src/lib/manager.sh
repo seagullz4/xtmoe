@@ -107,7 +107,7 @@ manager_collect_rows() {
     while IFS= read -r name; do
         [[ -n $name ]] || continue
         state=$(qemu_status_value "$name" 2>/dev/null || printf unknown)
-        [[ $state != stopped && $state != stale-pid || $include_all == 1 ]] || continue
+        [[ $state == ready || $state == initializing || $include_all == 1 ]] || continue
         XTMOE_LIST_MODES+=(qemu)
         XTMOE_LIST_NAMES+=("$name")
         XTMOE_LIST_STATES+=("$state")
