@@ -181,6 +181,10 @@ dockerd --iptables=true --host=unix:///var/run/docker.sock
 
 XTMOE 将 daemon 的 PID 和日志纳入生命周期管理，因此不要自己在普通 `chroot login` Shell 中后台运行 `dockerd`。直接登录退出后普通 Chroot 会清理挂载，手动后台 daemon 容易遗留 busy 挂载或被会话信号停止。
 
+direct 模式使用独立 PID/mount namespace 托管 daemon，支持重复状态检查。它启动后，`xtmoe chroot login` 与 `exec` 自动进入同一会话；`status` 显示 `direct-docker`。退出登录只退出 Shell，daemon 由 `docker-direct-stop` 或统一 `chroot stop` 管理。严格 systemd 与 direct 模式共用 Docker 包安装脚本，避免两套软件源与依赖配置漂移。
+
+统一列表的 `daemon-ready` 或 `direct-daemon-ready` 仅表示 Docker API 可响应；实际容器运行仍以 hello-world 测试结果为准。
+
 direct 模式命令：
 
 ```sh
@@ -193,7 +197,7 @@ xtmoe chroot docker-direct-stop ubuntu
 
 `docker-direct-status` 等价验证 `docker info`，只说明 daemon API 可用；`docker-direct-run-test` 运行 `docker run --rm hello-world`，才验证 containerd、runc、namespace、挂载和实际容器链路。若前者成功而后者失败，应报告为“daemon 可用、容器运行未验证/失败”，不能据此宣称 Docker 或 1Panel 完全可用。direct 模式与嵌套 systemd 模式不能并存；`chroot stop` 会停止任一种已受 XTMOE 管理的 daemon。
 
-direct 启动会显示三个阶段：寻找 daemon 进程（最长约 5 秒）、等待 Docker socket（最长约 15 秒）、带 15 秒超时的 `docker info` 验证。任何阶段失败都会停止等待并提示查看 `docker-direct-logs`，不会无期限卡住。
+direct 启动显示三个阶段：寻找 daemon 进程（50 次轮询，间隔 0.1 秒，另加进程扫描开销）、等待 Docker socket（约 15 秒）、带 15 秒超时的 `docker info` 验证。失败提示查看 `docker-direct-logs`。只有实际容器测试通过后，元数据才记录 `direct-container-ready`。
 
 每次登录会受控挂载 rootfs 自身、`/proc`、`/sys`、`/dev` 和 `/run`。Shell 正常退出后会尝试卸载；如果容器中留下后台进程，卸载可能失败。
 

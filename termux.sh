@@ -37,6 +37,9 @@ esac
 SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
 SOURCE_DIR="$SCRIPT_DIR/src"
 [ -r "$SOURCE_DIR/bin/xtmoe" ] || die "源文件不完整：$SOURCE_DIR/bin/xtmoe"
+for module in common.sh proot.sh chroot.sh qemu.sh manager.sh xtmoe-root; do
+    [ -r "$SOURCE_DIR/lib/$module" ] || die "源文件不完整：$SOURCE_DIR/lib/$module"
+done
 
 XTMOE_PREFIX=${PREFIX:-"$HOME/.local"}
 BIN_DIR="$XTMOE_PREFIX/bin"
@@ -54,6 +57,7 @@ mkdir -p "$BIN_DIR" "$LIB_DIR/lib"
 atomic_install "$SOURCE_DIR/lib/common.sh" "$LIB_DIR/lib/common.sh" 0644
 atomic_install "$SOURCE_DIR/lib/proot.sh" "$LIB_DIR/lib/proot.sh" 0644
 atomic_install "$SOURCE_DIR/lib/chroot.sh" "$LIB_DIR/lib/chroot.sh" 0644
+atomic_install "$SOURCE_DIR/lib/qemu.sh" "$LIB_DIR/lib/qemu.sh" 0644
 atomic_install "$SOURCE_DIR/lib/manager.sh" "$LIB_DIR/lib/manager.sh" 0644
 atomic_install "$SOURCE_DIR/lib/xtmoe-root" "$LIB_DIR/xtmoe-root" 0755
 

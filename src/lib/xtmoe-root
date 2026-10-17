@@ -291,40 +291,31 @@ process_alive() {
 }
 
 find_child_pid() {
-    local parent=$1 proc ppid child comm actual_root expected_root
+    local parent=$1 expected_comm=${2:-systemd} proc ppid child comm actual_root expected_root
+    local -a candidates=()
     expected_root=$(realpath -m "$ROOTFS")
-    for proc in /proc/[0-9]*; do
-        [[ -r $proc/status ]] || continue
-        ppid=$(awk '$1 == "PPid:" { print $2 }' "$proc/status")
-        [[ $ppid == "$parent" ]] || continue
-        child=${proc##*/}
+    if [[ -r /proc/$parent/task/$parent/children ]]; then
+        read -r -a candidates <"/proc/$parent/task/$parent/children" || true
+    else
+        for proc in /proc/[0-9]*; do
+            [[ -r $proc/status ]] || continue
+            ppid=$(awk '$1 == "PPid:" { print $2 }' "$proc/status")
+            [[ $ppid == "$parent" ]] && candidates+=("${proc##*/}")
+        done
+    fi
+    for child in "${candidates[@]}"; do
+        [[ $child =~ ^[0-9]+$ ]] || continue
         actual_root=$(realpath -m "/proc/$child/root")
         [[ $actual_root == "$expected_root" ]] || continue
         comm=$(cat "/proc/$child/comm" 2>/dev/null || true)
-        [[ $comm == systemd || $comm == init ]] || continue
+        [[ $comm == "$expected_comm" || $expected_comm == systemd && $comm == init ]] || continue
         printf '%s\n' "$child"
         return 0
     done
     return 1
 }
 
-find_direct_docker_pid() {
-    local parent=$1 proc ppid child comm actual_root expected_root
-    expected_root=$(realpath -m "$ROOTFS")
-    for proc in /proc/[0-9]*; do
-        [[ -r $proc/status ]] || continue
-        ppid=$(awk '$1 == "PPid:" { print $2 }' "$proc/status")
-        [[ $ppid == "$parent" ]] || continue
-        child=${proc##*/}
-        actual_root=$(realpath -m "/proc/$child/root")
-        [[ $actual_root == "$expected_root" ]] || continue
-        comm=$(cat "/proc/$child/comm" 2>/dev/null || true)
-        [[ $comm == dockerd ]] || continue
-        printf '%s\n' "$child"
-        return 0
-    done
-    return 1
-}
+find_direct_docker_pid() { find_child_pid "$1" dockerd; }
 
 systemd_running() {
     local pid comm actual_root expected_root
@@ -534,7 +525,7 @@ ensure_cgroup_mount() {
 
 systemd_namespace_launch() {
     local config=${1:-}
-    mount --make-rprivate / 2>/dev/null || true
+    mount --make-rprivate / || die '无法隔离 mount namespace 的挂载传播'
     mount_all "$config" 0
     ensure_cgroup_mount
     exec chroot "$ROOTFS" /bin/bash -c \
@@ -545,6 +536,7 @@ systemd_start() {
     local config=${1:-} launcher_pid target_pid attempt helper_path
     local extra
     local -a namespace_args=(--mount --pid) candidate_args
+    direct_docker_running && die 'direct dockerd 正在运行；请先执行 xtmoe chroot stop 再启动 systemd。'
     systemd_check
     systemd_pid_files
     if systemd_running; then
@@ -560,7 +552,7 @@ systemd_start() {
         fi
     done
     helper_path=$(realpath -m -- "${BASH_SOURCE[0]}")
-    nohup unshare "${namespace_args[@]}" --fork \
+    nohup unshare "${namespace_args[@]}" --fork --kill-child \
         "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" \
         _systemd-launch "$BASE" "$CONTAINER_NAME" "$config" \
         >"$SYSTEMD_LOG_FILE" 2>&1 &
@@ -656,7 +648,7 @@ systemd_stop() {
 
 direct_docker_namespace_launch() {
     local config=${1:-}
-    mount --make-rprivate / 2>/dev/null || true
+    mount --make-rprivate / || die '无法隔离 mount namespace 的挂载传播'
     mount_all "$config"
     mkdir -p "$ROOTFS/var/log"
     exec chroot "$ROOTFS" /usr/bin/env -i \
@@ -671,7 +663,8 @@ direct_docker_start() {
     systemd_running && die '嵌套 systemd 正在运行；直接 dockerd 模式不能与 systemd 模式并存，请先执行 xtmoe chroot stop'
     direct_docker_pid_files
     if direct_docker_running; then
-        ok '直接 dockerd 已在运行'
+        direct_docker_exec /usr/bin/timeout --kill-after=2 15 /usr/bin/docker info >/dev/null 2>&1 || die '已有 dockerd 进程但 API 不可响应；请查看 docker-direct-logs。'
+        ok '直接 dockerd 已在运行且 API 可响应'
         return 0
     fi
     is_mounted "$ROOTFS" && die '容器已有普通 Chroot 挂载；请先退出会话并执行 stop。'
@@ -680,7 +673,7 @@ direct_docker_start() {
     rm -f -- "$DIRECT_DOCKER_PID_FILE" "$DIRECT_DOCKER_LAUNCHER_PID_FILE"
     helper_path=$(realpath -m -- "${BASH_SOURCE[0]}")
     ok '正在启动 direct dockerd（等待进程，最长约 5 秒）'
-    nohup unshare --mount --fork \
+    nohup unshare --mount --pid --fork --kill-child \
         "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" \
         _docker-direct-launch "$BASE" "$CONTAINER_NAME" "$config" \
         >"$DIRECT_DOCKER_LOG_FILE" 2>&1 &
@@ -718,7 +711,7 @@ direct_docker_exec() {
     local pid
     (($#)) || die '缺少要在直接 dockerd 容器内执行的命令'
     pid=$(direct_docker_target_pid)
-    nsenter --target "$pid" --mount -- \
+    nsenter --target "$pid" --mount --pid -- \
         chroot "$ROOTFS" /usr/bin/env -i \
         HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
@@ -759,7 +752,7 @@ direct_docker_logs() {
 }
 
 direct_docker_run_test() {
-    direct_docker_exec /usr/bin/docker run --rm hello-world
+    direct_docker_exec /usr/bin/timeout --kill-after=2 180 /usr/bin/docker run --rm hello-world
 }
 
 docker_state() {
@@ -769,7 +762,7 @@ docker_state() {
     fi
     if direct_docker_running; then
         if direct_docker_exec /usr/bin/timeout 15 /usr/bin/docker info >/dev/null 2>&1; then
-            printf 'direct-ready\n'
+            printf 'direct-daemon-ready\n'
         else
             printf 'direct-unresponsive\n'
         fi
@@ -779,8 +772,8 @@ docker_state() {
         printf 'installed-stopped\n'
         return 0
     fi
-    if systemd_exec /usr/bin/docker info >/dev/null 2>&1; then
-        printf 'ready\n'
+    if systemd_exec /usr/bin/timeout --kill-after=2 15 /usr/bin/docker info >/dev/null 2>&1; then
+        printf 'daemon-ready\n'
     elif [[ -S /proc/$(systemd_target_pid)/root/run/docker.sock ]]; then
         printf 'unresponsive\n'
     else
@@ -1013,6 +1006,8 @@ case "$ACTION" in
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
         if systemd_running; then
             systemd_login
+        elif direct_docker_running; then
+            direct_docker_exec /bin/bash -l
         else
             run_chroot "${3:-}"
         fi
@@ -1023,6 +1018,8 @@ case "$ACTION" in
         (($#)) || die '缺少命令'
         if systemd_running; then
             systemd_exec "$@"
+        elif direct_docker_running; then
+            direct_docker_exec "$@"
         else
             run_chroot "$config" "$@"
         fi
@@ -1043,6 +1040,8 @@ case "$ACTION" in
         [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
         if systemd_running; then
             printf 'systemd\n'
+        elif direct_docker_running; then
+            printf 'direct-docker\n'
         elif is_mounted "$ROOTFS"; then
             printf 'mounted\n'
         else

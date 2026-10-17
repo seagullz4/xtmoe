@@ -162,11 +162,13 @@ proot_main() {
         install|add) proot_install "$@" ;;
         login|shell)
             local name=${1:-ubuntu}
+            require_name "$name"
             (($# == 0)) || shift
             proot-distro login "$name" "$@"
             ;;
         exec)
             local name=${1:?缺少容器名称}; shift
+            require_name "$name"
             [[ ${1:-} == -- ]] && shift
             (($#)) || die '缺少要执行的命令'
             proot-distro login "$name" -- "$@"
@@ -175,6 +177,7 @@ proot_main() {
         ps) proot-distro ps "$@" ;;
         stop|kill)
             require_arg_range 1 1 "$#" 'xtmoe proot stop <名称>'
+            require_name "$1"
             proot-distro kill "$1"
             ;;
         backup) proot_backup "$@" ;;

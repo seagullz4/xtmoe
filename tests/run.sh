@@ -71,14 +71,15 @@ export MOCK_LOG="$TEST_TMP/proot.log"
 : >"$MOCK_LOG"
 
 assert_ok 'CLI help' bash "$CLI" help
-assert_contains 'CLI help uses current version variable' 'XTMOE 0.3.0-dev' "$TEST_TMP/stdout"
+assert_contains 'CLI help uses current version variable' 'XTMOE 0.4.0-dev' "$TEST_TMP/stdout"
 assert_contains 'CLI help mentions PRoot' 'xtmoe proot' "$TEST_TMP/stdout"
 assert_contains 'CLI help mentions unified wizard' 'xtmoe on' "$TEST_TMP/stdout"
 assert_contains 'CLI help mentions unified list' 'xtmoe list' "$TEST_TMP/stdout"
+assert_contains 'CLI help mentions QEMU' 'xtmoe qemu' "$TEST_TMP/stdout"
 assert_contains 'CLI help mentions updater' 'xtmoe update' "$TEST_TMP/stdout"
 assert_contains 'CLI help mentions program uninstall' 'xtmoe uninstall-app' "$TEST_TMP/stdout"
 assert_ok 'CLI version' bash "$CLI" version
-assert_contains 'CLI reports version 0.3.0-dev' 'xtmoe 0.3.0-dev' "$TEST_TMP/stdout"
+assert_contains 'CLI reports version 0.4.0-dev' 'xtmoe 0.4.0-dev' "$TEST_TMP/stdout"
 assert_ok 'PRoot help' bash "$CLI" proot help
 assert_ok 'Chroot setup function is defined' bash -c 'source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"; declare -F chroot_setup >/dev/null' _ "$ROOT_DIR"
 assert_ok 'Chroot help' bash "$CLI" chroot help
@@ -88,11 +89,27 @@ assert_contains 'Chroot help mentions Bash compatibility switch' 'use-bash-sh' "
 assert_contains 'Chroot help mentions Docker installer' 'docker-install' "$TEST_TMP/stdout"
 assert_contains 'Chroot help mentions direct dockerd compatibility mode' 'docker-direct-install' "$TEST_TMP/stdout"
 assert_contains 'Chroot help mentions repair workflow' 'repair' "$TEST_TMP/stdout"
+assert_ok 'QEMU help' bash "$CLI" qemu help
+assert_contains 'QEMU help mentions Docker test' 'docker-test' "$TEST_TMP/stdout"
 old_prefix=$PREFIX
 export PREFIX="$TEST_TMP/not-termux"
 mkdir -p "$PREFIX/bin"
 assert_fail 'Forged TERMUX_VERSION cannot bypass PREFIX validation' bash "$CLI" proot list
 export PREFIX=$old_prefix
+assert_fail 'QEMU non-interactive install requires explicit resources' bash "$CLI" qemu install --yes qemu-missing-resources
+assert_ok 'QEMU architecture and package map on x86_64 test host' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/qemu.sh"
+    [[ $(qemu_arch) == amd64 ]]
+    [[ $(qemu_binary_for_arch amd64) == qemu-system-x86_64 ]]
+    [[ $(qemu_package_for_arch amd64) == qemu-system-x86-64-headless ]]
+' _ "$ROOT_DIR"
+assert_fail 'QEMU explicitly rejects ARM32' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/qemu.sh"
+    uname() { printf armv7l; }
+    qemu_arch
+' _ "$ROOT_DIR"
 
 BOOTSTRAP_LOG="$TEST_TMP/bootstrap.log"
 export BOOTSTRAP_LOG
@@ -166,6 +183,42 @@ assert_ok 'Wizard Chroot selector accepts a numbered existing container' bash -c
     menu_select_container chroot "test" <<<"2"
     [[ $MENU_SELECTED_NAME == demo ]]
 ' _ "$ROOT_DIR"
+mkdir -p "$XTMOE_DATA_DIR/qemu/qemu-demo/ssh" "$XTMOE_CONFIG_DIR/qemu"
+printf 'xtmoe-qemu-format-1\n' >"$XTMOE_DATA_DIR/qemu/qemu-demo/.xtmoe-qemu"
+printf 'disk\n' >"$XTMOE_DATA_DIR/qemu/qemu-demo/disk.qcow2"
+printf 'seed\n' >"$XTMOE_DATA_DIR/qemu/qemu-demo/seed.iso"
+printf 'private\n' >"$XTMOE_DATA_DIR/qemu/qemu-demo/ssh/id_ed25519"
+printf 'public\n' >"$XTMOE_DATA_DIR/qemu/qemu-demo/ssh/id_ed25519.pub"
+assert_ok 'QEMU config is written as validated data' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/qemu.sh"
+    qemu_write_config qemu-demo amd64 2 2048 20 2222 stopped
+    : >"$(qemu_ports_file qemu-demo)"
+    [[ $(qemu_config_get qemu-demo memory) == 2048 ]]
+' _ "$ROOT_DIR"
+assert_ok 'Wizard QEMU selector accepts a numbered existing VM' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/proot.sh"
+    source "$1/src/lib/chroot.sh"
+    source "$1/src/lib/qemu.sh"
+    source "$1/src/lib/manager.sh"
+    menu_select_container qemu "test" <<<"1"
+    [[ $MENU_SELECTED_NAME == qemu-demo ]]
+' _ "$ROOT_DIR"
+assert_ok 'QEMU persistent port mapping validates and round-trips' bash "$CLI" qemu port-add qemu-demo 28080 80 tcp
+assert_contains 'QEMU port mapping stores data, not shell' 'tcp|28080|80' "$XTMOE_CONFIG_DIR/qemu/qemu-demo.ports"
+assert_ok 'QEMU persistent port mapping can be removed' bash "$CLI" qemu port-remove qemu-demo 28080 tcp
+QEMU_ARG_LOG="$TEST_TMP/qemu-args.log"
+export QEMU_ARG_LOG
+assert_ok 'QEMU launch arguments preserve disk, NAT and TCG boundaries' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/qemu.sh"
+    qemu-system-x86_64() { printf "%s\n" "$@" >"$QEMU_ARG_LOG"; }
+    qemu_start_with_accel qemu-demo tcg
+' _ "$ROOT_DIR"
+assert_contains 'QEMU launch uses exact managed disk' "file=$XTMOE_DATA_DIR/qemu/qemu-demo/disk.qcow2,format=qcow2,if=virtio" "$QEMU_ARG_LOG"
+assert_contains 'QEMU launch binds SSH forwarding to localhost' 'user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22' "$QEMU_ARG_LOG"
+assert_contains 'QEMU launch uses multithreaded TCG' 'tcg,thread=multi' "$QEMU_ARG_LOG"
 assert_ok 'Chroot bind config accepted' bash "$CLI" chroot bind demo "$HOME/shared" /mnt/shared ro
 assert_contains 'Chroot bind is data, not shell' "ro|$HOME/shared|/mnt/shared" "$XTMOE_CONFIG_DIR/chroot/demo.binds"
 assert_fail 'Chroot duplicate target rejected' bash "$CLI" chroot bind demo "$HOME/shared" /mnt/shared rw
@@ -272,6 +325,67 @@ printf 'corrupted cache\n' >"$cached_ubuntu"
 assert_ok 'Corrupted Ubuntu cache is downloaded again' bash -c "source '$ROOT_DIR/src/lib/common.sh'; source '$ROOT_DIR/src/lib/chroot.sh'; download_ubuntu_base 24.04"
 cmp -s "$cached_ubuntu" "$MOCK_UBUNTU_ARCHIVE" && pass 'Redownloaded Ubuntu cache content verified' || fail 'Redownloaded Ubuntu cache content verified'
 rm -f -- "$TEST_TMP/mock-bin/curl"
+
+printf 'fake qemu cloud image\n' >"$TEST_TMP/qemu-cloud.img"
+qemu_hash=$(sha256sum "$TEST_TMP/qemu-cloud.img" | awk '{print $1}')
+printf '%s *ubuntu-24.04-server-cloudimg-amd64.img\n' "$qemu_hash" >"$TEST_TMP/qemu-sums"
+export MOCK_QEMU_IMAGE="$TEST_TMP/qemu-cloud.img" MOCK_QEMU_SUMS="$TEST_TMP/qemu-sums"
+cat >"$TEST_TMP/mock-bin/curl" <<'MOCK'
+#!/usr/bin/env bash
+output='' url=''
+while (($#)); do
+    case "$1" in
+        -o) output=$2; shift 2 ;;
+        *) url=$1; shift ;;
+    esac
+done
+case "$url" in
+    */SHA256SUMS) cp "$MOCK_QEMU_SUMS" "$output" ;;
+    *.img) cp "$MOCK_QEMU_IMAGE" "$output" ;;
+    *) exit 2 ;;
+esac
+MOCK
+chmod +x "$TEST_TMP/mock-bin/curl"
+assert_ok 'Ubuntu QEMU Cloud Image checksum is parsed and verified' bash -c "source '$ROOT_DIR/src/lib/common.sh'; source '$ROOT_DIR/src/lib/qemu.sh'; qemu_download_image amd64"
+qemu_cached="$XTMOE_CACHE_DIR/qemu/ubuntu/24.04/amd64/ubuntu-24.04-server-cloudimg-amd64.img"
+cmp -s "$qemu_cached" "$MOCK_QEMU_IMAGE" && pass 'QEMU Cloud Image cache content verified' || fail 'QEMU Cloud Image cache content verified'
+printf 'corrupt\n' >"$qemu_cached"
+assert_ok 'Corrupted QEMU Cloud Image is downloaded again' bash -c "source '$ROOT_DIR/src/lib/common.sh'; source '$ROOT_DIR/src/lib/qemu.sh'; qemu_download_image amd64"
+cmp -s "$qemu_cached" "$MOCK_QEMU_IMAGE" && pass 'QEMU Cloud Image redownload verified' || fail 'QEMU Cloud Image redownload verified'
+rm -f -- "$TEST_TMP/mock-bin/curl"
+
+assert_ok 'QEMU cloud-init seed disables passwords and provisions Docker' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/qemu.sh"
+    seed_dir="$2/qemu-seed"
+    mkdir -p "$seed_dir"
+    xorriso() {
+        local output="" user_data="" argument
+        while (($#)); do
+            case "$1" in
+                -output) output=$2; shift 2 ;;
+                */user-data) user_data=$1; shift ;;
+                *) shift ;;
+            esac
+        done
+        grep -Fq "ssh_pwauth: false" "$user_data"
+        grep -Fq "https://download.docker.com/linux/ubuntu" "$user_data"
+        grep -Fq "usermod -aG docker xtmoe" "$user_data"
+        : >"$output"
+    }
+    qemu_create_seed seed-demo "$seed_dir" "ssh-ed25519 AAAATEST xtmoe-test"
+    [[ -f $seed_dir/seed.iso ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+QEMU_BACKUP_TEST="$TEST_TMP/qemu-demo-backup.tar.gz"
+assert_ok 'Synthetic QEMU backup includes disk, config and SSH identity' bash "$CLI" qemu backup qemu-demo "$QEMU_BACKUP_TEST"
+assert_ok 'Synthetic QEMU remove requires managed stopped VM' bash "$CLI" qemu remove --yes qemu-demo
+assert_ok 'Synthetic QEMU restore validates marker, architecture and ports' bash "$CLI" qemu restore "$QEMU_BACKUP_TEST" qemu-restored
+assert_ok 'Restored QEMU VM reports stopped state' bash "$CLI" qemu status qemu-restored
+assert_contains 'Restored QEMU VM state is stopped' 'stopped' "$TEST_TMP/stdout"
+assert_ok 'Synthetic restored QEMU VM can be removed' bash "$CLI" qemu remove --yes qemu-restored
+
+source "$ROOT_DIR/tests/audit.sh"
 
 cat >"$TEST_TMP/mock-bin/id" <<'MOCK'
 #!/usr/bin/env bash
@@ -405,6 +519,7 @@ assert_ok 'Local installer completes' sh "$ROOT_DIR/termux.sh"
 [[ -x "$PREFIX/bin/xtmoe" ]] && pass 'Installer creates executable command' || fail 'Installer creates executable command'
 [[ -r "$PREFIX/libexec/xtmoe/lib/chroot.sh" ]] && pass 'Installer copies libraries' || fail 'Installer copies libraries'
 [[ -r "$PREFIX/libexec/xtmoe/lib/manager.sh" ]] && pass 'Installer copies unified manager module' || fail 'Installer copies unified manager module'
+[[ -r "$PREFIX/libexec/xtmoe/lib/qemu.sh" ]] && pass 'Installer copies QEMU module' || fail 'Installer copies QEMU module'
 [[ $(<"$PREFIX/libexec/xtmoe/source-root") == "$ROOT_DIR" ]] && pass 'Installer records source root' || fail 'Installer records source root'
 if compgen -G "$PREFIX/bin/xtmoe.tmp.*" >/dev/null || compgen -G "$PREFIX/libexec/xtmoe/*.tmp.*" >/dev/null; then
     fail 'Installer leaves no temporary files'
@@ -463,7 +578,16 @@ for action in $chroot_actions; do
 done
 pass 'Documented Chroot actions map to CLI'
 
-for doc in INSTALL PROOT CHROOT OPERATIONS TROUBLESHOOTING ROADMAP; do
+qemu_actions=$(grep -rhoE 'xtmoe[[:space:]]+qemu[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
+for action in $qemu_actions; do
+    case "$action" in
+        prepare|install|start|wait-ready|console|ssh|exec|status|list|stop|update-system|docker-status|docker-test|ports|port-add|port-remove|backup|restore|reinstall|remove) ;;
+        *) fail "Documentation references unknown QEMU action: $action" ;;
+    esac
+done
+pass 'Documented QEMU actions map to CLI'
+
+for doc in INSTALL PROOT CHROOT QEMU OPERATIONS TROUBLESHOOTING ROADMAP; do
     [[ -r "$ROOT_DIR/docs/$doc.md" ]] || fail "Missing documentation: $doc.md"
 done
 pass 'README documentation targets exist'
@@ -471,7 +595,7 @@ pass 'README documentation targets exist'
 top_actions=$(grep -rhoE 'xtmoe[[:space:]]+[a-z][a-z-]*' "$README_FILE" "$ROOT_DIR/docs" "$ROOT_DIR/tests/README.md" | awk '{print $2}' | sort -u)
 for action in $top_actions; do
     case "$action" in
-        doctor|on|list|enter|proot|chroot|uninstall|update|uninstall-app|version|help) ;;
+        doctor|on|list|enter|proot|chroot|qemu|uninstall|update|uninstall-app|version|help) ;;
         *) fail "Documentation references unknown top-level action: $action" ;;
     esac
 done

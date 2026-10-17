@@ -52,7 +52,7 @@ xtmoe chroot install --yes --accept-host-network-changes ubuntu 24.04 ubuntu
 xtmoe doctor
 ```
 
-只有 `doctor` 完成且未报告基础环境错误后，才开始使用 `xtmoe on`、`xtmoe list`、PRoot 或 Chroot 管理命令。
+只有 `doctor` 完成且未报告基础环境错误后，才开始使用 `xtmoe on`、`xtmoe list`、PRoot、Chroot 或 QEMU 管理命令。基础安装器只复制 QEMU 模块，不下载大型虚拟机依赖；使用时执行 `xtmoe qemu prepare`。
 
 ## 更新
 
@@ -92,6 +92,7 @@ xtmoe list
 xtmoe list --all --no-prompt
 xtmoe enter proot ubuntu
 xtmoe enter chroot ubuntu
+xtmoe enter qemu ubuntu-qemu
 ```
 
 `xtmoe list` 默认只显示正在运行的系统，并在交互终端中允许输入编号进入。脚本、管道环境或 `--no-prompt` 只输出表格，不读取标准输入。

@@ -81,6 +81,16 @@ xtmoe chroot docker-direct-run-test ubuntu
 
 状态命令通过 `docker info` 验证 API；运行测试才验证实际容器。该兼容模式不会被标记为 1Panel 已支持。
 
+如果 Chroot 的 Android 内核能力始终不足，可使用拥有独立客体内核的 QEMU 模式：
+
+```sh
+xtmoe qemu install ubuntu-qemu
+xtmoe qemu docker-status ubuntu-qemu
+xtmoe qemu docker-test ubuntu-qemu
+```
+
+QEMU 不需要手机 Root，但无 KVM 时速度较慢。服务端口必须通过 `xtmoe qemu port-add` 显式转发。
+
 ## Python 和编译环境
 
 Ubuntu/Debian 容器内：

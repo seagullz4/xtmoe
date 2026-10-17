@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
 
-XTMOE_VERSION='0.3.0-dev'
+XTMOE_VERSION='0.4.0-dev'
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 if [[ -r "$SCRIPT_DIR/../lib/common.sh" ]]; then
@@ -13,6 +13,7 @@ fi
 source "$XTMOE_LIB_DIR/common.sh"
 source "$XTMOE_LIB_DIR/proot.sh"
 source "$XTMOE_LIB_DIR/chroot.sh"
+source "$XTMOE_LIB_DIR/qemu.sh"
 source "$XTMOE_LIB_DIR/manager.sh"
 
 show_help() {
@@ -22,10 +23,11 @@ show_help() {
   xtmoe doctor
   xtmoe on
   xtmoe list [--all|--running] [--no-prompt]
-  xtmoe enter <proot|chroot> <名称>
+  xtmoe enter <proot|chroot|qemu> <名称>
   xtmoe proot  <操作> [参数]
   xtmoe chroot <操作> [参数]
-  xtmoe uninstall [--yes] <proot|chroot> <名称>
+  xtmoe qemu   <操作> [参数]
+  xtmoe uninstall [--yes] <proot|chroot|qemu> <名称>
   xtmoe update
   xtmoe uninstall-app [--yes]
   xtmoe version
@@ -42,9 +44,11 @@ show_help() {
   xtmoe chroot install ubuntu 24.04 ubuntu
   xtmoe chroot login ubuntu
   xtmoe chroot stop ubuntu
+  xtmoe qemu install ubuntu-qemu
+  xtmoe qemu ssh ubuntu-qemu
   xtmoe uninstall chroot ubuntu
 
-运行 `xtmoe proot help` 或 `xtmoe chroot help` 查看模式专用帮助。
+运行 `xtmoe proot help`、`xtmoe chroot help` 或 `xtmoe qemu help` 查看模式专用帮助。
 EOF
 }
 
@@ -102,10 +106,10 @@ uninstall_main() {
             *) positional+=("$argument") ;;
         esac
     done
-    ((${#positional[@]} == 2)) || die '用法：xtmoe uninstall [--yes] <proot|chroot> <名称>'
+    ((${#positional[@]} == 2)) || die '用法：xtmoe uninstall [--yes] <proot|chroot|qemu> <名称>'
     mode=${positional[0]}
     name=${positional[1]}
-    [[ $mode == proot || $mode == chroot ]] || die "未知镜像模式：$mode（只能是 proot 或 chroot）"
+    [[ $mode == proot || $mode == chroot || $mode == qemu ]] || die "未知模式：$mode（只能是 proot、chroot 或 qemu）"
     require_name "$name"
 
     local -a remove_args=(remove "$name")
@@ -113,6 +117,7 @@ uninstall_main() {
     case "$mode" in
         proot) proot_main "${remove_args[@]}" ;;
         chroot) chroot_main "${remove_args[@]}" ;;
+        qemu) qemu_main "${remove_args[@]}" ;;
     esac
 }
 
@@ -196,6 +201,13 @@ doctor() {
         warn 'PRoot：缺少 proot-distro（执行 pkg install proot-distro）'
     fi
 
+    if command_exists qemu-system-aarch64 || command_exists qemu-system-x86_64; then
+        ok 'QEMU System：已安装'
+        if [[ -r /dev/kvm && -w /dev/kvm ]]; then ok 'KVM：可访问'; else info 'KVM：不可访问，将使用较慢的 TCG'; fi
+    else
+        info 'QEMU System：未安装（按需执行 xtmoe qemu prepare）'
+    fi
+
     if root_available; then
         root_state='可用'
         ok "Root：$root_state"
@@ -241,6 +253,7 @@ main() {
         enter) enter_main "$@" ;;
         proot) proot_main "$@" ;;
         chroot) chroot_main "$@" ;;
+        qemu) qemu_main "$@" ;;
         uninstall) uninstall_main "$@" ;;
         update) update_main "$@" ;;
         uninstall-app) uninstall_app_main "$@" ;;

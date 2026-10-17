@@ -5,10 +5,13 @@ MODE=${1:-doctor}
 STAMP=$(date +%Y%m%d%H%M%S)
 PROOT_NAME="xtmoe-smoke-p-$STAMP"
 CHROOT_NAME="xtmoe-smoke-c-$STAMP"
+QEMU_NAME="xtmoe-smoke-q-$STAMP"
 RESTORE_NAME="xtmoe-smoke-r-$STAMP"
+QEMU_RESTORE_NAME="xtmoe-smoke-qr-$STAMP"
 WORK_DIR="${TMPDIR:-$HOME/.cache}/xtmoe-smoke-$STAMP"
 BACKUP_FILE="$WORK_DIR/$PROOT_NAME.tar.gz"
 CHROOT_BACKUP="$WORK_DIR/$CHROOT_NAME.tar.gz"
+QEMU_BACKUP="$WORK_DIR/$QEMU_NAME.tar.gz"
 HOST_SHARE="$WORK_DIR/host-share"
 
 say() { printf '%s\n' "$*"; }
@@ -21,9 +24,11 @@ Android 真机冒烟测试
   bash tests/android-smoke.sh doctor
   bash tests/android-smoke.sh proot
   XTMOE_SMOKE_ACCEPT_CHROOT_RISK=YES bash tests/android-smoke.sh chroot
+  XTMOE_SMOKE_ACCEPT_QEMU_COST=YES bash tests/android-smoke.sh qemu
 
 proot 会创建、备份、恢复并删除一个名称带时间戳的临时容器。
 chroot 会执行真实 Root 挂载和删除，仅在明确设置风险确认变量时运行。
+qemu 会下载大型 Ubuntu 镜像、创建虚拟机并测试 Docker，仅在明确确认成本时运行。
 EOF
 }
 
@@ -41,6 +46,13 @@ cleanup_chroot() {
     xtmoe chroot remove --yes "$RESTORE_NAME" >/dev/null 2>&1 || true
 }
 
+cleanup_qemu() {
+    xtmoe qemu stop --force "$QEMU_NAME" >/dev/null 2>&1 || true
+    xtmoe qemu stop --force "$QEMU_RESTORE_NAME" >/dev/null 2>&1 || true
+    xtmoe qemu remove --yes "$QEMU_NAME" >/dev/null 2>&1 || true
+    xtmoe qemu remove --yes "$QEMU_RESTORE_NAME" >/dev/null 2>&1 || true
+}
+
 doctor_test() {
     command -v xtmoe >/dev/null 2>&1 || die '未安装 xtmoe'
     [[ ${PREFIX:-} == */files/usr ]] || die '当前不是 Termux PREFIX'
@@ -49,7 +61,34 @@ doctor_test() {
     xtmoe doctor
     xtmoe proot help >/dev/null
     xtmoe chroot help >/dev/null
+    xtmoe qemu help >/dev/null
     say 'SMOKE PASS: doctor/help'
+}
+
+qemu_test() {
+    [[ ${XTMOE_SMOKE_ACCEPT_QEMU_COST:-} == YES ]] || die 'QEMU 测试需要设置 XTMOE_SMOKE_ACCEPT_QEMU_COST=YES'
+    doctor_test
+    mkdir -p "$WORK_DIR"
+    trap cleanup_qemu EXIT INT TERM
+    xtmoe qemu prepare
+    XTMOE_QEMU_INTERNAL_NONINTERACTIVE=1 xtmoe qemu install --yes --cpus 1 --memory 2048 --disk-size 12 "$QEMU_NAME"
+    xtmoe list --all --no-prompt | grep -Fq "$QEMU_NAME" || die '统一列表没有显示新 QEMU VM'
+    xtmoe qemu exec "$QEMU_NAME" -- grep -q '^ID=ubuntu' /etc/os-release
+    xtmoe qemu exec "$QEMU_NAME" -- systemctl is-system-running
+    xtmoe qemu docker-status "$QEMU_NAME"
+    xtmoe qemu docker-test "$QEMU_NAME"
+    xtmoe qemu stop "$QEMU_NAME"
+    xtmoe qemu backup "$QEMU_NAME" "$QEMU_BACKUP"
+    [[ -s $QEMU_BACKUP ]] || die 'QEMU 备份为空'
+    xtmoe qemu remove --yes "$QEMU_NAME"
+    xtmoe qemu restore "$QEMU_BACKUP" "$QEMU_RESTORE_NAME"
+    xtmoe qemu start "$QEMU_RESTORE_NAME"
+    xtmoe qemu wait-ready --timeout 600 "$QEMU_RESTORE_NAME"
+    xtmoe qemu exec "$QEMU_RESTORE_NAME" -- grep -q '^ID=ubuntu' /etc/os-release
+    xtmoe qemu stop "$QEMU_RESTORE_NAME"
+    xtmoe qemu remove --yes "$QEMU_RESTORE_NAME"
+    trap - EXIT INT TERM
+    say 'SMOKE PASS: QEMU install/SSH/systemd/Docker/backup/restore/remove'
 }
 
 proot_test() {
@@ -130,6 +169,7 @@ case "$MODE" in
     doctor) doctor_test ;;
     proot) proot_test ;;
     chroot) chroot_test ;;
+    qemu) qemu_test ;;
     help|-h|--help) usage ;;
     *) usage; die "未知模式：$MODE" ;;
 esac

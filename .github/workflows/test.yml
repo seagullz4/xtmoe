@@ -22,17 +22,21 @@ jobs:
       - name: Parse shell files
         shell: bash
         run: |
-          bash -n \
+          for file in \
             termux.sh \
             src/bin/xtmoe \
             src/lib/common.sh \
             src/lib/proot.sh \
             src/lib/chroot.sh \
+            src/lib/qemu.sh \
             src/lib/manager.sh \
             src/lib/xtmoe-root \
             tests/run.sh \
+            tests/audit.sh \
             tests/android-smoke.sh \
-            tests/rootfs-lifecycle.sh
+            tests/rootfs-lifecycle.sh; do
+            bash -n "$file"
+          done
 
       - name: Run ShellCheck
         shell: bash
@@ -43,9 +47,11 @@ jobs:
             src/lib/common.sh \
             src/lib/proot.sh \
             src/lib/chroot.sh \
+            src/lib/qemu.sh \
             src/lib/manager.sh \
             src/lib/xtmoe-root \
             tests/run.sh \
+            tests/audit.sh \
             tests/android-smoke.sh \
             tests/rootfs-lifecycle.sh
 

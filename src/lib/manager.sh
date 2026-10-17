@@ -14,6 +14,7 @@ manager_proot_names() {
 }
 
 manager_proot_sessions() {
+    command_exists proot-distro || return 0
     proot-distro ps 2>/dev/null | awk '
         NR == 1 && $1 == "PID" { next }
         $1 ~ /^[0-9]+$/ && NF >= 2 { count[$2]++ }
@@ -30,6 +31,8 @@ manager_chroot_names() {
         basename -- "$entry"
     done | sort
 }
+
+manager_qemu_names() { qemu_names; }
 
 manager_docker_state() {
     local name=$1 base state
@@ -100,6 +103,17 @@ manager_collect_rows() {
         XTMOE_LIST_INIT+=("${init_state:-unknown}")
         XTMOE_LIST_DOCKER+=("$docker_state")
     done
+
+    while IFS= read -r name; do
+        [[ -n $name ]] || continue
+        state=$(qemu_status_value "$name" 2>/dev/null || printf unknown)
+        [[ $state != stopped && $state != stale-pid || $include_all == 1 ]] || continue
+        XTMOE_LIST_MODES+=(qemu)
+        XTMOE_LIST_NAMES+=("$name")
+        XTMOE_LIST_STATES+=("$state")
+        XTMOE_LIST_INIT+=("$(qemu_config_get "$name" init_state 2>/dev/null || printf unknown)")
+        XTMOE_LIST_DOCKER+=("$(qemu_config_get "$name" docker_state 2>/dev/null || printf unknown)")
+    done < <(manager_qemu_names)
 }
 
 list_main() {
@@ -114,7 +128,6 @@ list_main() {
     done
     require_termux
     ensure_dirs
-    require_command proot-distro '执行 pkg install proot-distro'
     manager_collect_rows "$include_all"
 
     printf '%-4s %-8s %-24s %-14s %-14s %s\n' '#' 'MODE' 'NAME' 'STATE' 'INIT' 'DOCKER'
@@ -132,14 +145,15 @@ list_main() {
     printf '输入编号进入系统，直接回车退出：' >&2
     IFS= read -r choice
     [[ -n $choice ]] || return 0
-    [[ $choice =~ ^[0-9]+$ ]] || die '请输入列表中的数字编号。'
+    [[ $choice =~ ^[0-9]{1,3}$ ]] || die '请输入列表中的数字编号。'
+    choice=$((10#$choice))
     ((choice >= 1 && choice <= ${#XTMOE_LIST_NAMES[@]})) || die '编号超出范围。'
     index=$((choice - 1))
     enter_main "${XTMOE_LIST_MODES[index]}" "${XTMOE_LIST_NAMES[index]}"
 }
 
 enter_main() {
-    require_arg_range 2 2 "$#" 'xtmoe enter <proot|chroot> <名称>'
+    require_arg_range 2 2 "$#" 'xtmoe enter <proot|chroot|qemu> <名称>'
     local mode=$1 name=$2
     require_name "$name"
     case "$mode" in
@@ -151,7 +165,11 @@ enter_main() {
             [[ -f $(chroot_base)/$name/.xtmoe-chroot ]] || die "Chroot 容器不存在：$name"
             chroot_main login "$name"
             ;;
-        *) die "未知模式：$mode（只能是 proot 或 chroot）" ;;
+        qemu)
+            qemu_vm_exists "$name" || die "QEMU VM 不存在：$name"
+            qemu_main ssh "$name"
+            ;;
+        *) die "未知模式：$mode（只能是 proot、chroot 或 qemu）" ;;
     esac
 }
 
@@ -162,12 +180,18 @@ menu_read() {
     else
         printf '%s：' "$prompt" >&2
     fi
-    IFS= read -r value
+    IFS= read -r value || return 1
     printf '%s' "${value:-$default}"
 }
 
 menu_run() {
-    if ! ( "$@" ); then
+    local result
+    # A conditional subshell disables errexit in nested installers.
+    set +e
+    ( set -Eeuo pipefail; "$@" )
+    result=$?
+    set -e
+    if ((result != 0)); then
         warn '操作未完成；请根据上方错误修复后重试。'
     fi
 }
@@ -178,6 +202,7 @@ menu_select_container() {
     case "$mode" in
         proot) mapfile -t names < <(manager_proot_names) ;;
         chroot) mapfile -t names < <(manager_chroot_names) ;;
+        qemu) mapfile -t names < <(manager_qemu_names) ;;
         *) die "内部错误：未知容器模式：$mode" ;;
     esac
     if ((${#names[@]} == 0)); then
@@ -191,7 +216,8 @@ menu_select_container() {
     done
     printf '  0) 取消\n' >&2
     choice=$(menu_read '请输入容器编号')
-    [[ $choice =~ ^[0-9]+$ ]] || { warn '请输入列表中的数字编号。'; return 1; }
+    [[ $choice =~ ^[0-9]{1,3}$ ]] || { warn '请输入列表中的数字编号。'; return 1; }
+    choice=$((10#$choice))
     ((choice == 0)) && return 1
     ((choice >= 1 && choice <= ${#names[@]})) || { warn '编号超出范围。'; return 1; }
     MENU_SELECTED_NAME=${names[choice - 1]}
@@ -333,6 +359,73 @@ EOF
     done
 }
 
+menu_qemu() {
+    local choice name file host guest protocol
+    while true; do
+        cat <<'EOF'
+
+QEMU 完整虚拟机管理
+  1) 准备 QEMU 依赖
+  2) 安装 Ubuntu 24.04 + Docker VM
+  3) 启动 VM
+  4) 等待 cloud-init 就绪
+  5) SSH 进入 VM
+  6) 串口控制台
+  7) 停止 VM
+  8) 更新 Ubuntu
+  9) Docker 状态
+ 10) Docker hello-world 测试
+ 11) 查看端口映射
+ 12) 添加端口映射
+ 13) 移除端口映射
+ 14) 备份
+ 15) 恢复
+ 16) 重装
+ 17) 卸载
+ 18) 查看状态
+  0) 返回
+EOF
+        choice=$(menu_read '请选择操作')
+        case "$choice" in
+            1) menu_run qemu_main prepare ;;
+            2) name=$(menu_read 'VM 名称' ubuntu-qemu); menu_run qemu_main install "$name" ;;
+            3) menu_select_container qemu '选择要启动的 QEMU VM' && menu_run qemu_main start "$MENU_SELECTED_NAME" ;;
+            4) menu_select_container qemu '选择要等待的 QEMU VM' && menu_run qemu_main wait-ready "$MENU_SELECTED_NAME" ;;
+            5) menu_select_container qemu '选择要 SSH 进入的 QEMU VM' && menu_run qemu_main ssh "$MENU_SELECTED_NAME" ;;
+            6) menu_select_container qemu '选择要连接控制台的 QEMU VM' && menu_run qemu_main console "$MENU_SELECTED_NAME" ;;
+            7) menu_select_container qemu '选择要停止的 QEMU VM' && menu_run qemu_main stop "$MENU_SELECTED_NAME" ;;
+            8) menu_select_container qemu '选择要更新的 QEMU VM' && menu_run qemu_main update-system "$MENU_SELECTED_NAME" ;;
+            9) menu_select_container qemu '选择要检查 Docker 的 QEMU VM' && menu_run qemu_main docker-status "$MENU_SELECTED_NAME" ;;
+            10) menu_select_container qemu '选择要运行 Docker 测试的 QEMU VM' && menu_run qemu_main docker-test "$MENU_SELECTED_NAME" ;;
+            11) menu_select_container qemu '选择要查看端口的 QEMU VM' && menu_run qemu_main ports "$MENU_SELECTED_NAME" ;;
+            12)
+                if menu_select_container qemu '选择要添加端口的 QEMU VM'; then
+                    host=$(menu_read '宿主端口'); guest=$(menu_read 'VM 端口'); protocol=$(menu_read '协议 tcp/udp' tcp)
+                    menu_run qemu_main port-add "$MENU_SELECTED_NAME" "$host" "$guest" "$protocol"
+                fi
+                ;;
+            13)
+                if menu_select_container qemu '选择要移除端口的 QEMU VM'; then
+                    host=$(menu_read '宿主端口'); protocol=$(menu_read '协议 tcp/udp' tcp)
+                    menu_run qemu_main port-remove "$MENU_SELECTED_NAME" "$host" "$protocol"
+                fi
+                ;;
+            14)
+                if menu_select_container qemu '选择要备份的 QEMU VM'; then
+                    file=$(menu_read '备份文件' "$PWD/${MENU_SELECTED_NAME}-$(date +%Y%m%d-%H%M%S)-qemu.tar.gz")
+                    menu_run qemu_main backup "$MENU_SELECTED_NAME" "$file"
+                fi
+                ;;
+            15) file=$(menu_read '备份文件'); name=$(menu_read '恢复后的 VM 名称' ubuntu-qemu-restored); menu_run qemu_main restore "$file" "$name" ;;
+            16) menu_select_container qemu '选择要重装的 QEMU VM' && menu_run qemu_main reinstall "$MENU_SELECTED_NAME" ;;
+            17) menu_select_container qemu '选择要卸载的 QEMU VM' && menu_run qemu_main remove "$MENU_SELECTED_NAME" ;;
+            18) menu_select_container qemu '选择要查看状态的 QEMU VM' && menu_run qemu_main status "$MENU_SELECTED_NAME" ;;
+            0|'') return 0 ;;
+            *) warn '无效选项。' ;;
+        esac
+    done
+}
+
 on_main() {
     (($# == 0)) || die 'xtmoe on 不接受额外参数'
     require_termux
@@ -344,16 +437,18 @@ on_main() {
 XTMOE 管理向导
   1) PRoot（无需 Root）
   2) Chroot（需要 Root）
-  3) 查看并进入正在运行的系统
-  4) 更新 XTMOE
+  3) QEMU 完整虚拟机（独立内核）
+  4) 查看并进入正在运行的系统
+  5) 更新 XTMOE
   0) 退出
 EOF
         choice=$(menu_read '请选择模式')
         case "$choice" in
             1) menu_proot ;;
             2) menu_chroot ;;
-            3) menu_run list_main ;;
-            4)
+            3) menu_qemu ;;
+            4) menu_run list_main ;;
+            5)
                 menu_run update_main
                 info 'XTMOE 已更新；请重新运行 xtmoe on 载入新版本。'
                 return 0

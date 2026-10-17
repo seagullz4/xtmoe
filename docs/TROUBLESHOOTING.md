@@ -222,3 +222,24 @@ xtmoe chroot systemd-status ubuntu
 
 关闭 Termux 的电池优化，允许后台活动，并避免清理最近任务。部分 Android 12+ 设备还受 Phantom Process Killer 限制；具体设置随厂商和系统版本变化。
 
+## QEMU 启动慢或初始化超时
+
+```sh
+xtmoe qemu status ubuntu-qemu
+xtmoe qemu console ubuntu-qemu
+xtmoe qemu wait-ready --timeout 1800 ubuntu-qemu
+```
+
+没有 `/dev/kvm` 时 QEMU 使用 TCG，首次 cloud-init、APT 和 Docker 安装可能需要较长时间。超时不会删除 VM。查看 VM 目录中的 `qemu.log`，进入控制台后查看 `/var/log/cloud-init-output.log` 和 `/var/log/xtmoe-firstboot.log`。
+
+## QEMU SSH 端口冲突
+
+停止 VM 后选择未占用端口重新创建，或检查：
+
+```sh
+ss -ltn
+xtmoe qemu ports ubuntu-qemu
+```
+
+所有转发默认绑定 `127.0.0.1`。端口映射只在下一次启动时生效，因此运行中的 VM 不允许修改映射。
+

@@ -514,6 +514,48 @@ chroot_confirm_network_changes() {
     [[ $answer == y || $answer == Y || $answer == yes || $answer == YES ]]
 }
 
+chroot_docker_packages_script() {
+    cat <<'DOCKER_PACKAGES'
+set -Eeuo pipefail
+policy_created=0
+cleanup_policy() { if [ "$policy_created" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi; }
+trap cleanup_policy EXIT
+if [ ! -e /usr/sbin/policy-rc.d ]; then
+    printf "#!/bin/sh\nexit 101\n" >/usr/sbin/policy-rc.d
+    chmod 0755 /usr/sbin/policy-rc.d
+    policy_created=1
+fi
+for package in docker.io docker-compose docker-compose-v2 docker-doc podman-docker containerd runc; do
+    if dpkg-query -W -f="\${Status}" "$package" 2>/dev/null | grep -q "ok installed"; then
+        printf "检测到冲突软件包：%s；请先人工确认并卸载。\n" "$package" >&2
+        exit 1
+    fi
+done
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl iptables iproute2
+install -m 0755 -d /etc/apt/keyrings
+tmp_key=/etc/apt/keyrings/docker.asc.xtmoe.tmp
+trap "rm -f -- $tmp_key; cleanup_policy" EXIT
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o "$tmp_key"
+chmod a+r "$tmp_key"
+mv -f "$tmp_key" /etc/apt/keyrings/docker.asc
+. /etc/os-release
+codename=${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}
+[ -n "$codename" ] || { printf "无法确定 Ubuntu codename\n" >&2; exit 1; }
+architecture=$(dpkg --print-architecture)
+tmp_source=/etc/apt/sources.list.d/docker.sources.xtmoe.tmp
+printf "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n" "$codename" "$architecture" >"$tmp_source"
+mv -f "$tmp_source" /etc/apt/sources.list.d/docker.sources
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+if ! grep -qw overlay /proc/filesystems && [ ! -e /etc/docker/daemon.json ]; then
+    install -d -m 0755 /etc/docker
+    printf "%s\n" "{" "  \"storage-driver\": \"vfs\"" "}" >/etc/docker/daemon.json
+    printf "OverlayFS 不可用，已配置低性能 vfs 存储驱动。\n" >&2
+fi
+DOCKER_PACKAGES
+}
+
 chroot_docker_install() {
     local accept_network=0 name=ubuntu argument result
     local -a positional=()
@@ -545,50 +587,17 @@ chroot_docker_install() {
     fi
 
     info '配置 Docker 官方 APT 仓库并安装 Docker Engine……'
-    if ! chroot_systemd_exec "$name" -- /bin/bash -lc '
-set -Eeuo pipefail
-for package in docker.io docker-compose docker-compose-v2 docker-doc podman-docker containerd runc; do
-    if dpkg-query -W -f="\${Status}" "$package" 2>/dev/null | grep -q "ok installed"; then
-        printf "检测到冲突软件包：%s；请先人工确认并卸载。\n" "$package" >&2
-        exit 1
-    fi
-done
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl
-install -m 0755 -d /etc/apt/keyrings
-tmp_key=/etc/apt/keyrings/docker.asc.xtmoe.tmp
-trap "rm -f -- $tmp_key" EXIT
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o "$tmp_key"
-chmod a+r "$tmp_key"
-mv -f "$tmp_key" /etc/apt/keyrings/docker.asc
-trap - EXIT
-. /etc/os-release
-codename=${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}
-[ -n "$codename" ] || { printf "无法确定 Ubuntu codename\n" >&2; exit 1; }
-architecture=$(dpkg --print-architecture)
-tmp_source=/etc/apt/sources.list.d/docker.sources.xtmoe.tmp
-printf "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n" "$codename" "$architecture" >"$tmp_source"
-mv -f "$tmp_source" /etc/apt/sources.list.d/docker.sources
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-if ! grep -qw overlay /proc/filesystems; then
-    if [ ! -e /etc/docker/daemon.json ]; then
-        install -d -m 0755 /etc/docker
-        printf "%s\n" "{" "  \"storage-driver\": \"vfs\"" "}" >/etc/docker/daemon.json
-        printf "OverlayFS 不可用，已配置低性能 vfs 存储驱动。\n" >&2
-    else
-        printf "OverlayFS 不可用且 daemon.json 已存在；XTMOE 不会覆盖用户配置。\n" >&2
-    fi
-fi
-systemctl enable containerd.service docker.service
-systemctl restart containerd.service
-systemctl restart docker.service
-'; then
+    if ! chroot_systemd_exec "$name" -- /bin/bash -lc "$(chroot_docker_packages_script)"; then
         chroot_meta_set "$name" docker_state install-failed
         chroot_docker_logs "$name" || true
         return 1
     fi
 
+    if ! chroot_systemd_exec "$name" -- /bin/bash -lc 'set -e; systemctl enable containerd.service docker.service; systemctl restart containerd.service; systemctl restart docker.service'; then
+        chroot_meta_set "$name" docker_state daemon-failed
+        chroot_docker_logs "$name" || true
+        return 1
+    fi
     if ! chroot_docker_status "$name"; then
         chroot_meta_set "$name" docker_state daemon-failed
         chroot_docker_logs "$name" || true
@@ -674,46 +683,11 @@ chroot_docker_direct_install() {
         return 0
     fi
     info '安装 Docker Engine（direct dockerd 兼容模式，不依赖 systemctl）……'
-    chroot_exec "$name" -- /bin/bash -lc '
-set -Eeuo pipefail
-policy_created=0
-cleanup_policy() { if [ "$policy_created" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi; }
-trap cleanup_policy EXIT
-if [ ! -e /usr/sbin/policy-rc.d ]; then
-    printf "#!/bin/sh\nexit 101\n" >/usr/sbin/policy-rc.d
-    chmod 0755 /usr/sbin/policy-rc.d
-    policy_created=1
-fi
-for package in docker.io docker-compose docker-compose-v2 docker-doc podman-docker containerd runc; do
-    if dpkg-query -W -f="\${Status}" "$package" 2>/dev/null | grep -q "ok installed"; then
-        printf "检测到冲突软件包：%s；请先人工确认并卸载。\n" "$package" >&2
-        exit 1
+    if ! chroot_exec "$name" -- /bin/bash -lc "$(chroot_docker_packages_script)"; then
+        chroot_meta_set "$name" docker_state install-failed
+        return 1
     fi
-done
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl
-install -m 0755 -d /etc/apt/keyrings
-tmp_key=/etc/apt/keyrings/docker.asc.xtmoe.tmp
-trap "rm -f -- $tmp_key; cleanup_policy" EXIT
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o "$tmp_key"
-chmod a+r "$tmp_key"
-mv -f "$tmp_key" /etc/apt/keyrings/docker.asc
-. /etc/os-release
-codename=${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}
-[ -n "$codename" ] || { printf "无法确定 Ubuntu codename\n" >&2; exit 1; }
-architecture=$(dpkg --print-architecture)
-tmp_source=/etc/apt/sources.list.d/docker.sources.xtmoe.tmp
-printf "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n" "$codename" "$architecture" >"$tmp_source"
-mv -f "$tmp_source" /etc/apt/sources.list.d/docker.sources
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-if ! grep -qw overlay /proc/filesystems && [ ! -e /etc/docker/daemon.json ]; then
-    install -d -m 0755 /etc/docker
-    printf "%s\n" "{" "  \"storage-driver\": \"vfs\"" "}" >/etc/docker/daemon.json
-    printf "OverlayFS 不可用，已配置低性能 vfs 存储驱动。\n" >&2
-fi
-'
-    chroot_systemd_stop "$name" || true
+    chroot_systemd_stop "$name" || return 1
     chroot_docker_direct_start "$name"
 }
 
@@ -721,8 +695,8 @@ chroot_docker_direct_start() {
     require_arg_range 0 1 "$#" 'xtmoe chroot docker-direct-start [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
-    chroot_root docker-direct-start "$(chroot_base)" "$name" "$(chroot_config_base)/$name.binds"
-    chroot_meta_set "$name" docker_state direct-ready
+    chroot_root docker-direct-start "$(chroot_base)" "$name" "$(chroot_config_base)/$name.binds" || return 1
+    chroot_meta_set "$name" docker_state direct-daemon-ready
     info 'direct dockerd 已通过 docker info 验证；请额外运行 xtmoe chroot docker-direct-run-test 验证实际容器。'
 }
 
@@ -730,7 +704,7 @@ chroot_docker_direct_stop() {
     require_arg_range 0 1 "$#" 'xtmoe chroot docker-direct-stop [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
-    chroot_root docker-direct-stop "$(chroot_base)" "$name"
+    chroot_root docker-direct-stop "$(chroot_base)" "$name" || return 1
     chroot_meta_set "$name" docker_state installed-stopped
 }
 
@@ -752,7 +726,12 @@ chroot_docker_direct_run_test() {
     require_arg_range 0 1 "$#" 'xtmoe chroot docker-direct-run-test [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
-    chroot_root docker-direct-run-test "$(chroot_base)" "$name"
+    if chroot_root docker-direct-run-test "$(chroot_base)" "$name"; then
+        chroot_meta_set "$name" docker_state direct-container-ready
+    else
+        chroot_meta_set "$name" docker_state direct-container-unverified
+        return 1
+    fi
 }
 
 chroot_repair() {

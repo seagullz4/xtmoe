@@ -1,12 +1,12 @@
 # 优化计划与验收状态
 
-XTMOE 直接采用可测试的模块化实现；当前开发版本为 `0.3.0-dev`。
+XTMOE 直接采用可测试的模块化实现；当前开发版本为 `0.4.0-dev`。
 
 ## 已实施
 
 - [x] 新增本地源码安装入口 `termux.sh`；拒绝在 Root shell 中安装。
 - [x] 新增统一的 `xtmoe` 命令和 `doctor` 环境诊断。
-- [x] PRoot 与 Chroot 命令和数据路径完全分离。
+- [x] PRoot、Chroot 与 QEMU 命令和数据路径完全分离。
 - [x] PRoot 使用 Termux 官方 `proot-distro` 后端。
 - [x] PRoot 删除增加交互确认和 `--yes` 非交互门槛。
 - [x] Chroot 使用 Canonical Ubuntu Base 官方发布页与 SHA-256 校验。
@@ -15,7 +15,7 @@ XTMOE 直接采用可测试的模块化实现；当前开发版本为 `0.3.0-dev
 - [x] Chroot 删除前检查挂载；挂载配置不以 Shell 脚本执行。
 - [x] 支持登录、单命令、停止、状态、绑定目录、备份、恢复和删除。
 - [x] 不再自动修改 Termux 镜像、字体、颜色和键盘布局。
-- [x] 重写安装、PRoot、Chroot、日常操作和故障排查文档。
+- [x] 重写安装、PRoot、Chroot、QEMU、日常操作和故障排查文档。
 - [x] 增加 `xtmoe on` 完整管理向导，以及统一 `list`/`enter`。
 - [x] PRoot 增加状态、系统更新和确认后重装。
 - [x] Chroot 增加阶段元数据、`repair`、系统更新和确认后重装。
@@ -23,6 +23,10 @@ XTMOE 直接采用可测试的模块化实现；当前开发版本为 `0.3.0-dev
 - [x] 增加 cgroup v1/v2 检查和 Chroot cgroup 挂载尝试。
 - [x] 增加 Docker 官方源安装、systemd 自动启动、服务管理、日志和 `hello-world` 验收。
 - [x] Docker 安装前严格检查 namespace、cgroup、iptables 和 IP forwarding；硬阻断返回状态 2。
+- [x] 新增 ARM64/x86_64 QEMU 完整虚拟机模式、Cloud Image 校验、cloud-init、SSH、端口和生命周期管理。
+- [x] QEMU 默认在独立 Ubuntu 内核中安装并分别验证 systemd、Docker daemon 和 hello-world。
+- [x] 生命周期复核：菜单失败中止、共享 Docker 安装脚本、direct 会话复用、QEMU 配置重校验及归档预检。
+- [x] QEMU 探测带超时，Docker 部分失败返回非零，重装失败保留旧盘和配置。
 
 ## 自动验证门槛
 
@@ -49,6 +53,8 @@ XTMOE 直接采用可测试的模块化实现；当前开发版本为 `0.3.0-dev
 - [ ] Magisk、KernelSU、APatch 至少各验证一种受支持组合。
 - [ ] Termux:X11 和 OpenSSH 基础流程。
 - [ ] 卸载 busy 时拒绝删除，并在重启后成功清理。
+- [ ] ARM64 与 x86_64 Android 分别验证 QEMU TCG；具备 `/dev/kvm` 的设备额外验证 KVM。
+- [ ] QEMU Cloud Image、SSH、端口、Docker、停止、备份、恢复和重装完整真机生命周期。
 
 ## 后续优化
 
