@@ -172,6 +172,31 @@ menu_run() {
     fi
 }
 
+menu_select_container() {
+    local mode=$1 title=${2:-请选择容器} choice index
+    local -a names=()
+    case "$mode" in
+        proot) mapfile -t names < <(manager_proot_names) ;;
+        chroot) mapfile -t names < <(manager_chroot_names) ;;
+        *) die "内部错误：未知容器模式：$mode" ;;
+    esac
+    if ((${#names[@]} == 0)); then
+        info "没有已安装的 ${mode} 容器；请先选择安装。"
+        return 1
+    fi
+
+    printf '\n%s\n' "$title" >&2
+    for ((index = 0; index < ${#names[@]}; index++)); do
+        printf '  %s) %s\n' "$((index + 1))" "${names[index]}" >&2
+    done
+    printf '  0) 取消\n' >&2
+    choice=$(menu_read '请输入容器编号')
+    [[ $choice =~ ^[0-9]+$ ]] || { warn '请输入列表中的数字编号。'; return 1; }
+    ((choice == 0)) && return 1
+    ((choice >= 1 && choice <= ${#names[@]})) || { warn '编号超出范围。'; return 1; }
+    MENU_SELECTED_NAME=${names[choice - 1]}
+}
+
 menu_proot() {
     local choice name file
     while true; do
@@ -192,18 +217,19 @@ EOF
         choice=$(menu_read '请选择操作')
         case "$choice" in
             1) name=$(menu_read '容器名称' ubuntu); menu_run proot_main install ubuntu:24.04 "$name" ;;
-            2) name=$(menu_read '容器名称' ubuntu); menu_run proot_main login "$name" ;;
-            3) name=$(menu_read '容器名称' ubuntu); menu_run proot_main stop "$name" ;;
-            4) name=$(menu_read '容器名称' ubuntu); menu_run proot_main update-system "$name" ;;
-            5) name=$(menu_read '容器名称' ubuntu); menu_run proot_main reinstall "$name" ;;
+            2) menu_select_container proot '选择要进入的 PRoot 容器' && menu_run proot_main login "$MENU_SELECTED_NAME" ;;
+            3) menu_select_container proot '选择要停止的 PRoot 容器' && menu_run proot_main stop "$MENU_SELECTED_NAME" ;;
+            4) menu_select_container proot '选择要更新的 PRoot 容器' && menu_run proot_main update-system "$MENU_SELECTED_NAME" ;;
+            5) menu_select_container proot '选择要重装的 PRoot 容器' && menu_run proot_main reinstall "$MENU_SELECTED_NAME" ;;
             6)
-                name=$(menu_read '容器名称' ubuntu)
-                file=$(menu_read '备份文件' "$PWD/${name}-$(date +%Y%m%d-%H%M%S).tar.gz")
-                menu_run proot_main backup "$name" "$file"
+                if menu_select_container proot '选择要备份的 PRoot 容器'; then
+                    file=$(menu_read '备份文件' "$PWD/${MENU_SELECTED_NAME}-$(date +%Y%m%d-%H%M%S).tar.gz")
+                    menu_run proot_main backup "$MENU_SELECTED_NAME" "$file"
+                fi
                 ;;
             7) file=$(menu_read '备份文件'); menu_run proot_main restore "$file" ;;
-            8) name=$(menu_read '容器名称' ubuntu); menu_run proot_main remove "$name" ;;
-            9) name=$(menu_read '容器名称' ubuntu); menu_run proot_main status "$name" ;;
+            8) menu_select_container proot '选择要卸载的 PRoot 容器' && menu_run proot_main remove "$MENU_SELECTED_NAME" ;;
+            9) menu_select_container proot '选择要查看的 PRoot 容器' && menu_run proot_main status "$MENU_SELECTED_NAME" ;;
             0|'') return 0 ;;
             *) warn '无效选项。' ;;
         esac
@@ -211,8 +237,7 @@ EOF
 }
 
 menu_chroot_docker() {
-    local choice name
-    name=$(menu_read '容器名称' ubuntu)
+    local name=${1:?缺少 Chroot 容器名称} choice
     while true; do
         cat <<'EOF'
 
@@ -268,27 +293,28 @@ EOF
         case "$choice" in
             1) menu_run chroot_main prepare ;;
             2) name=$(menu_read '容器名称' ubuntu); menu_run chroot_main install ubuntu 24.04 "$name" ;;
-            3) name=$(menu_read '容器名称' ubuntu); menu_run chroot_main systemd-start "$name" ;;
-            4) name=$(menu_read '容器名称' ubuntu); menu_run chroot_main login "$name" ;;
-            5) name=$(menu_read '容器名称' ubuntu); menu_run chroot_main stop "$name" ;;
-            6) name=$(menu_read '容器名称' ubuntu); menu_run chroot_main repair "$name" ;;
-            7) name=$(menu_read '容器名称' ubuntu); menu_run chroot_main update-system "$name" ;;
-            8) name=$(menu_read '容器名称' ubuntu); menu_run chroot_main reinstall "$name" ;;
+            3) menu_select_container chroot '选择要启动 systemd 的 Chroot 容器' && menu_run chroot_main systemd-start "$MENU_SELECTED_NAME" ;;
+            4) menu_select_container chroot '选择要进入的 Chroot 容器' && menu_run chroot_main login "$MENU_SELECTED_NAME" ;;
+            5) menu_select_container chroot '选择要停止的 Chroot 容器' && menu_run chroot_main stop "$MENU_SELECTED_NAME" ;;
+            6) menu_select_container chroot '选择要修复的 Chroot 容器' && menu_run chroot_main repair "$MENU_SELECTED_NAME" ;;
+            7) menu_select_container chroot '选择要更新的 Chroot 容器' && menu_run chroot_main update-system "$MENU_SELECTED_NAME" ;;
+            8) menu_select_container chroot '选择要重装的 Chroot 容器' && menu_run chroot_main reinstall "$MENU_SELECTED_NAME" ;;
             9)
-                name=$(menu_read '容器名称' ubuntu)
-                file=$(menu_read '备份文件' "$PWD/${name}-$(date +%Y%m%d-%H%M%S)-chroot.tar.gz")
-                menu_run chroot_main backup "$name" "$file"
+                if menu_select_container chroot '选择要备份的 Chroot 容器'; then
+                    file=$(menu_read '备份文件' "$PWD/${MENU_SELECTED_NAME}-$(date +%Y%m%d-%H%M%S)-chroot.tar.gz")
+                    menu_run chroot_main backup "$MENU_SELECTED_NAME" "$file"
+                fi
                 ;;
             10)
                 file=$(menu_read '备份文件')
                 name=$(menu_read '恢复后的容器名称' ubuntu-restored)
                 menu_run chroot_main restore "$file" "$name"
                 ;;
-            11) name=$(menu_read '容器名称' ubuntu); menu_run chroot_main remove "$name" ;;
-            12) name=$(menu_read '容器名称' ubuntu); menu_run chroot_main network-check "$name" ;;
-            13) name=$(menu_read '容器名称' ubuntu); menu_run chroot_main cgroup-check "$name" ;;
-            14) menu_chroot_docker ;;
-            15) name=$(menu_read '容器名称' ubuntu); menu_run chroot_main status "$name" ;;
+            11) menu_select_container chroot '选择要卸载的 Chroot 容器' && menu_run chroot_main remove "$MENU_SELECTED_NAME" ;;
+            12) menu_select_container chroot '选择要诊断网络的 Chroot 容器' && menu_run chroot_main network-check "$MENU_SELECTED_NAME" ;;
+            13) menu_select_container chroot '选择要检查 cgroup 的 Chroot 容器' && menu_run chroot_main cgroup-check "$MENU_SELECTED_NAME" ;;
+            14) menu_select_container chroot '选择要管理 Docker 的 Chroot 容器' && menu_chroot_docker "$MENU_SELECTED_NAME" ;;
+            15) menu_select_container chroot '选择要查看状态的 Chroot 容器' && menu_run chroot_main status "$MENU_SELECTED_NAME" ;;
             0|'') return 0 ;;
             *) warn '无效选项。' ;;
         esac

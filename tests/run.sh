@@ -125,7 +125,16 @@ assert_contains 'PRoot install keeps image and name' 'install --name demo ubuntu
 assert_ok 'PRoot exec dispatch' bash "$CLI" proot exec demo -- uname -a
 assert_contains 'PRoot exec keeps argument boundary' 'login demo -- uname -a' "$MOCK_LOG"
 mkdir -p "$PREFIX/var/lib/proot-distro/containers/demo/rootfs"
+mkdir -p "$PREFIX/var/lib/proot-distro/containers/alpha/rootfs"
 export MOCK_PROOT_PS=$'PID CONTAINER TYPE USER UPTIME COMMAND\n12345 demo login root 1m /bin/bash\n12346 demo run root 1m sleep\n'
+assert_ok 'Wizard PRoot selector accepts a numbered existing container' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/proot.sh"
+    source "$1/src/lib/chroot.sh"
+    source "$1/src/lib/manager.sh"
+    menu_select_container proot "test" <<<"2"
+    [[ $MENU_SELECTED_NAME == demo ]]
+' _ "$ROOT_DIR"
 assert_ok 'Unified list shows running PRoot container' bash "$CLI" list --no-prompt
 assert_contains 'Unified list includes running session count' 'running(2)' "$TEST_TMP/stdout"
 assert_ok 'Unified enter dispatches to PRoot login' bash "$CLI" enter proot demo
@@ -145,7 +154,17 @@ assert_ok 'Unified uninstall dispatches PRoot removal' bash "$CLI" uninstall --y
 assert_contains 'Unified uninstall removes requested image' 'remove demo' "$MOCK_LOG"
 assert_fail 'Unified uninstall rejects unknown mode' bash "$CLI" uninstall virtual demo
 
-mkdir -p "$XTMOE_DATA_DIR/chroot/demo" "$XTMOE_CONFIG_DIR/chroot" "$HOME/shared"
+mkdir -p "$XTMOE_DATA_DIR/chroot/demo/rootfs" "$XTMOE_DATA_DIR/chroot/alpha/rootfs" "$XTMOE_CONFIG_DIR/chroot" "$HOME/shared"
+printf 'xtmoe-chroot-format-1\n' >"$XTMOE_DATA_DIR/chroot/demo/.xtmoe-chroot"
+printf 'xtmoe-chroot-format-1\n' >"$XTMOE_DATA_DIR/chroot/alpha/.xtmoe-chroot"
+assert_ok 'Wizard Chroot selector accepts a numbered existing container' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/proot.sh"
+    source "$1/src/lib/chroot.sh"
+    source "$1/src/lib/manager.sh"
+    menu_select_container chroot "test" <<<"2"
+    [[ $MENU_SELECTED_NAME == demo ]]
+' _ "$ROOT_DIR"
 assert_ok 'Chroot bind config accepted' bash "$CLI" chroot bind demo "$HOME/shared" /mnt/shared ro
 assert_contains 'Chroot bind is data, not shell' "ro|$HOME/shared|/mnt/shared" "$XTMOE_CONFIG_DIR/chroot/demo.binds"
 assert_fail 'Chroot duplicate target rejected' bash "$CLI" chroot bind demo "$HOME/shared" /mnt/shared rw

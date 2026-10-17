@@ -96,6 +96,8 @@ xtmoe enter chroot ubuntu
 
 `xtmoe list` 默认只显示正在运行的系统，并在交互终端中允许输入编号进入。脚本、管道环境或 `--no-prompt` 只输出表格，不读取标准输入。
 
+`xtmoe on` 的 PRoot 和 Chroot 子菜单会在需要操作已有容器时列出全部容器编号。输入对应数字即可选择容器；输入 `0` 取消，不再需要手工输入名称。安装和恢复操作仍会要求指定新名称。
+
 ## 切换 Termux 镜像
 
 XTMOE 不会自动改写 `sources.list`。网络异常时使用 Termux 自带工具：
