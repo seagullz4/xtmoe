@@ -134,7 +134,8 @@ chroot_test() {
     xtmoe chroot prepare
     selinux_before=$(smoke_host_selinux) || die '无法记录安装前宿主 SELinux 模式'
     set +e
-    xtmoe chroot install --yes --accept-host-network-changes ubuntu 24.04 "$CHROOT_NAME"
+    # Validate the normal first-install path, not a test-only --yes shortcut.
+    xtmoe chroot install ubuntu 24.04 "$CHROOT_NAME" </dev/null
     install_status=$?
     set -e
     selinux_after=$(smoke_host_selinux) || die '无法记录安装后宿主 SELinux 模式'

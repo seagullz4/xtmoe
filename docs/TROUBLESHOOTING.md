@@ -255,6 +255,12 @@ su -c '/system/bin/dmesg' | grep -iE 'avc:.*denied|systemd|unshare|killed proces
 
 ## Docker 检查报告缺少 iptables
 
+若首次 APT 下载成功，而安装 systemd-resolved 后 Docker 阶段又 DNS 失败，请检查 `/etc/resolv.conf` 是否被包脚本替换成指向 `127.0.0.53` 的 stub。`policy-rc.d` 只阻止服务启动，不阻止软件包改写配置。新版在基础包安装后、systemd 启动后及 Docker 依赖准备时重新落地普通文件和固定 DNS，并再次实际验证源访问；更新系统也在前后恢复 DNS。不要仅凭安装最初写过 nameserver 就认为整个流程都不会变化。
+
+若先出现 nft 的 `addrtype`/`PREROUTING` 错误，紧接着是 `/bin/bash: line 3: install: command not found`，这不是一条 DNS 错误，也不一定是真的没有安装 coreutils。旧后端切换分支直接执行 chroot 非登录 Bash，继承了 Termux/Android 的 PATH；Ubuntu 的 `/usr/bin/install` 即使存在，也可能找不到。新版通过清理环境、指定 Ubuntu 的 PATH 执行探测、备份和 alternatives 切换；基础包与 Docker 依赖显式包含 coreutils，并验证 install/timeout/mktemp/flock 等工具。
+
+全新安装默认执行并提前显示网络影响；原确认参数仍兼容，不需要手工输入 y。若不安装 Docker，使用 --skip-docker。不要因为看到第一条 nft 探测错误就结束判断：应看后续 legacy 实测、备份/切换和最终真实容器验收是否成功；两种后端都失败仍会停止，不伪报可用。
+
 先区分软件包缺失、alternatives 多层绝对链接被旧版误判，以及内核 NAT/权限受限。不要直接清空宿主规则、切换 legacy/nft 后端或关闭 iptables。升级已安装命令后，已有容器可以执行：
 
 ```sh

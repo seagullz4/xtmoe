@@ -318,6 +318,9 @@ chroot_bootstrap() (
 
     chroot_stage "$name" packages chroot_setup "$name" || return 1
     chroot_meta_set "$name" state packages-ready
+    # systemd-resolved's package scripts can replace the Base image's regular
+    # resolv.conf with a 127.0.0.53 stub symlink even under policy-rc.d.
+    chroot_stage "$name" dns-after-packages chroot_apply_dns "$name" || return 1
 
     if ((skip_bash_sh)); then
         info '已按要求保留 /bin/sh'
@@ -327,6 +330,8 @@ chroot_bootstrap() (
 
     chroot_stage "$name" systemd chroot_systemd_start "$name" || return 1
     chroot_stage "$name" systemd-verify chroot_systemd_verify "$name" || return 1
+    chroot_stage "$name" dns-after-systemd chroot_apply_dns "$name" || return 1
+    chroot_stage "$name" network-after-systemd chroot_network_preflight "$name" || return 1
     chroot_meta_set "$name" state system-ready
 
     if ((skip_docker)); then
@@ -625,11 +630,13 @@ chroot_update_system() {
     require_arg_range 0 1 "$#" 'xtmoe chroot update-system [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
+    chroot_apply_dns "$name" || return 1
     chroot_exec "$name" -- /bin/bash -lc "$(chroot_apt_guard_script)
 apt-get -o APT::Update::Error-Mode=any update
 apt-get dist-upgrade -y
 if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
-"
+" || return 1
+    chroot_apply_dns "$name"
 }
 
 chroot_use_bash_sh() {
@@ -747,6 +754,7 @@ chroot_docker_compat_prepare() {
 
 chroot_docker_dependencies() {
     local name=$1 mode=${2:-systemd} packages='coreutils util-linux ca-certificates curl iptables iproute2'
+    chroot_apply_dns "$name" || return 1
     chroot_network_preflight "$name" || return 1
     [[ $mode != systemd ]] || packages+=' systemd-sysv dbus'
     info '先补齐 Docker 用户态依赖，再检查 iptables 和 systemd……'
@@ -754,7 +762,8 @@ chroot_docker_dependencies() {
 dpkg --configure -a
 apt-get install -y $packages
 /usr/sbin/iptables --version
-"
+" || return 1
+    chroot_apply_dns "$name"
 }
 
 chroot_docker_routing_setup() {

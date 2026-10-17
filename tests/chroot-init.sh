@@ -27,7 +27,7 @@ assert_ok 'Chroot init orders DNS, real source preflight, packages, shell and ve
     chroot_systemd_start() { printf "systemd\n" >>"$INIT_TEST_LOG"; }
     chroot_systemd_verify() { printf "verify\n" >>"$INIT_TEST_LOG"; }
     chroot_init --skip-docker init-order
-    [[ $(tr "\n" " " <"$INIT_TEST_LOG") == "dns network packages bash systemd verify " ]]
+    [[ $(tr "\n" " " <"$INIT_TEST_LOG") == "dns network packages dns bash systemd verify dns network " ]]
     [[ $(chroot_meta_get init-order state) == ready && $(chroot_meta_get init-order docker_state) == skipped-by-user ]]
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
@@ -63,6 +63,28 @@ assert_ok 'Chroot systemd verification failure prevents Docker and records exact
     chroot_systemd_verify() { return 1; }; chroot_docker_install() { printf forbidden >"$INIT_TEST_LOG"; }
     if chroot_bootstrap init-systemd --skip-bash-sh --accept-host-network-changes; then exit 1; fi
     [[ ! -e $INIT_TEST_LOG && $(chroot_meta_get init-systemd failed_stage) == systemd-verify ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Fresh bootstrap repairs DNS replaced by package scripts and service startup' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    DNS_FIXTURE="$2/resolved-regression"; mkdir -p "$DNS_FIXTURE"
+    chroot_apply_dns() { rm -f "$DNS_FIXTURE/resolv.conf"; printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" >"$DNS_FIXTURE/resolv.conf"; }
+    chroot_network_preflight() { [[ ! -L $DNS_FIXTURE/resolv.conf ]] && grep -qx "nameserver 1.1.1.1" "$DNS_FIXTURE/resolv.conf"; }
+    chroot_setup() { rm -f "$DNS_FIXTURE/resolv.conf"; ln -s /run/systemd/resolve/stub-resolv.conf "$DNS_FIXTURE/resolv.conf"; }
+    chroot_systemd_start() { chroot_setup; }
+    chroot_systemd_verify() { :; }
+    chroot_bootstrap dns-regression --skip-bash-sh --skip-docker || exit 1
+    [[ ! -L $DNS_FIXTURE/resolv.conf && $(chroot_meta_get dns-regression state) == ready && $(chroot_meta_get dns-regression last_completed_stage) == network-after-systemd ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Standalone Docker preparation repairs stub DNS before and after dependencies' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    DNS_LOG="$2/docker-dependency-dns"
+    chroot_apply_dns() { printf "dns\n" >>"$DNS_LOG"; }
+    chroot_network_preflight() { printf "network\n" >>"$DNS_LOG"; }
+    chroot_exec() { printf "packages\n" >>"$DNS_LOG"; }
+    chroot_docker_dependencies fixture
+    [[ $(tr "\n" " " <"$DNS_LOG") == "dns network packages dns " ]]
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
 assert_ok 'Chroot init accepts default network preparation without reading stdin' bash -c '

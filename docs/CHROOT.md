@@ -47,7 +47,7 @@ xtmoe chroot install ubuntu 24.04 ubuntu
 4. 校验镜像；
 5. 以 Root 保留原始 UID/GID 解压；
 6. 初始化 hostname、hosts、运行目录和普通文件形式的 resolv.conf，固定 DNS 为 `1.1.1.1`、`8.8.8.8`，修正 `hosts: files dns`；
-7. 按原生架构解析 Ubuntu 官方源域名，并执行严格的 APT update，实际验证配置源的下载和签名，不把“DNS 能解析”当作网络验收通过；
+7. 按原生架构解析 Ubuntu 官方源域名，并执行严格的 APT update，实际验证配置源的下载和签名，不把“DNS 能解析”当作网络验收通过；基础包安装后重新写入普通 DNS 文件，防止 systemd-resolved 包脚本改为 127.0.0.53 stub；systemd 启动后再次修复并实际验证 APT；
 8. 安装 Ubuntu 标准组件、systemd、D-Bus 和网络工具，默认切换 `/bin/sh` 到 Bash，启动并验证嵌套 systemd 及基础服务；使用 `--skip-bash-sh` 保留原 Shell；
 9. Docker 先做内核/权限检查，再补齐用户态依赖；在临时网络 namespace 中实际创建 addrtype/NAT、bridge/veth；当前后端不兼容且 legacy 实测通过时，备份 alternatives 后切换；同时探测目标数据文件系统的 OverlayFS 挂载；
 10. 启用 `containerd`/`docker`，并通过 `docker info` 和 `hello-world` 实际验收。
