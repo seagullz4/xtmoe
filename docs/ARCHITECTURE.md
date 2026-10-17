@@ -17,6 +17,7 @@ tests/run.sh               主模拟测试入口
 tests/audit.sh             失败路径回归，由 run.sh 载入
 tests/chroot-init.sh       Chroot 初始化、续跑、依赖与策略恢复回归
 tests/docker-runtime.sh    nft/legacy、目标 OverlayFS 和 Android 路由回归
+tests/menus.sh             分组菜单、动作映射、取消/返回/EOF 与参数边界
 tests/android-smoke.sh     显式确认后在 Android 执行真实生命周期
 docs/                     使用、排障、架构和验收状态
 ```
@@ -29,6 +30,7 @@ docs/                     使用、排障、架构和验收状态
 - Docker 分为内核/权限预检、用户态依赖、iptables/NAT 与 systemd 完整门控，再执行官方源安装和真实容器验收。软件/服务错误返回 1，明确的能力阻断返回 2。
 - QEMU 实时状态来自 QEMU PID 和精确磁盘参数；初始化和 Docker 验证结果独立保存在配置中。
 - 菜单操作在独立 Shell 中执行；任一步失败会中止本次操作，并返回菜单。不能把安装函数放进会关闭 Bash `errexit` 的条件中，再依赖隐式退出。
+- 菜单分类与动作数据集中在 `menu_entries`；公共选项渲染、参数收集和后端分发共用实现。父页面与叶页面使用固定层级循环，不递归重开父菜单；输入 EOF 会退出，取消不会复用旧目标或绕过删除确认。
 - 破坏性动作先验证目标与停止状态。Docker API、真实容器执行、systemd 和网络分别验收。
 - SSH 与 daemon 探测设置超时。需要等待的流程展示阶段或进度，失败保留日志供排查。
 

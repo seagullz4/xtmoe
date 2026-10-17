@@ -404,6 +404,7 @@ assert_ok 'Synthetic restored QEMU VM can be removed' bash "$CLI" qemu remove --
 source "$ROOT_DIR/tests/audit.sh"
 source "$ROOT_DIR/tests/chroot-init.sh"
 source "$ROOT_DIR/tests/docker-runtime.sh"
+source "$ROOT_DIR/tests/menus.sh"
 
 cat >"$TEST_TMP/mock-bin/id" <<'MOCK'
 #!/usr/bin/env bash

@@ -199,6 +199,7 @@ menu_run() {
 menu_select_container() {
     local mode=$1 title=${2:-请选择容器} choice index
     local -a names=()
+    MENU_SELECTED_NAME=''
     case "$mode" in
         proot) mapfile -t names < <(manager_proot_names) ;;
         chroot) mapfile -t names < <(manager_chroot_names) ;;
@@ -215,7 +216,8 @@ menu_select_container() {
         printf '  %s) %s\n' "$((index + 1))" "${names[index]}" >&2
     done
     printf '  0) 取消\n' >&2
-    choice=$(menu_read '请输入容器编号')
+    choice=$(menu_read '请输入容器编号（回车取消）') || return 1
+    [[ -n $choice ]] || return 1
     [[ $choice =~ ^[0-9]{1,3}$ ]] || { warn '请输入列表中的数字编号。'; return 1; }
     choice=$((10#$choice))
     ((choice == 0)) && return 1
@@ -223,210 +225,189 @@ menu_select_container() {
     MENU_SELECTED_NAME=${names[choice - 1]}
 }
 
-menu_proot() {
-    local choice name file
-    while true; do
-        cat <<'EOF'
+# A page contains labels and public command actions only. Each page is a loop;
+# returning from a leaf unwinds one fixed level, never re-enters a parent.
+menu_entries() {
+    case "$1:$2" in
+        proot:main)
+            printf '%s\n' '安装 Ubuntu 24.04|install' '容器运行管理|runtime' '备份、恢复与删除|data' ;;
+        chroot:main)
+            printf '%s\n' '安装与初始化|install' '容器运行管理|runtime' '备份、恢复与删除|data' '诊断与检查|diagnostics' 'Docker 管理|docker' ;;
+        qemu:main)
+            printf '%s\n' '安装与准备|install' '虚拟机运行管理|runtime' '备份、恢复与删除|data' '端口转发|ports' 'Docker 验收|docker' ;;
+        chroot:install)
+            printf '%s\n' '一键安装 Ubuntu 24.04|install' '一键配置已有 Ubuntu|init' '修复／继续上次初始化|repair' '单独准备 Termux 依赖|prepare' ;;
+        qemu:install)
+            printf '%s\n' '安装 Ubuntu 24.04 + Docker VM|install' '单独准备 QEMU 依赖|prepare' ;;
+        proot:runtime)
+            printf '%s\n' '进入容器|login' '停止活动会话|stop' '更新容器系统|update-system' '查看状态|status' ;;
+        chroot:runtime)
+            printf '%s\n' '进入容器|login' '启动 systemd|systemd-start' '停止容器|stop' '更新容器系统|update-system' '查看容器状态|status' ;;
+        qemu:runtime)
+            printf '%s\n' 'SSH 进入 VM|ssh' '启动 VM|start' '停止 VM|stop' '查看状态|status' '等待初始化就绪|wait-ready' '串口控制台|console' '更新 Ubuntu|update-system' ;;
+        proot:data|chroot:data|qemu:data)
+            printf '%s\n' '备份|backup' '从备份恢复|restore' '重装（删除系统内数据）|reinstall' '卸载（永久删除系统和数据）|remove' ;;
+        chroot:diagnostics)
+            printf '%s\n' '网络与 DNS 诊断|network-check' 'cgroup 检查|cgroup-check' 'systemd 前置检查|systemd-check' 'systemd 运行状态|systemd-status' ;;
+        chroot:docker)
+            printf '%s\n' 'systemd 模式（推荐）|docker-systemd' 'direct dockerd 兼容模式（不依赖 systemctl）|docker-direct' 'Docker／1Panel 能力检查（不安装 1Panel）|docker-check' ;;
+        chroot:docker-systemd)
+            printf '%s\n' '安装并验收 Docker Engine|docker-install' '启动 Docker|docker-start' '停止 Docker|docker-stop' '重启 Docker|docker-restart' '查看状态|docker-status' '查看日志|docker-logs' ;;
+        chroot:docker-direct)
+            printf '%s\n' '安装并启动 direct dockerd|docker-direct-install' '启动 dockerd|docker-direct-start' '停止 dockerd|docker-direct-stop' '查看状态（docker info）|docker-direct-status' '查看日志|docker-direct-logs' '运行 hello-world 验证容器|docker-direct-run-test' ;;
+        qemu:ports)
+            printf '%s\n' '查看端口映射|ports' '添加端口映射|port-add' '删除端口映射|port-remove' ;;
+        qemu:docker)
+            printf '%s\n' 'Docker daemon 状态|docker-status' '运行 hello-world 验收|docker-test' ;;
+        *) return 1 ;;
+    esac
+}
 
-PRoot 管理
-  1) 安装 Ubuntu 24.04
-  2) 进入容器
-  3) 停止活动会话
-  4) 更新容器系统
-  5) 重装容器
-  6) 备份
-  7) 恢复
-  8) 卸载
-  9) 查看状态
-  0) 返回
-EOF
-        choice=$(menu_read '请选择操作')
-        case "$choice" in
-            1) name=$(menu_read '容器名称' ubuntu); menu_run proot_main install ubuntu:24.04 "$name" ;;
-            2) menu_select_container proot '选择要进入的 PRoot 容器' && menu_run proot_main login "$MENU_SELECTED_NAME" ;;
-            3) menu_select_container proot '选择要停止的 PRoot 容器' && menu_run proot_main stop "$MENU_SELECTED_NAME" ;;
-            4) menu_select_container proot '选择要更新的 PRoot 容器' && menu_run proot_main update-system "$MENU_SELECTED_NAME" ;;
-            5) menu_select_container proot '选择要重装的 PRoot 容器' && menu_run proot_main reinstall "$MENU_SELECTED_NAME" ;;
-            6)
-                if menu_select_container proot '选择要备份的 PRoot 容器'; then
-                    file=$(menu_read '备份文件' "$PWD/${MENU_SELECTED_NAME}-$(date +%Y%m%d-%H%M%S).tar.gz")
-                    menu_run proot_main backup "$MENU_SELECTED_NAME" "$file"
+menu_mode_label() {
+    case "$1" in proot) printf PRoot ;; chroot) printf Chroot ;; qemu) printf QEMU ;; *) die "未知菜单模式：$1" ;; esac
+}
+
+# Only the selected action goes to stdout. UI goes to stderr so command
+# substitution cannot mix a rendered menu with the dispatch key.
+menu_pick_entry() {
+    local title=$1 choice index entry
+    shift
+    local -a entries=("$@")
+    ((${#entries[@]} > 0)) || die '菜单没有可用选项'
+    while true; do
+        printf '\n%s\n' "$title" >&2
+        for ((index = 0; index < ${#entries[@]}; index++)); do
+            entry=${entries[index]}
+            printf '  %s) %s\n' "$((index + 1))" "${entry%%|*}" >&2
+        done
+        printf '  0) 返回上一级（直接回车也可）\n' >&2
+        choice=$(menu_read '请选择操作') || return 1
+        [[ -n $choice ]] || return 1
+        [[ $choice =~ ^[0-9]{1,3}$ ]] || { warn '请输入列表中的数字编号。'; continue; }
+        choice=$((10#$choice))
+        ((choice != 0)) || return 1
+        ((choice <= ${#entries[@]})) || { warn '编号超出范围。'; continue; }
+        entry=${entries[choice - 1]}
+        printf '%s' "${entry#*|}"
+        return 0
+    done
+}
+
+menu_dispatch_action() {
+    local mode=$1 action=$2 name=${3:-} backend label file host guest protocol
+    label=$(menu_mode_label "$mode") || return 1
+    backend="${mode}_main"
+    case "$action" in
+        install)
+            if [[ $mode == qemu ]]; then
+                name=$(menu_read '新 VM 名称' ubuntu-qemu) || return 0
+                menu_run "$backend" install "$name"
+            else
+                name=$(menu_read '新容器名称' ubuntu) || return 0
+                if [[ $mode == proot ]]; then
+                    menu_run "$backend" install ubuntu:24.04 "$name"
+                else
+                    menu_run "$backend" install ubuntu 24.04 "$name"
                 fi
-                ;;
-            7) file=$(menu_read '备份文件'); menu_run proot_main restore "$file" ;;
-            8) menu_select_container proot '选择要卸载的 PRoot 容器' && menu_run proot_main remove "$MENU_SELECTED_NAME" ;;
-            9) menu_select_container proot '选择要查看的 PRoot 容器' && menu_run proot_main status "$MENU_SELECTED_NAME" ;;
-            0|'') return 0 ;;
-            *) warn '无效选项。' ;;
-        esac
+            fi
+            return 0
+            ;;
+        prepare) menu_run "$backend" prepare; return 0 ;;
+        restore)
+            file=$(menu_read '要恢复的备份文件（留空取消）') || return 0
+            [[ -n $file ]] || { info '已取消恢复'; return 0; }
+            if [[ $mode == proot ]]; then
+                info 'PRoot 恢复名称保存在备份中，不另行指定新名称。'
+                menu_run "$backend" restore "$file"
+            else
+                if [[ $mode == qemu ]]; then name=ubuntu-qemu-restored; else name=ubuntu-restored; fi
+                name=$(menu_read '恢复后的新名称（不会覆盖已有系统）' "$name") || return 0
+                menu_run "$backend" restore "$file" "$name"
+            fi
+            return 0
+            ;;
+    esac
+
+    if [[ -z $name ]]; then
+        if ! menu_select_container "$mode" "选择操作目标（$label：$action）"; then return 0; fi
+        name=$MENU_SELECTED_NAME
+    fi
+    require_name "$name"
+    case "$action" in
+        backup)
+            file=$(menu_read '备份文件' "$PWD/${name}-$(date +%Y%m%d-%H%M%S)-${mode}.tar.gz") || return 0
+            menu_run "$backend" backup "$name" "$file"
+            ;;
+        port-add)
+            host=$(menu_read '宿主端口（留空取消）') || return 0
+            [[ -n $host ]] || return 0
+            guest=$(menu_read '客体端口（留空取消）') || return 0
+            [[ -n $guest ]] || return 0
+            protocol=$(menu_read '协议 tcp/udp' tcp) || return 0
+            menu_run "$backend" port-add "$name" "$host" "$guest" "$protocol"
+            ;;
+        port-remove)
+            host=$(menu_read '宿主端口（留空取消）') || return 0
+            [[ -n $host ]] || return 0
+            protocol=$(menu_read '协议 tcp/udp' tcp) || return 0
+            menu_run "$backend" port-remove "$name" "$host" "$protocol"
+            ;;
+        *) menu_run "$backend" "$action" "$name" ;;
+    esac
+}
+
+menu_category() {
+    local mode=$1 group=$2 title=$3 name=${4:-} action catalog
+    local -a entries=()
+    catalog=$(menu_entries "$mode" "$group") || die "未知菜单分组：$mode/$group"
+    mapfile -t entries <<<"$catalog"
+    while true; do
+        action=$(menu_pick_entry "$title" "${entries[@]}") || return 0
+        menu_dispatch_action "$mode" "$action" "$name"
     done
 }
 
 menu_chroot_docker() {
-    local name=${1:?缺少 Chroot 容器名称} choice
+    local name=${1:?缺少 Chroot 容器名称} group
+    local -a entries=()
+    require_name "$name"
+    mapfile -t entries < <(menu_entries chroot docker)
     while true; do
-        cat <<'EOF'
-
-Docker 管理
-  1) 严格能力检查
-  2) 安装 Docker Engine（systemd 严格模式）
-  3) systemd 模式启动
-  4) systemd 模式停止
-  5) systemd 模式重启
-  6) systemd 模式状态
-  7) systemd 模式日志
-  8) 安装并启动 Docker（direct dockerd 兼容模式）
-  9) direct dockerd 启动
- 10) direct dockerd 停止
- 11) direct dockerd 状态（docker info）
- 12) direct dockerd 日志
- 13) direct 运行 hello-world 验证容器
-  0) 返回
-EOF
-        choice=$(menu_read '请选择操作')
-        case "$choice" in
-            1) menu_run chroot_main docker-check "$name" ;;
-            2) menu_run chroot_main docker-install "$name" ;;
-            3) menu_run chroot_main docker-start "$name" ;;
-            4) menu_run chroot_main docker-stop "$name" ;;
-            5) menu_run chroot_main docker-restart "$name" ;;
-            6) menu_run chroot_main docker-status "$name" ;;
-            7) menu_run chroot_main docker-logs "$name" ;;
-            8) menu_run chroot_main docker-direct-install "$name" ;;
-            9) menu_run chroot_main docker-direct-start "$name" ;;
-            10) menu_run chroot_main docker-direct-stop "$name" ;;
-            11) menu_run chroot_main docker-direct-status "$name" ;;
-            12) menu_run chroot_main docker-direct-logs "$name" ;;
-            13) menu_run chroot_main docker-direct-run-test "$name" ;;
-            0|'') return 0 ;;
-            *) warn '无效选项。' ;;
+        group=$(menu_pick_entry "Docker 管理 — $name" "${entries[@]}") || return 0
+        case "$group" in
+            docker-systemd) menu_category chroot "$group" "Docker / systemd 模式 — $name" "$name" ;;
+            docker-direct) menu_category chroot "$group" "Docker / direct 兼容模式 — $name" "$name" ;;
+            docker-check) menu_dispatch_action chroot docker-check "$name" ;;
         esac
     done
 }
 
-menu_chroot() {
-    local choice name file
+menu_backend() {
+    local mode=$1 label group title entry
+    local -a entries=()
+    label=$(menu_mode_label "$mode") || return 1
+    mapfile -t entries < <(menu_entries "$mode" main)
     while true; do
-        cat <<'EOF'
-
-Chroot 管理
-  1) 准备依赖
-  2) 一键安装 Ubuntu 24.04（自动准备依赖/网络/systemd）
-  3) 启动 systemd
-  4) 进入容器
-  5) 停止容器
-  6) 修复/继续初始化
-  7) 更新容器系统
-  8) 重装容器
-  9) 备份
- 10) 恢复
- 11) 卸载
- 12) 网络诊断
- 13) cgroup 检查
- 14) Docker 管理
- 15) 查看状态
- 16) 一键配置已有 Ubuntu（网络/基础包/systemd/Docker）
-  0) 返回
-EOF
-        choice=$(menu_read '请选择操作')
-        case "$choice" in
-            1) menu_run chroot_main prepare ;;
-            2) name=$(menu_read '容器名称' ubuntu); menu_run chroot_main install ubuntu 24.04 "$name" ;;
-            3) menu_select_container chroot '选择要启动 systemd 的 Chroot 容器' && menu_run chroot_main systemd-start "$MENU_SELECTED_NAME" ;;
-            4) menu_select_container chroot '选择要进入的 Chroot 容器' && menu_run chroot_main login "$MENU_SELECTED_NAME" ;;
-            5) menu_select_container chroot '选择要停止的 Chroot 容器' && menu_run chroot_main stop "$MENU_SELECTED_NAME" ;;
-            6) menu_select_container chroot '选择要修复的 Chroot 容器' && menu_run chroot_main repair "$MENU_SELECTED_NAME" ;;
-            7) menu_select_container chroot '选择要更新的 Chroot 容器' && menu_run chroot_main update-system "$MENU_SELECTED_NAME" ;;
-            8) menu_select_container chroot '选择要重装的 Chroot 容器' && menu_run chroot_main reinstall "$MENU_SELECTED_NAME" ;;
-            9)
-                if menu_select_container chroot '选择要备份的 Chroot 容器'; then
-                    file=$(menu_read '备份文件' "$PWD/${MENU_SELECTED_NAME}-$(date +%Y%m%d-%H%M%S)-chroot.tar.gz")
-                    menu_run chroot_main backup "$MENU_SELECTED_NAME" "$file"
-                fi
-                ;;
-            10)
-                file=$(menu_read '备份文件')
-                name=$(menu_read '恢复后的容器名称' ubuntu-restored)
-                menu_run chroot_main restore "$file" "$name"
-                ;;
-            11) menu_select_container chroot '选择要卸载的 Chroot 容器' && menu_run chroot_main remove "$MENU_SELECTED_NAME" ;;
-            12) menu_select_container chroot '选择要诊断网络的 Chroot 容器' && menu_run chroot_main network-check "$MENU_SELECTED_NAME" ;;
-            13) menu_select_container chroot '选择要检查 cgroup 的 Chroot 容器' && menu_run chroot_main cgroup-check "$MENU_SELECTED_NAME" ;;
-            14) menu_select_container chroot '选择要管理 Docker 的 Chroot 容器' && menu_chroot_docker "$MENU_SELECTED_NAME" ;;
-            15) menu_select_container chroot '选择要查看状态的 Chroot 容器' && menu_run chroot_main status "$MENU_SELECTED_NAME" ;;
-            16) menu_select_container chroot '选择要一键配置的 Chroot 容器' && menu_run chroot_main init "$MENU_SELECTED_NAME" ;;
-            0|'') return 0 ;;
-            *) warn '无效选项。' ;;
-        esac
+        group=$(menu_pick_entry "$label 管理" "${entries[@]}") || return 0
+        if [[ $mode == proot && $group == install ]]; then
+            menu_dispatch_action proot install
+        elif [[ $mode == chroot && $group == docker ]]; then
+            if menu_select_container chroot '选择要管理 Docker 的 Chroot 容器'; then
+                menu_chroot_docker "$MENU_SELECTED_NAME"
+            fi
+        else
+            title=$group
+            for entry in "${entries[@]}"; do
+                [[ ${entry#*|} != "$group" ]] || { title=${entry%%|*}; break; }
+            done
+            menu_category "$mode" "$group" "$label / $title"
+        fi
     done
 }
 
-menu_qemu() {
-    local choice name file host guest protocol
-    while true; do
-        cat <<'EOF'
-
-QEMU 完整虚拟机管理
-  1) 准备 QEMU 依赖
-  2) 安装 Ubuntu 24.04 + Docker VM
-  3) 启动 VM
-  4) 等待 cloud-init 就绪
-  5) SSH 进入 VM
-  6) 串口控制台
-  7) 停止 VM
-  8) 更新 Ubuntu
-  9) Docker 状态
- 10) Docker hello-world 测试
- 11) 查看端口映射
- 12) 添加端口映射
- 13) 移除端口映射
- 14) 备份
- 15) 恢复
- 16) 重装
- 17) 卸载
- 18) 查看状态
-  0) 返回
-EOF
-        choice=$(menu_read '请选择操作')
-        case "$choice" in
-            1) menu_run qemu_main prepare ;;
-            2) name=$(menu_read 'VM 名称' ubuntu-qemu); menu_run qemu_main install "$name" ;;
-            3) menu_select_container qemu '选择要启动的 QEMU VM' && menu_run qemu_main start "$MENU_SELECTED_NAME" ;;
-            4) menu_select_container qemu '选择要等待的 QEMU VM' && menu_run qemu_main wait-ready "$MENU_SELECTED_NAME" ;;
-            5) menu_select_container qemu '选择要 SSH 进入的 QEMU VM' && menu_run qemu_main ssh "$MENU_SELECTED_NAME" ;;
-            6) menu_select_container qemu '选择要连接控制台的 QEMU VM' && menu_run qemu_main console "$MENU_SELECTED_NAME" ;;
-            7) menu_select_container qemu '选择要停止的 QEMU VM' && menu_run qemu_main stop "$MENU_SELECTED_NAME" ;;
-            8) menu_select_container qemu '选择要更新的 QEMU VM' && menu_run qemu_main update-system "$MENU_SELECTED_NAME" ;;
-            9) menu_select_container qemu '选择要检查 Docker 的 QEMU VM' && menu_run qemu_main docker-status "$MENU_SELECTED_NAME" ;;
-            10) menu_select_container qemu '选择要运行 Docker 测试的 QEMU VM' && menu_run qemu_main docker-test "$MENU_SELECTED_NAME" ;;
-            11) menu_select_container qemu '选择要查看端口的 QEMU VM' && menu_run qemu_main ports "$MENU_SELECTED_NAME" ;;
-            12)
-                if menu_select_container qemu '选择要添加端口的 QEMU VM'; then
-                    host=$(menu_read '宿主端口'); guest=$(menu_read 'VM 端口'); protocol=$(menu_read '协议 tcp/udp' tcp)
-                    menu_run qemu_main port-add "$MENU_SELECTED_NAME" "$host" "$guest" "$protocol"
-                fi
-                ;;
-            13)
-                if menu_select_container qemu '选择要移除端口的 QEMU VM'; then
-                    host=$(menu_read '宿主端口'); protocol=$(menu_read '协议 tcp/udp' tcp)
-                    menu_run qemu_main port-remove "$MENU_SELECTED_NAME" "$host" "$protocol"
-                fi
-                ;;
-            14)
-                if menu_select_container qemu '选择要备份的 QEMU VM'; then
-                    file=$(menu_read '备份文件' "$PWD/${MENU_SELECTED_NAME}-$(date +%Y%m%d-%H%M%S)-qemu.tar.gz")
-                    menu_run qemu_main backup "$MENU_SELECTED_NAME" "$file"
-                fi
-                ;;
-            15) file=$(menu_read '备份文件'); name=$(menu_read '恢复后的 VM 名称' ubuntu-qemu-restored); menu_run qemu_main restore "$file" "$name" ;;
-            16) menu_select_container qemu '选择要重装的 QEMU VM' && menu_run qemu_main reinstall "$MENU_SELECTED_NAME" ;;
-            17) menu_select_container qemu '选择要卸载的 QEMU VM' && menu_run qemu_main remove "$MENU_SELECTED_NAME" ;;
-            18) menu_select_container qemu '选择要查看状态的 QEMU VM' && menu_run qemu_main status "$MENU_SELECTED_NAME" ;;
-            0|'') return 0 ;;
-            *) warn '无效选项。' ;;
-        esac
-    done
-}
+menu_proot() { menu_backend proot; }
+menu_chroot() { menu_backend chroot; }
+menu_qemu() { menu_backend qemu; }
 
 on_main() {
     (($# == 0)) || die 'xtmoe on 不接受额外参数'
@@ -444,7 +425,7 @@ XTMOE 管理向导
   5) 更新 XTMOE
   0) 退出
 EOF
-        choice=$(menu_read '请选择模式')
+        choice=$(menu_read '请选择模式') || return 0
         case "$choice" in
             1) menu_proot ;;
             2) menu_chroot ;;

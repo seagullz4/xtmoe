@@ -36,6 +36,7 @@ jobs:
             tests/audit.sh \
             tests/chroot-init.sh \
             tests/docker-runtime.sh \
+            tests/menus.sh \
             tests/android-smoke.sh \
             tests/rootfs-lifecycle.sh; do
             bash -n "$file"
@@ -58,6 +59,7 @@ jobs:
             tests/audit.sh \
             tests/chroot-init.sh \
             tests/docker-runtime.sh \
+            tests/menus.sh \
             tests/android-smoke.sh \
             tests/rootfs-lifecycle.sh
 

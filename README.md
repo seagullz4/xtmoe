@@ -52,9 +52,25 @@ xtmoe doctor
 xtmoe on
 ```
 
-向导会先选择 PRoot、Chroot 或 QEMU，再提供安装、进入、停止、更新系统、重装、备份、恢复、卸载和状态检查。菜单中的每项操作都对应可单独执行的公共子命令。
+向导先选择 PRoot、Chroot 或 QEMU，再按任务分组，不再将十几个命令平铺在同一页。PRoot 首屏 3 项，Chroot 和 QEMU 首屏各 5 项；菜单只负责导航，实际操作仍调用原有公共子命令。
 
-当操作需要已存在的容器时，向导会列出该模式全部容器，例如 `1) ubuntu`、`2) debian`；输入数字即可选择目标容器，无需手工输入名称。输入 `0` 会取消本次操作。新装和恢复仍会要求输入新容器名称。
+Chroot 导航示例：
+
+```text
+Chroot
+├─ 1 安装与初始化：一键安装、一键配置、修复续跑、准备依赖
+├─ 2 容器运行管理：进入、启动 systemd、停止、更新、状态
+├─ 3 备份、恢复与删除：备份、恢复、重装、卸载
+├─ 4 诊断与检查：网络/DNS、cgroup、systemd 前置/运行检查
+└─ 5 Docker 管理
+   ├─ 1 systemd 模式（推荐）：安装验收、启动、停止、重启、状态、日志
+   ├─ 2 direct 兼容模式：安装、启动、停止、状态、日志、真实容器测试
+   └─ 3 Docker/1Panel 能力检查（不安装 1Panel）
+```
+
+每页 `0` 或直接回车返回上一级；重装和卸载单独标注数据删除风险，仍执行原命令的确认，不自动添加 `--yes`。Docker 先选目标容器，再在带容器名称的页面连续操作，避免混淆 systemd/direct 模式。完整分类见 [日常操作](docs/OPERATIONS.md#分组管理向导)。
+
+当操作需要已存在的容器时，向导会列出该模式全部容器，例如 `1) ubuntu`、`2) debian`；输入数字选择，无需手工输入名称。`0`、直接回车或输入结束均可取消，不会沿用旧目标。新装与 Chroot/QEMU 恢复要求输入新名称；PRoot 恢复沿用备份内的名称。
 
 查看当前正在运行的系统并选择进入：
 
@@ -164,7 +180,7 @@ xtmoe chroot init ubuntu
 xtmoe chroot init --skip-docker ubuntu
 ```
 
-向导中也可选择 Chroot → “一键配置已有 Ubuntu”，按数字选择容器。`init` 主动补全默认配置；修复中断、沿用已保存的 Bash/Docker 选择则用 `xtmoe chroot repair ubuntu`。`setup` 只安装基础包，不等同完整初始化。
+向导中也可选择 Chroot → 安装与初始化 → “一键配置已有 Ubuntu”，按数字选择容器。`init` 主动补全默认配置；修复中断、沿用已保存的 Bash/Docker 选择则用 `xtmoe chroot repair ubuntu`。`setup` 只安装基础包，不等同完整初始化。
 
 若缺少 namespace、pids/devices cgroup controller 或受 Root 权限阻断，命令返回状态 `2`：已完成的 Ubuntu/systemd 保留，但 XTMOE 不安装、不启动 Docker，也不会把它报告为可用。网络/APT/用户态依赖或服务异常返回 `1`。systemd 本身若启动失败也不会宣称其可用。
 

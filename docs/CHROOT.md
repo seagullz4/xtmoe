@@ -82,7 +82,9 @@ xtmoe chroot init --accept-host-network-changes ubuntu
 xtmoe chroot init --skip-docker --skip-bash-sh ubuntu
 ```
 
-在 `xtmoe on` → Chroot 中，全新系统选择“一键安装”，已有系统选择“一键配置已有 Ubuntu”，后者按数字选择容器。`init` 默认启用 systemd、Bash 和严格 Docker 流程；`repair` 才是沿用历史选择的续跑入口。
+在 `xtmoe on` → Chroot → 安装与初始化中，全新系统选择“一键安装”，已有系统选择“一键配置已有 Ubuntu”，后者按数字选择容器。`init` 默认启用 systemd、Bash 和严格 Docker 流程；`repair` 才是沿用历史选择的续跑入口。
+
+Chroot 首屏只有“安装与初始化”“容器运行管理”“备份、恢复与删除”“诊断与检查”“Docker 管理”五类。systemd 日常启停归运行管理，前置/状态诊断归检查；Docker 页面在选择容器后再区分 systemd 推荐模式与 direct 兼容模式，不再将两套启动命令混排。所有原直接命令保持不变。
 
 目前不支持跨架构 Chroot。需要跨架构时请使用 PRoot 加 QEMU。
 
