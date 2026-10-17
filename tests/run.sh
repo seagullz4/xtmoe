@@ -277,6 +277,7 @@ assert_ok 'Embedded Docker repository installer is valid Bash' bash -c '
     chroot_systemd_verify() { :; }
     chroot_docker_kernel_check() { :; }
     chroot_docker_dependencies() { :; }
+    chroot_docker_compat_prepare() { :; }
     chroot_docker_check() { :; }
     chroot_systemd_exec() {
         if [[ ${3:-} == /bin/bash && ${4:-} == -lc ]]; then
@@ -297,6 +298,7 @@ assert_ok 'Embedded direct Docker installer is valid Bash and avoids systemd man
     source "$1/src/lib/chroot.sh"
     parsed=0
     chroot_docker_dependencies() { :; }
+    chroot_docker_compat_prepare() { :; }
     chroot_exec() {
         [[ ${3:-} == /bin/bash && ${4:-} == -lc ]] || return 2
         bash -n -c "$5"
@@ -401,6 +403,7 @@ assert_ok 'Synthetic restored QEMU VM can be removed' bash "$CLI" qemu remove --
 
 source "$ROOT_DIR/tests/audit.sh"
 source "$ROOT_DIR/tests/chroot-init.sh"
+source "$ROOT_DIR/tests/docker-runtime.sh"
 
 cat >"$TEST_TMP/mock-bin/id" <<'MOCK'
 #!/usr/bin/env bash
@@ -535,6 +538,7 @@ assert_ok 'Local installer completes' sh "$ROOT_DIR/termux.sh"
 [[ -r "$PREFIX/libexec/xtmoe/lib/chroot.sh" ]] && pass 'Installer copies libraries' || fail 'Installer copies libraries'
 [[ -r "$PREFIX/libexec/xtmoe/lib/manager.sh" ]] && pass 'Installer copies unified manager module' || fail 'Installer copies unified manager module'
 [[ -r "$PREFIX/libexec/xtmoe/lib/qemu.sh" ]] && pass 'Installer copies QEMU module' || fail 'Installer copies QEMU module'
+[[ -r "$PREFIX/libexec/xtmoe/lib/xtmoe-docker-routing" && -r "$PREFIX/libexec/xtmoe/lib/xtmoe-docker-routing.service" ]] && pass 'Installer copies Docker routing helper and service' || fail 'Installer copies Docker routing helper and service'
 [[ $(<"$PREFIX/libexec/xtmoe/source-root") == "$ROOT_DIR" ]] && pass 'Installer records source root' || fail 'Installer records source root'
 if compgen -G "$PREFIX/bin/xtmoe.tmp.*" >/dev/null || compgen -G "$PREFIX/libexec/xtmoe/*.tmp.*" >/dev/null; then
     fail 'Installer leaves no temporary files'

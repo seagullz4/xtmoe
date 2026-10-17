@@ -10,10 +10,13 @@ src/lib/manager.sh         on 向导、编号选择、统一 list/enter
 src/lib/proot.sh           proot-distro 适配及软件包更新
 src/lib/chroot.sh          Chroot 用户侧编排、阶段元数据、Docker 安装
 src/lib/xtmoe-root         提权后的受控挂载、namespace、PID 与清理
+src/lib/xtmoe-docker-routing 默认 bridge 的精确 IPv4 策略路由与清理
+src/lib/xtmoe-docker-routing.service 随嵌套 Docker 启停，不是 Android 开机服务
 src/lib/qemu.sh            Cloud Image、VM、SSH、端口、备份恢复
 tests/run.sh               主模拟测试入口
 tests/audit.sh             失败路径回归，由 run.sh 载入
 tests/chroot-init.sh       Chroot 初始化、续跑、依赖与策略恢复回归
+tests/docker-runtime.sh    nft/legacy、目标 OverlayFS 和 Android 路由回归
 tests/android-smoke.sh     显式确认后在 Android 执行真实生命周期
 docs/                     使用、排障、架构和验收状态
 ```

@@ -1,0 +1,17 @@
+# XTMOE managed: default bridge routing follows Docker's lifecycle.
+[Unit]
+Description=XTMOE Android default Docker bridge policy routing
+Requires=docker.service
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/xtmoe-docker-routing start
+ExecStop=/usr/local/libexec/xtmoe-docker-routing stop
+TimeoutStartSec=30
+TimeoutStopSec=15
+
+[Install]
+WantedBy=docker.service

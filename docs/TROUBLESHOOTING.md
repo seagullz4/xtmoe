@@ -263,9 +263,27 @@ xtmoe chroot docker-check ubuntu
 xtmoe chroot docker-install ubuntu
 ```
 
-第一步补齐网络、基础包、systemd 及 iptables；第三步仍需单独接受 Docker bridge 风险。新版 Docker 安装先做内核预检，再补用户态依赖、检查 iptables 执行和临时 network namespace 的 NAT 查询，最后才添加 Docker 源。缺包/APT/服务异常返回 `1`，内核/Root 权限失败返回 `2`，两者分别记录而非一概提示“内核缺失”。
+第一步补齐网络、基础包、systemd 及 iptables；第三步仍需单独接受 Docker bridge 风险。新版安装先做内核预检和用户态准备，再实测临时 namespace 中的 addrtype/NAT/bridge 操作；当前后端不兼容而 legacy 通过时，备份 alternatives 后选择 legacy。检查命令本身不切换后端。最后才添加 Docker 源。缺包/APT/服务异常返回 `1`，内核/Root 权限失败返回 `2`，不能混报。
 
 如果 NAT 查询失败，保留检查的原始错误；可能是后端不受支持、内核模块或权限受限。安装 iptables 软件包不能保证内核 netfilter 可用，只有 daemon 和真实容器测试通过才算 Docker 完全可用。
+
+## Docker daemon 正常但 OverlayFS 挂载 invalid argument
+
+`CONFIG_OVERLAY_FS=y` 只表示内核提供该功能，不保证实际数据目录可作为 backing filesystem。若 hello-world 报 containerd snapshotter 的 overlay 挂载失败，且内核提示 `filesystem ... not supported`，先查看数据所在文件系统和加密属性。Android 4.14 的加密 F2FS 目录已有实测失败案例，不应误报为 registry 网络未验证。
+
+全新配置自动探测目标文件系统；已有数据必须先备份、确认后再切换。Docker 29 默认使用 containerd image store，经典 VFS 配置需要同时设置：
+
+```json
+{"features":{"containerd-snapshotter":false},"storage-driver":"vfs"}
+```
+
+不能直接覆盖已有 JSON，需合并有效配置、验证后重启。切换存储会暂时隐藏另一个后端的镜像/容器，但不自动删除数据。VFS 的慢速和较大空间开销是明确降级，不应暗称与 OverlayFS 性能相同。
+
+## hello-world 能运行但默认 bridge 容器无法联网
+
+镜像下载由宿主 daemon 执行，成功不代表容器转发网络可用。Android 按 UID、入口接口和 fwmark 进行策略路由，VPN 也可能仅匹配本机流量。先检查 `ip rule` 和携带 bridge 入口/源地址的 `ip route get`，不要关闭 VPN、清空防火墙或添加全局默认路由。
+
+`xtmoe-docker-routing.service` 仅管理默认 IPv4 bridge 的精确策略规则；需要时跟随宿主当前 egress，随 Docker 停止清理、重启重建。更换 VPN/网络后刷新该服务。Compose/自定义网络不在当前自动管理范围，需单独验收，不能用默认 bridge 通过推断所有网络已通过。
 
 ## Android 杀死后台任务
 

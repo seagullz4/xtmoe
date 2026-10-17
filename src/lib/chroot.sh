@@ -737,15 +737,17 @@ printf "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\n
 mv -f "$tmp_source" /etc/apt/sources.list.d/docker.sources
 apt-get -o APT::Update::Error-Mode=any update
 DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-if ! grep -qw overlay /proc/filesystems && [ ! -e /etc/docker/daemon.json ]; then
-    install -d -m 0755 /etc/docker
-    printf "%s\n" "{" "  \"storage-driver\": \"vfs\"" "}" >/etc/docker/daemon.json
-    printf "OverlayFS 不可用，已配置低性能 vfs 存储驱动。\n" >&2
-fi
+if [ -e /etc/docker/daemon.json ]; then dockerd --validate --config-file=/etc/docker/daemon.json; fi
 DOCKER_PACKAGES
 }
 
 chroot_docker_kernel_check() { chroot_root docker-kernel-check "$(chroot_base)" "$1"; }
+
+chroot_docker_compat_prepare() {
+    local name=$1 result
+    if chroot_root docker-network-prepare "$(chroot_base)" "$name"; then :; else result=$?; return "$result"; fi
+    chroot_root docker-storage-prepare "$(chroot_base)" "$name"
+}
 
 chroot_docker_dependencies() {
     local name=$1 mode=${2:-systemd} packages='ca-certificates curl iptables iproute2'
@@ -757,6 +759,29 @@ dpkg --configure -a
 apt-get install -y $packages
 /usr/sbin/iptables --version
 "
+}
+
+chroot_docker_routing_setup() {
+    local name=$1 script unit
+    script=$(<"$XTMOE_LIB_DIR/xtmoe-docker-routing")
+    unit=$(<"$XTMOE_LIB_DIR/xtmoe-docker-routing.service")
+    chroot_systemd_exec "$name" -- /bin/bash -c '
+set -Eeuo pipefail
+for file in /usr/local/libexec/xtmoe-docker-routing /etc/systemd/system/xtmoe-docker-routing.service; do
+    if [ -e "$file" ] || [ -L "$file" ]; then
+        [ ! -L "$file" ] && grep -q "^# XTMOE managed:" "$file" || { printf "拒绝覆盖非 XTMOE 管理文件：%s\n" "$file" >&2; exit 1; }
+    fi
+done
+install -d -m 0755 /usr/local/libexec
+printf "%s\n" "$1" >/usr/local/libexec/xtmoe-docker-routing.xtmoe.tmp
+chmod 0755 /usr/local/libexec/xtmoe-docker-routing.xtmoe.tmp
+mv -T /usr/local/libexec/xtmoe-docker-routing.xtmoe.tmp /usr/local/libexec/xtmoe-docker-routing
+printf "%s\n" "$2" >/etc/systemd/system/xtmoe-docker-routing.service.xtmoe.tmp
+chmod 0644 /etc/systemd/system/xtmoe-docker-routing.service.xtmoe.tmp
+mv -T /etc/systemd/system/xtmoe-docker-routing.service.xtmoe.tmp /etc/systemd/system/xtmoe-docker-routing.service
+systemctl daemon-reload
+systemctl enable --now xtmoe-docker-routing.service
+' _ "$script" "$unit"
 }
 
 chroot_docker_install() {
@@ -795,6 +820,11 @@ chroot_docker_install() {
         warn 'Docker 依赖准备失败；这是网络/APT/用户态问题，不是已确认的内核阻断。'
         return 1
     fi
+    if chroot_docker_compat_prepare "$name"; then :; else
+        result=$?
+        chroot_meta_set "$name" docker_state compatibility-failed
+        return "$result"
+    fi
     if ! chroot_systemd_start "$name" || ! chroot_systemd_verify "$name"; then
         chroot_meta_set "$name" docker_state systemd-failed
         return 1
@@ -828,8 +858,18 @@ chroot_docker_install() {
         chroot_docker_logs "$name" || true
         return 1
     fi
-    info '运行 Docker hello-world 实际容器验收……'
-    if chroot_systemd_exec "$name" -- /usr/bin/docker run --rm hello-world; then
+    if ! chroot_docker_routing_setup "$name"; then
+        chroot_meta_set "$name" docker_state bridge-routing-failed
+        return 1
+    fi
+    info '验证 Docker registry 并拉取 hello-world……'
+    if ! chroot_systemd_exec "$name" -- /usr/bin/timeout --kill-after=5 180 /usr/bin/docker pull hello-world; then
+        chroot_meta_set "$name" docker_state daemon-ready-registry-unverified
+        warn 'Docker daemon 可响应，但 registry 拉取失败；尚未进行本轮容器运行验收。'
+        return 1
+    fi
+    info '镜像已拉取，运行 hello-world 验证存储、runc、cgroup 和实际容器……'
+    if chroot_systemd_exec "$name" -- /usr/bin/timeout --kill-after=5 60 /usr/bin/docker run --rm --pull=never hello-world; then
         chroot_meta_set "$name" docker_state ready
         chroot_meta_set "$name" state docker-ready
         ok 'Docker daemon、socket、registry 和容器运行均已通过验收。'
@@ -837,8 +877,8 @@ chroot_docker_install() {
     else
         result=$?
     fi
-    chroot_meta_set "$name" docker_state daemon-ready-registry-unverified
-    warn 'Docker daemon 可响应，但 hello-world 下载或运行失败；不能标记为完全可用。'
+    chroot_meta_set "$name" docker_state daemon-ready-container-failed
+    warn 'Docker daemon 和 registry 已通过，但真实容器运行失败；请检查存储/runc/cgroup，不能误报为网络失败。'
     return "${result:-1}"
 }
 
@@ -911,6 +951,7 @@ chroot_docker_direct_install() {
         chroot_meta_set "$name" docker_state dependencies-failed
         return 1
     fi
+    chroot_docker_compat_prepare "$name" || return $?
     info '安装 Docker Engine（direct dockerd 兼容模式，不依赖 systemctl）……'
     if ! chroot_exec "$name" -- /bin/bash -lc "$(chroot_docker_packages_script)"; then
         chroot_meta_set "$name" docker_state install-failed

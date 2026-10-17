@@ -26,6 +26,8 @@ XTMOE 直接采用可测试的模块化实现；当前开发版本为 `0.4.0-dev
 - [x] 增加 cgroup v1/v2 检查和 Chroot cgroup 挂载尝试。
 - [x] 增加 Docker 官方源安装、systemd 自动启动、服务管理、日志和 `hello-world` 验收。
 - [x] Docker 安装前严格检查 namespace、cgroup、iptables 和 IP forwarding；硬阻断返回状态 2。
+- [x] Docker 在临时 namespace 实测 NAT/addrtype/bridge，测试通过后选择兼容后端；全新目标数据目录实测 OverlayFS，必要时配置经典 VFS。
+- [x] Android 默认 IPv4 Docker bridge 精确策略路由辅助服务，随 Docker 启停、跟随宿主当前出口；不自动接管自定义网络。
 - [x] 新增 ARM64/x86_64 QEMU 完整虚拟机模式、Cloud Image 校验、cloud-init、SSH、端口和生命周期管理。
 - [x] QEMU 默认在独立 Ubuntu 内核中安装并分别验证 systemd、Docker daemon 和 hello-world。
 - [x] 生命周期复核：菜单失败中止、共享 Docker 安装脚本、direct 会话复用、QEMU 配置重校验及归档预检。
@@ -43,6 +45,8 @@ XTMOE 直接采用可测试的模块化实现；当前开发版本为 `0.4.0-dev
 ## Android 真机验收矩阵
 
 以下项目必须在实际设备完成，不能用 Windows/Linux 主机的静态检查替代：
+
+2026-10-18 已取得一台 Android 13 / KernelSU / 4.14.336 / ARM64 设备上的 Ubuntu/systemd、APT、Docker hello-world、默认 bridge DNS/HTTP、本机端口映射和完整 Chroot 重启证据，见 [实测记录](ANDROID_VALIDATION.md)。这不等于下列跨设备矩阵全部通过。
 
 - [ ] Android 8–11、Android 12–14、Android 15+ 至少各一台或对应测试环境。
 - [ ] `aarch64` PRoot：安装、登录、执行、停止、备份、恢复、删除。

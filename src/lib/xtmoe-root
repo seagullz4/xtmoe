@@ -453,8 +453,112 @@ systemd_check() {
     printf 'systemd 前置检查通过；可尝试嵌套启动\n'
 }
 
+docker_network_probe_script() {
+    cat <<'NETWORK_PROBE'
+set -Eeuo pipefail
+ipv4=$1
+ipv6=${2:-}
+"$ipv4" -w 2 -t nat -N XTMOE_PROBE
+"$ipv4" -w 2 -t nat -A PREROUTING -m addrtype --dst-type LOCAL -j XTMOE_PROBE
+"$ipv4" -w 2 -t nat -A XTMOE_PROBE -p tcp --dport 65530 -j DNAT --to-destination 192.0.2.2:80
+"$ipv4" -w 2 -t nat -A POSTROUTING -s 192.0.2.0/24 -j MASQUERADE
+"$ipv4" -w 2 -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+ip link add xtmoeprobe0 type bridge
+ip link add xtmoeveth0 type veth peer name xtmoeveth1
+ip link set xtmoeveth0 master xtmoeprobe0
+if [[ -n $ipv6 ]]; then
+    "$ipv6" -w 2 -t nat -N XTMOE_PROBE
+    "$ipv6" -w 2 -t nat -A PREROUTING -m addrtype --dst-type LOCAL -j XTMOE_PROBE
+    "$ipv6" -w 2 -t nat -A POSTROUTING -s 2001:db8::/64 -j MASQUERADE
+fi
+NETWORK_PROBE
+}
+
+docker_network_probe() {
+    local ipv4=$1 ipv6=${2:-}
+    timeout --kill-after=2 20 unshare --net chroot "$ROOTFS" /bin/bash -c "$(docker_network_probe_script)" _ "$ipv4" "$ipv6"
+}
+
+# Called only by install after explicit acceptance of host network changes.
+# docker-check remains diagnostic: it does not select a different backend.
+docker_network_prepare() {
+    local output ipv6='' previous mode
+    rootfs_has_executable "$ROOTFS" /usr/sbin/ip6tables && ipv6=/usr/sbin/ip6tables
+    if output=$(docker_network_probe /usr/sbin/iptables "$ipv6" 2>&1); then
+        ok '当前 iptables 后端的真实 NAT/bridge 规则测试通过'
+        return 0
+    fi
+    printf '%s\n' "$output" >&2
+    rootfs_has_executable "$ROOTFS" /usr/sbin/iptables-legacy || return 2
+    ipv6=''
+    rootfs_has_executable "$ROOTFS" /usr/sbin/ip6tables-legacy && ipv6=/usr/sbin/ip6tables-legacy
+    if ! output=$(docker_network_probe /usr/sbin/iptables-legacy "$ipv6" 2>&1); then
+        printf '%s\n' "$output" >&2
+        warn '当前后端和 legacy 均未通过真实网络规则测试；不安装 Docker'
+        return 2
+    fi
+    previous=$(chroot "$ROOTFS" /usr/bin/readlink -f /usr/sbin/iptables) || return 1
+    mode=$(chroot "$ROOTFS" /usr/bin/update-alternatives --query iptables | awk '$1 == "Status:" {print $2}') || return 1
+    chroot "$ROOTFS" /bin/bash -ec '
+umask 077
+install -d /var/lib/xtmoe
+backup=$(mktemp -d /var/lib/xtmoe/iptables-backup.XXXXXX)
+update-alternatives --query iptables >"$backup/iptables"
+if update-alternatives --query ip6tables >"$backup/ip6tables"; then :; else rm -f "$backup/ip6tables"; fi
+printf "iptables alternatives backup: %s\n" "$backup"
+' || return 1
+    chroot "$ROOTFS" /usr/bin/update-alternatives --set iptables /usr/sbin/iptables-legacy || return 1
+    if [[ -n $ipv6 ]] && ! chroot "$ROOTFS" /usr/bin/update-alternatives --set ip6tables "$ipv6"; then
+        if [[ $mode == auto ]]; then
+            chroot "$ROOTFS" /usr/bin/update-alternatives --auto iptables || true
+        else
+            chroot "$ROOTFS" /usr/bin/update-alternatives --set iptables "$previous" || true
+        fi
+        return 1
+    fi
+    ok '当前后端不兼容，已在测试通过并备份后选择 legacy；未清空宿主防火墙'
+}
+
+docker_storage_prepare() {
+    local config="$ROOTFS/etc/docker/daemon.json" probe result=0 tmp
+    [[ ! -L $config ]] || { warn 'daemon.json 为符号链接，拒绝自动修改'; return 1; }
+    if [[ -e $config ]]; then
+        [[ -f $config ]] || return 1
+        ok '保留已有 daemon.json；实际存储能力仍需真实容器验收'
+        return 0
+    fi
+    # Switching image stores hides existing images/containers. Never do that
+    # automatically for an existing data directory, even if JSON is absent.
+    for probe in "$ROOTFS/var/lib/docker" "$ROOTFS/var/lib/containerd"; do
+        if [[ -d $probe && -n $(ls -A -- "$probe") ]]; then
+            warn '已有 Docker/containerd 数据，不自动切换存储后端；保留数据等待实际验收'
+            return 0
+        fi
+    done
+    mkdir -p "$ROOTFS/var/lib"
+    probe=$(mktemp -d "$ROOTFS/var/lib/.xtmoe-overlay-probe.XXXXXX") || return 1
+    mkdir -p "$probe"/{lower,upper,work,merged}
+    printf probe >"$probe/lower/test"
+    timeout --kill-after=2 20 unshare --mount --fork --kill-child "$TERMUX_PREFIX/bin/bash" -ec '
+mount --make-rprivate /
+mount -t overlay overlay -o "lowerdir=$1/lower,upperdir=$1/upper,workdir=$1/work,index=off" "$1/merged"
+test "$(cat "$1/merged/test")" = probe
+umount "$1/merged"
+' _ "$probe" || result=$?
+    rm -rf --one-file-system -- "$probe"
+    ((result != 0)) || { ok '目标数据文件系统上的 OverlayFS 实际挂载测试通过'; return 0; }
+    mkdir -p "$ROOTFS/etc/docker"
+    tmp=$(mktemp "$ROOTFS/etc/docker/.daemon.xtmoe.XXXXXX") || return 1
+    printf '%s\n' '{"features":{"containerd-snapshotter":false},"storage-driver":"vfs"}' >"$tmp"
+    chmod 0644 "$tmp"
+    # Hard-link creation is exclusive: a concurrent user config is not replaced.
+    if ! ln -- "$tmp" "$config"; then rm -f -- "$tmp"; return 1; fi
+    rm -f -- "$tmp"
+    warn 'OverlayFS 在目标文件系统上不可用；全新配置使用经典 VFS（较慢且占空间），已关闭 containerd snapshotter'
+}
+
 docker_gate() {
-    local failures=0 kernel_failures=0 mode ip_forward iptables_path='' output scope=${1:-full}
+    local failures=0 kernel_failures=0 mode ip_forward iptables_path='' ipv6='' output scope=${1:-full}
     printf 'Kernel: %s\nArchitecture: %s\n' "$(uname -r)" "$(uname -m)"
     namespace_check --mount mount || ((failures += 1))
     namespace_check --pid pid || ((failures += 1))
@@ -509,10 +613,11 @@ docker_gate() {
     fi
     if [[ -n $iptables_path ]] && output=$(timeout 10 chroot "$ROOTFS" "$iptables_path" --version 2>&1); then
         printf '[通过] 容器内 iptables: %s\n' "$output"
-        # Inspect NAT in a throwaway network namespace. Never flush, create
-        # chains, or switch backends in Android's shared network namespace.
-        if output=$(timeout 10 unshare --net chroot "$ROOTFS" "$iptables_path" -t nat -S 2>&1); then
-            printf '[通过] 独立 network namespace 中的 iptables NAT 查询\n'
+        rootfs_has_executable "$ROOTFS" /usr/sbin/ip6tables && ipv6=/usr/sbin/ip6tables
+        # A list-only query passes on kernels that cannot create Docker's
+        # addrtype/NAT rules. All temporary writes stay inside a fresh netns.
+        if output=$(docker_network_probe "$iptables_path" "$ipv6" 2>&1); then
+            printf '[通过] 独立 network namespace 中的真实 NAT/addrtype/bridge/veth 操作\n'
         else
             printf '[缺失] iptables NAT/内核权限检查失败（未修改宿主规则）：%s\n' "$output" >&2
             ((failures += 1)); ((kernel_failures += 1))
@@ -1039,6 +1144,16 @@ case "$ACTION" in
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
         [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
         docker_gate kernel
+        ;;
+    docker-network-prepare)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        docker_network_prepare
+        ;;
+    docker-storage-prepare)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        docker_storage_prepare
         ;;
     docker-state)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"

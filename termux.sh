@@ -37,7 +37,7 @@ esac
 SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
 SOURCE_DIR="$SCRIPT_DIR/src"
 [ -r "$SOURCE_DIR/bin/xtmoe" ] || die "源文件不完整：$SOURCE_DIR/bin/xtmoe"
-for module in common.sh proot.sh chroot.sh qemu.sh manager.sh xtmoe-root; do
+for module in common.sh proot.sh chroot.sh qemu.sh manager.sh xtmoe-root xtmoe-docker-routing xtmoe-docker-routing.service; do
     [ -r "$SOURCE_DIR/lib/$module" ] || die "源文件不完整：$SOURCE_DIR/lib/$module"
 done
 
@@ -59,6 +59,8 @@ atomic_install "$SOURCE_DIR/lib/proot.sh" "$LIB_DIR/lib/proot.sh" 0644
 atomic_install "$SOURCE_DIR/lib/chroot.sh" "$LIB_DIR/lib/chroot.sh" 0644
 atomic_install "$SOURCE_DIR/lib/qemu.sh" "$LIB_DIR/lib/qemu.sh" 0644
 atomic_install "$SOURCE_DIR/lib/manager.sh" "$LIB_DIR/lib/manager.sh" 0644
+atomic_install "$SOURCE_DIR/lib/xtmoe-docker-routing" "$LIB_DIR/lib/xtmoe-docker-routing" 0644
+atomic_install "$SOURCE_DIR/lib/xtmoe-docker-routing.service" "$LIB_DIR/lib/xtmoe-docker-routing.service" 0644
 atomic_install "$SOURCE_DIR/lib/xtmoe-root" "$LIB_DIR/xtmoe-root" 0755
 
 SOURCE_ROOT_FILE="$LIB_DIR/source-root"
@@ -79,4 +81,3 @@ say "安装完成：$BIN_DIR/xtmoe"
 say "版本：$INSTALLED_VERSION"
 say "源码目录：$SCRIPT_DIR"
 say '请执行：xtmoe doctor'
-

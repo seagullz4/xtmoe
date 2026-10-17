@@ -31,9 +31,11 @@ jobs:
             src/lib/qemu.sh \
             src/lib/manager.sh \
             src/lib/xtmoe-root \
+            src/lib/xtmoe-docker-routing \
             tests/run.sh \
             tests/audit.sh \
             tests/chroot-init.sh \
+            tests/docker-runtime.sh \
             tests/android-smoke.sh \
             tests/rootfs-lifecycle.sh; do
             bash -n "$file"
@@ -51,9 +53,11 @@ jobs:
             src/lib/qemu.sh \
             src/lib/manager.sh \
             src/lib/xtmoe-root \
+            src/lib/xtmoe-docker-routing \
             tests/run.sh \
             tests/audit.sh \
             tests/chroot-init.sh \
+            tests/docker-runtime.sh \
             tests/android-smoke.sh \
             tests/rootfs-lifecycle.sh
 

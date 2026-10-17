@@ -1,0 +1,84 @@
+#!/bin/bash
+# XTMOE managed: scoped IPv4 policy routing for Android's default Docker bridge.
+# Runs inside the Ubuntu/systemd mount namespace; never flushes Android rules.
+
+routing_state_file=/run/xtmoe-docker-routing.state
+
+routing_validate() {
+    local subnet=$1 bridge=$2 table=$3 address octet
+    [[ $subnet =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$ ]] || return 1
+    address=${subnet%/*}
+    local -a octets=()
+    IFS=. read -r -a octets <<<"$address"
+    for octet in "${octets[@]}"; do ((10#$octet <= 255)) || return 1; done
+    [[ $bridge =~ ^[a-zA-Z0-9_.-]{1,15}$ ]] || return 1
+    [[ $table == main || $table =~ ^[1-9][0-9]{0,9}$ ]] || return 1
+}
+
+routing_stop() {
+    local subnet bridge table extra
+    [[ -e $routing_state_file || -L $routing_state_file ]] || return 0
+    [[ -f $routing_state_file && ! -L $routing_state_file ]] || return 1
+    IFS='|' read -r subnet bridge table extra <"$routing_state_file" || return 1
+    [[ -z $extra ]] && routing_validate "$subnet" "$bridge" "$table" || return 1
+    # Exact selectors protect unrelated rules even if another manager uses
+    # these priorities. No broad delete-by-priority or table flush is used.
+    ip -4 rule del priority 10950 from "$subnet" iif "$bridge" lookup "$table" 2>/dev/null || true
+    ip -4 rule del priority 10940 to "$subnet" lookup main 2>/dev/null || true
+    rm -f -- "$routing_state_file"
+}
+
+routing_start() {
+    local config subnet gateway bridge route table=main candidate last tmp word
+    routing_stop || return 1
+    config=$(timeout 10 docker network inspect bridge --format '{{(index .IPAM.Config 0).Subnet}} {{(index .IPAM.Config 0).Gateway}}') || return 1
+    read -r subnet gateway <<<"$config"
+    bridge=$(timeout 10 docker network inspect bridge --format '{{index .Options "com.docker.network.bridge.name"}}') || return 1
+    [[ -n $bridge && $bridge != '<no value>' ]] || bridge=docker0
+    routing_validate "$subnet" "$bridge" main || return 1
+    [[ $gateway =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    ip link show dev "$bridge" >/dev/null || return 1
+    last=${gateway##*.}; last=$((10#$last + 1)); ((last < 255)) || last=1
+    candidate="${gateway%.*}.$last"
+    if ip -4 route get 1.1.1.1 from "$candidate" iif "$bridge" >/dev/null 2>&1; then
+        printf 'Default bridge already has a forwarding route; no policy changes.\n'
+        return 0
+    fi
+    # Follow the root host's CURRENT egress (including its VPN), never guess a
+    # wlan/mobile interface or force traffic around a configured VPN.
+    route=$(ip -4 route get 1.1.1.1) || return 1
+    local -a words=()
+    read -r -a words <<<"$route"
+    for ((word=0; word<${#words[@]}; word++)); do
+        if [[ ${words[word]} == table ]]; then table=${words[word+1]:-}; break; fi
+    done
+    routing_validate "$subnet" "$bridge" "$table" || return 1
+    if ip -4 rule show | grep -Eq '^(10940|10950):'; then
+        printf 'XTMOE route priority is occupied; refusing to replace existing rules.\n' >&2
+        return 1
+    fi
+    tmp=$(mktemp "${routing_state_file}.XXXXXX") || return 1
+    chmod 0600 "$tmp"
+    printf '%s|%s|%s\n' "$subnet" "$bridge" "$table" >"$tmp"
+    if ! ip -4 rule add priority 10940 to "$subnet" lookup main; then rm -f -- "$tmp"; return 1; fi
+    if ! ip -4 rule add priority 10950 from "$subnet" iif "$bridge" lookup "$table"; then
+        ip -4 rule del priority 10940 to "$subnet" lookup main || true
+        rm -f -- "$tmp"; return 1
+    fi
+    if ! mv -T -- "$tmp" "$routing_state_file"; then
+        ip -4 rule del priority 10950 from "$subnet" iif "$bridge" lookup "$table" || true
+        ip -4 rule del priority 10940 to "$subnet" lookup main || true
+        rm -f -- "$tmp"; return 1
+    fi
+    printf 'XTMOE forwarding: %s via current host routing table %s; return path via main.\n' "$subnet" "$table"
+}
+
+routing_main() {
+    [[ $(id -u) == 0 && $# == 1 ]] || { printf 'Root and exactly one start/stop action required.\n' >&2; return 1; }
+    case "$1" in start) routing_start ;; stop) routing_stop ;; *) return 1 ;; esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    set -Eeuo pipefail
+    routing_main "$@"
+fi

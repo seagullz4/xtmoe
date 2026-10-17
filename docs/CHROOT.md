@@ -49,7 +49,7 @@ xtmoe chroot install ubuntu 24.04 ubuntu
 6. 初始化 hostname、hosts、运行目录和普通文件形式的 resolv.conf，固定 DNS 为 `1.1.1.1`、`8.8.8.8`，修正 `hosts: files dns`；
 7. 按原生架构解析 Ubuntu 官方源域名，并执行严格的 APT update，实际验证配置源的下载和签名，不把“DNS 能解析”当作网络验收通过；
 8. 安装 Ubuntu 标准组件、systemd、D-Bus 和网络工具，默认切换 `/bin/sh` 到 Bash，启动并验证嵌套 systemd 及基础服务；使用 `--skip-bash-sh` 保留原 Shell；
-9. Docker 先做内核/权限检查，再补齐用户态依赖，最后检查 iptables 执行、独立网络 namespace 中的 NAT 查询和 systemd；全通过才添加官方 Docker 源及安装 Docker；
+9. Docker 先做内核/权限检查，再补齐用户态依赖；在临时网络 namespace 中实际创建 addrtype/NAT、bridge/veth；当前后端不兼容且 legacy 实测通过时，备份 alternatives 后切换；同时探测目标数据文件系统的 OverlayFS 挂载；
 10. 启用 `containerd`/`docker`，并通过 `docker info` 和 `hello-world` 实际验收。
 
 创建确认和 Docker 宿主网络风险确认各自独立，`--yes` 不能代替后者。拒绝 Docker 风险仍可完成 Ubuntu/systemd。`--skip-systemd` 则仅准备基础 rootfs 与网络，同时跳过 Docker；后续可使用 `init` 补全。
@@ -169,7 +169,17 @@ xtmoe chroot use-bash-sh ubuntu
 xtmoe chroot docker-check ubuntu
 ```
 
-它实际尝试创建 mount、PID、network、IPC 和 UTS namespace，并检查 cgroup hierarchy、`pids`、v1 `devices`、OverlayFS、IPv4 转发、iptables 和嵌套 systemd。iptables 的绝对路径/alternatives 链接按容器根目录解析，不会错误解析到 Android 的 `/etc`。NAT 查询仅在新建的临时 network namespace 内执行，不修改宿主规则、不自动切换 nft/legacy 后端。只要存在 `[缺失]`，Docker 安装就会被跳过；退出状态 `1` 表示软件/服务或操作异常，`2` 表示内核/权限阻断，不能混报。
+它实际尝试创建 mount、PID、network、IPC 和 UTS namespace，并检查 cgroup hierarchy、`pids`、v1 `devices`、OverlayFS、IPv4 转发、iptables 和嵌套 systemd。iptables 的绝对路径/alternatives 链接按容器根目录解析，不会错误解析到 Android 的 `/etc`。仅列出 NAT 表可能漏报不支持 addrtype/NAT 规则的内核，因此检查现在在独立临时网络 namespace 中真正创建并测试规则、bridge/veth，namespace 退出后全部消失。`docker-check` 不修改宿主规则，也不切换后端；安装在已接受网络风险后才会备份并选择实测可用的 legacy。两个后端都失败则停止，不能通过关闭 iptables 伪报可用。
+
+全新且无已有数据/daemon.json 时，会在目标数据文件系统创建临时 lower/upper/work 目录，并在私有 mount namespace 实测 OverlayFS。不能挂载时写入经典 VFS 配置，同时关闭 Docker 29 默认的 containerd snapshotter。VFS 较慢、占用更多空间；不会覆盖用户已有 JSON，也不会自动切换已有数据仓库，以免隐藏原镜像/容器。已有配置仍以实际容器运行验收为准。
+
+Docker 启动后会安装受其生命周期管理的 `xtmoe-docker-routing.service`。若默认 IPv4 bridge 已有转发路由，不增加任何规则；若 Android 策略路由阻止转发，则只为默认 bridge 子网增加精确的出站/返回路由，跟随宿主当前（可能是 VPN）的路由表，不强制绕过 VPN、不改全局默认路由。预留优先级冲突时拒绝覆盖；停止 Docker 时删除本服务记录的精确规则，重启时重新探测。当前不自动接管额外 Compose/自定义网络或 IPv6 出站；更换 VPN/网络后可显式刷新默认 bridge：
+
+```sh
+xtmoe chroot systemd-exec ubuntu -- systemctl restart xtmoe-docker-routing.service
+```
+
+退出状态 `1` 表示软件/服务或操作异常，`2` 表示内核/权限阻断，不能混报。设备实测记录见 [Android 验收](ANDROID_VALIDATION.md)。
 
 检查通过后安装 Docker 官方仓库版本：
 

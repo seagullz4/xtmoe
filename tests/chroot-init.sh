@@ -270,11 +270,12 @@ assert_ok 'Chroot Docker user dependencies are prepared before systemd and full 
     INIT_TEST_LOG="$2/docker-order"
     chroot_docker_kernel_check() { printf "kernel\n" >>"$INIT_TEST_LOG"; }
     chroot_docker_dependencies() { printf "dependencies\n" >>"$INIT_TEST_LOG"; }
+    chroot_docker_compat_prepare() { printf "compatibility\n" >>"$INIT_TEST_LOG"; }
     chroot_systemd_start() { printf "systemd\n" >>"$INIT_TEST_LOG"; }; chroot_systemd_verify() { :; }
     chroot_docker_check() { printf "full-gate\n" >>"$INIT_TEST_LOG"; return 1; }
     chroot_systemd_exec() { exit 9; }
     if chroot_docker_install --accept-host-network-changes init-order; then exit 1; fi
-    [[ $(tr "\n" " " <"$INIT_TEST_LOG") == "kernel dependencies systemd full-gate " && $(chroot_meta_get init-order docker_state) == prerequisites-failed ]]
+    [[ $(tr "\n" " " <"$INIT_TEST_LOG") == "kernel dependencies compatibility systemd full-gate " && $(chroot_meta_get init-order docker_state) == prerequisites-failed ]]
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
 assert_ok 'Chroot Docker dependency failure is not mislabeled kernel-blocked' bash -c '
@@ -343,7 +344,7 @@ assert_ok 'Chroot gate classifies software failure separately and probes NAT onl
     ROOTFS=/fixture
     GATE_TEST_LOG="$2/nat-probe"
     namespace_check() { :; }; cgroup_mode() { printf v2; }; cgroup_has_controller() { :; }
-    cat() { if [[ $1 == /proc/sys/net/ipv4/ip_forward ]]; then printf 1; else command cat "$@"; fi; }
+    cat() { if [[ ${1:-} == /proc/sys/net/ipv4/ip_forward ]]; then printf 1; else command cat "$@"; fi; }
     systemd_running() { :; }; systemd_manager_ready() { :; }
     rootfs_has_executable() { return 1; }
     docker_gate kernel || exit 1
@@ -352,8 +353,8 @@ assert_ok 'Chroot gate classifies software failure separately and probes NAT onl
     rootfs_has_executable() { return 0; }
     timeout() { printf "%s\n" "$*" >>"$GATE_TEST_LOG"; printf "fixture-version\n"; }
     docker_gate || exit 1
-    grep -qx "10 unshare --net chroot /fixture /usr/sbin/iptables -t nat -S" "$GATE_TEST_LOG" || exit 1
-    timeout() { [[ $2 != unshare ]]; }
+    grep -q -- "20 unshare --net chroot /fixture /bin/bash -c" "$GATE_TEST_LOG" && grep -q -- "-m addrtype --dst-type LOCAL" "$GATE_TEST_LOG" || exit 1
+    timeout() { [[ $* != *" unshare "* ]]; }
     result=0; docker_gate || result=$?
     [[ $result == 2 ]]
 ' _ "$ROOT_DIR" "$TEST_TMP"
