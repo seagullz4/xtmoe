@@ -242,13 +242,19 @@ menu_chroot_docker() {
         cat <<'EOF'
 
 Docker 管理
-  1) 能力检查
-  2) 安装 Docker Engine
-  3) 启动
-  4) 停止
-  5) 重启
-  6) 状态
-  7) 日志
+  1) 严格能力检查
+  2) 安装 Docker Engine（systemd 严格模式）
+  3) systemd 模式启动
+  4) systemd 模式停止
+  5) systemd 模式重启
+  6) systemd 模式状态
+  7) systemd 模式日志
+  8) 安装并启动 Docker（direct dockerd 兼容模式）
+  9) direct dockerd 启动
+ 10) direct dockerd 停止
+ 11) direct dockerd 状态（docker info）
+ 12) direct dockerd 日志
+ 13) direct 运行 hello-world 验证容器
   0) 返回
 EOF
         choice=$(menu_read '请选择操作')
@@ -260,6 +266,12 @@ EOF
             5) menu_run chroot_main docker-restart "$name" ;;
             6) menu_run chroot_main docker-status "$name" ;;
             7) menu_run chroot_main docker-logs "$name" ;;
+            8) menu_run chroot_main docker-direct-install "$name" ;;
+            9) menu_run chroot_main docker-direct-start "$name" ;;
+            10) menu_run chroot_main docker-direct-stop "$name" ;;
+            11) menu_run chroot_main docker-direct-status "$name" ;;
+            12) menu_run chroot_main docker-direct-logs "$name" ;;
+            13) menu_run chroot_main docker-direct-run-test "$name" ;;
             0|'') return 0 ;;
             *) warn '无效选项。' ;;
         esac

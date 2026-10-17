@@ -86,6 +86,7 @@ assert_contains 'Chroot help mentions Docker readiness check' 'docker-check' "$T
 assert_contains 'Chroot help mentions nested systemd' 'systemd-check' "$TEST_TMP/stdout"
 assert_contains 'Chroot help mentions Bash compatibility switch' 'use-bash-sh' "$TEST_TMP/stdout"
 assert_contains 'Chroot help mentions Docker installer' 'docker-install' "$TEST_TMP/stdout"
+assert_contains 'Chroot help mentions direct dockerd compatibility mode' 'docker-direct-install' "$TEST_TMP/stdout"
 assert_contains 'Chroot help mentions repair workflow' 'repair' "$TEST_TMP/stdout"
 old_prefix=$PREFIX
 export PREFIX="$TEST_TMP/not-termux"
@@ -225,6 +226,20 @@ assert_ok 'Embedded Docker repository installer is valid Bash' bash -c '
     set -e
     [[ $status == 1 && $parsed == 1 ]]
 ' _ "$ROOT_DIR"
+assert_ok 'Embedded direct Docker installer is valid Bash and avoids systemd management' bash -c '
+    source "$1/src/lib/common.sh"
+    source "$1/src/lib/chroot.sh"
+    parsed=0
+    chroot_exec() {
+        [[ ${3:-} == /bin/bash && ${4:-} == -lc ]] || return 2
+        bash -n -c "$5"
+        parsed=1
+    }
+    chroot_systemd_stop() { :; }
+    chroot_docker_direct_start() { :; }
+    chroot_docker_direct_install --accept-host-network-changes docker-gate
+    [[ $parsed == 1 ]]
+' _ "$ROOT_DIR"
 
 printf '<a>ubuntu-base-24.04.3-base-amd64.tar.gz</a>\n<a>ubuntu-base-24.04.5-base-amd64.tar.gz</a>\n' >"$TEST_TMP/ubuntu-index"
 printf 'fake ubuntu base archive\n' >"$TEST_TMP/ubuntu-archive"
@@ -287,6 +302,9 @@ assert_contains 'Unified Chroot stop stops nested systemd' 'systemd_stop' "$ROOT
 assert_contains 'Docker gate checks network namespace creation' 'namespace_check --net network' "$ROOT_HELPER"
 assert_contains 'Docker gate requires pids controller' 'pids cgroup controller' "$ROOT_HELPER"
 assert_contains 'Systemd stop orders Docker shutdown first' 'systemctl stop docker.service containerd.service' "$ROOT_HELPER"
+assert_contains 'Direct Docker launch uses explicit iptables mode' '--iptables=true --host=unix:///var/run/docker.sock' "$ROOT_HELPER"
+assert_contains 'Direct Docker verifies daemon API before success' 'direct_docker_exec /usr/bin/docker info' "$ROOT_HELPER"
+assert_contains 'Direct Docker run test verifies a real container' 'docker run --rm hello-world' "$ROOT_HELPER"
 
 rootfs_fixture_lifecycle() {
     local fixture="$TEST_TMP/rootfs-fixture" archive="$TEST_TMP/rootfs-fixture.tar.gz"
@@ -439,7 +457,7 @@ pass 'Documented PRoot actions map to CLI'
 chroot_actions=$(grep -rhoE 'xtmoe[[:space:]]+chroot[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
 for action in $chroot_actions; do
     case "$action" in
-        prepare|install|login|exec|setup|repair|update-system|reinstall|network-check|cgroup-check|docker-check|docker-install|docker-start|docker-stop|docker-restart|docker-status|docker-logs|systemd-check|systemd-start|systemd-login|systemd-exec|systemd-status|systemd-stop|use-bash-sh|status|list|stop|bind|unbind|backup|restore|remove) ;;
+        prepare|install|login|exec|setup|repair|update-system|reinstall|network-check|cgroup-check|docker-check|docker-install|docker-start|docker-stop|docker-restart|docker-status|docker-logs|docker-direct-install|docker-direct-start|docker-direct-stop|docker-direct-status|docker-direct-logs|docker-direct-run-test|systemd-check|systemd-start|systemd-login|systemd-exec|systemd-status|systemd-stop|use-bash-sh|status|list|stop|bind|unbind|backup|restore|remove) ;;
         *) fail "Documentation references unknown Chroot action: $action" ;;
     esac
 done

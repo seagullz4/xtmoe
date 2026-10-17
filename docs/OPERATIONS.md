@@ -71,6 +71,16 @@ Docker 客户端存在不等于 daemon 可用；只有 socket、`docker info` �
 
 XTMOE 不自动执行 1Panel 第三方安装脚本。只有 Docker 完整验收通过后，才应按 1Panel 官方文档人工安装。
 
+如果设备无法满足嵌套 systemd 的严格条件，但希望尝试不依赖 `systemctl` 的 Docker daemon，可使用 direct dockerd 兼容模式：
+
+```sh
+xtmoe chroot docker-direct-install ubuntu
+xtmoe chroot docker-direct-status ubuntu
+xtmoe chroot docker-direct-run-test ubuntu
+```
+
+状态命令通过 `docker info` 验证 API；运行测试才验证实际容器。该兼容模式不会被标记为 1Panel 已支持。
+
 ## Python 和编译环境
 
 Ubuntu/Debian 容器内：

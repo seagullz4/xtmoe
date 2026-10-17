@@ -165,6 +165,34 @@ xtmoe chroot docker-stop ubuntu
 
 Docker 有四种必须区分的结果：完全通过；systemd 可用但内核阻断；daemon 可用但 registry/`hello-world` 未验证；软件已安装但 daemon 启动失败。XTMOE 不会把后三者显示为完全可用，也不会自动安装 1Panel。
 
+### 不依赖 systemd 的 direct dockerd 兼容模式
+
+部分 Android 内核无法让嵌套 systemd 完整运行，但仍可能允许 `dockerd` 直接响应。此时不要把它当成严格模式或 1Panel 支持，而是显式选择 direct 兼容模式：
+
+```sh
+xtmoe chroot docker-direct-install ubuntu
+```
+
+该命令会要求确认 Docker bridge 对 Android 宿主 iptables/IP forwarding 的影响，安装 Docker 官方仓库版本，停止已有的嵌套 systemd 会话，然后在独立 mount namespace 内按等价于下列逻辑启动：
+
+```sh
+dockerd --iptables=true --host=unix:///var/run/docker.sock
+```
+
+XTMOE 将 daemon 的 PID 和日志纳入生命周期管理，因此不要自己在普通 `chroot login` Shell 中后台运行 `dockerd`。直接登录退出后普通 Chroot 会清理挂载，手动后台 daemon 容易遗留 busy 挂载或被会话信号停止。
+
+direct 模式命令：
+
+```sh
+xtmoe chroot docker-direct-start ubuntu
+xtmoe chroot docker-direct-status ubuntu
+xtmoe chroot docker-direct-logs ubuntu
+xtmoe chroot docker-direct-run-test ubuntu
+xtmoe chroot docker-direct-stop ubuntu
+```
+
+`docker-direct-status` 等价验证 `docker info`，只说明 daemon API 可用；`docker-direct-run-test` 运行 `docker run --rm hello-world`，才验证 containerd、runc、namespace、挂载和实际容器链路。若前者成功而后者失败，应报告为“daemon 可用、容器运行未验证/失败”，不能据此宣称 Docker 或 1Panel 完全可用。direct 模式与嵌套 systemd 模式不能并存；`chroot stop` 会停止任一种已受 XTMOE 管理的 daemon。
+
 每次登录会受控挂载 rootfs 自身、`/proc`、`/sys`、`/dev` 和 `/run`。Shell 正常退出后会尝试卸载；如果容器中留下后台进程，卸载可能失败。
 
 交互登录通过 Termux `util-linux` 提供的 `script` 创建独立伪终端。Ctrl+C 只中断容器内当前前台命令并返回提示符，不会退出容器；使用 `exit` 或 Ctrl+D 才结束登录。`xtmoe chroot exec` 保持非交互模式，不分配伪终端。

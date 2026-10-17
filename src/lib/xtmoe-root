@@ -279,6 +279,12 @@ systemd_pid_files() {
     SYSTEMD_LOG_FILE="$CONTAINER/.xtmoe-systemd.log"
 }
 
+direct_docker_pid_files() {
+    DIRECT_DOCKER_PID_FILE="$CONTAINER/.xtmoe-dockerd.pid"
+    DIRECT_DOCKER_LAUNCHER_PID_FILE="$CONTAINER/.xtmoe-dockerd-launcher.pid"
+    DIRECT_DOCKER_LOG_FILE="$ROOTFS/var/log/dockerd.log"
+}
+
 process_alive() {
     local value=$1
     [[ $value =~ ^[0-9]+$ ]] && kill -0 "$value" 2>/dev/null
@@ -296,6 +302,24 @@ find_child_pid() {
         [[ $actual_root == "$expected_root" ]] || continue
         comm=$(cat "/proc/$child/comm" 2>/dev/null || true)
         [[ $comm == systemd || $comm == init ]] || continue
+        printf '%s\n' "$child"
+        return 0
+    done
+    return 1
+}
+
+find_direct_docker_pid() {
+    local parent=$1 proc ppid child comm actual_root expected_root
+    expected_root=$(realpath -m "$ROOTFS")
+    for proc in /proc/[0-9]*; do
+        [[ -r $proc/status ]] || continue
+        ppid=$(awk '$1 == "PPid:" { print $2 }' "$proc/status")
+        [[ $ppid == "$parent" ]] || continue
+        child=${proc##*/}
+        actual_root=$(realpath -m "/proc/$child/root")
+        [[ $actual_root == "$expected_root" ]] || continue
+        comm=$(cat "/proc/$child/comm" 2>/dev/null || true)
+        [[ $comm == dockerd ]] || continue
         printf '%s\n' "$child"
         return 0
     done
@@ -335,6 +359,26 @@ systemd_target_pid() {
     [[ $actual_root == "$expected_root" ]] || die 'systemd PID 与当前容器不匹配'
     comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
     [[ $comm == systemd || $comm == init ]] || die "systemd PID 进程类型不匹配：$comm"
+    printf '%s\n' "$pid"
+}
+
+direct_docker_running() {
+    local pid comm actual_root expected_root
+    direct_docker_pid_files
+    [[ -r $DIRECT_DOCKER_PID_FILE ]] || return 1
+    IFS= read -r pid <"$DIRECT_DOCKER_PID_FILE"
+    process_alive "$pid" || return 1
+    actual_root=$(realpath -m "/proc/$pid/root")
+    expected_root=$(realpath -m "$ROOTFS")
+    [[ $actual_root == "$expected_root" ]] || return 1
+    comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
+    [[ $comm == dockerd ]]
+}
+
+direct_docker_target_pid() {
+    local pid
+    direct_docker_running || die '直接启动的 dockerd 未运行'
+    IFS= read -r pid <"$DIRECT_DOCKER_PID_FILE"
     printf '%s\n' "$pid"
 }
 
@@ -610,9 +654,122 @@ systemd_stop() {
     ok '嵌套 systemd 已停止'
 }
 
+direct_docker_namespace_launch() {
+    local config=${1:-}
+    mount --make-rprivate / 2>/dev/null || true
+    mount_all "$config"
+    mkdir -p "$ROOTFS/var/log"
+    exec chroot "$ROOTFS" /usr/bin/env -i \
+        HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        LANG=C.UTF-8 /usr/bin/dockerd --iptables=true --host=unix:///var/run/docker.sock
+}
+
+direct_docker_start() {
+    local config=${1:-} launcher_pid target_pid attempt helper_path
+    [[ -x $ROOTFS/usr/bin/dockerd ]] || die '容器内未安装 dockerd；请先执行 docker-direct-install'
+    systemd_running && die '嵌套 systemd 正在运行；直接 dockerd 模式不能与 systemd 模式并存，请先执行 xtmoe chroot stop'
+    direct_docker_pid_files
+    if direct_docker_running; then
+        ok '直接 dockerd 已在运行'
+        return 0
+    fi
+    is_mounted "$ROOTFS" && die '容器已有普通 Chroot 挂载；请先退出会话并执行 stop。'
+    command -v unshare >/dev/null 2>&1 || die '缺少 unshare；请执行 xtmoe chroot prepare'
+    mkdir -p "$(dirname -- "$DIRECT_DOCKER_LOG_FILE")"
+    rm -f -- "$DIRECT_DOCKER_PID_FILE" "$DIRECT_DOCKER_LAUNCHER_PID_FILE"
+    helper_path=$(realpath -m -- "${BASH_SOURCE[0]}")
+    nohup unshare --mount --fork \
+        "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" \
+        _docker-direct-launch "$BASE" "$CONTAINER_NAME" "$config" \
+        >"$DIRECT_DOCKER_LOG_FILE" 2>&1 &
+    launcher_pid=$!
+    printf '%s\n' "$launcher_pid" >"$DIRECT_DOCKER_LAUNCHER_PID_FILE"
+    target_pid=''
+    for ((attempt = 0; attempt < 50; attempt++)); do
+        target_pid=$(find_direct_docker_pid "$launcher_pid" || true)
+        [[ -n $target_pid ]] && break
+        sleep 0.1
+    done
+    if [[ -z $target_pid ]]; then
+        kill -TERM "$launcher_pid" 2>/dev/null || true
+        die "无法定位直接启动的 dockerd；查看 $DIRECT_DOCKER_LOG_FILE"
+    fi
+    printf '%s\n' "$target_pid" >"$DIRECT_DOCKER_PID_FILE"
+    for ((attempt = 0; attempt < 150; attempt++)); do
+        [[ -S /proc/$target_pid/root/var/run/docker.sock ]] && break
+        process_alive "$target_pid" || break
+        sleep 0.1
+    done
+    process_alive "$target_pid" || { rm -f -- "$DIRECT_DOCKER_PID_FILE" "$DIRECT_DOCKER_LAUNCHER_PID_FILE"; die "dockerd 已退出；查看 $DIRECT_DOCKER_LOG_FILE"; }
+    if [[ ! -S /proc/$target_pid/root/var/run/docker.sock ]]; then
+        die "dockerd 未在 15 秒内创建 socket；查看 $DIRECT_DOCKER_LOG_FILE"
+    fi
+    if ! direct_docker_exec /usr/bin/docker info >/dev/null 2>&1; then
+        die "dockerd 已创建 socket 但 API 不可用；查看 $DIRECT_DOCKER_LOG_FILE"
+    fi
+    ok "直接 dockerd 已启动并可响应（宿主 PID $target_pid）"
+}
+
+direct_docker_exec() {
+    local pid
+    (($#)) || die '缺少要在直接 dockerd 容器内执行的命令'
+    pid=$(direct_docker_target_pid)
+    nsenter --target "$pid" --mount -- \
+        chroot "$ROOTFS" /usr/bin/env -i \
+        HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        LANG=C.UTF-8 "$@"
+}
+
+direct_docker_status() {
+    local pid
+    pid=$(direct_docker_target_pid)
+    printf 'direct running pid=%s\n' "$pid"
+    direct_docker_exec /usr/bin/docker info
+}
+
+direct_docker_stop() {
+    local pid attempt
+    if ! direct_docker_running; then
+        direct_docker_pid_files
+        rm -f -- "$DIRECT_DOCKER_PID_FILE" "$DIRECT_DOCKER_LAUNCHER_PID_FILE"
+        ok '直接 dockerd 未运行'
+        return 0
+    fi
+    pid=$(direct_docker_target_pid)
+    kill -TERM "$pid" 2>/dev/null || true
+    for ((attempt = 0; attempt < 100; attempt++)); do
+        process_alive "$pid" || break
+        sleep 0.1
+    done
+    process_alive "$pid" && { warn 'dockerd 仍在运行；请查看日志和容器任务'; return 1; }
+    direct_docker_pid_files
+    rm -f -- "$DIRECT_DOCKER_PID_FILE" "$DIRECT_DOCKER_LAUNCHER_PID_FILE"
+    ok '直接 dockerd 已停止'
+}
+
+direct_docker_logs() {
+    direct_docker_pid_files
+    [[ -r $DIRECT_DOCKER_LOG_FILE ]] || die "dockerd 日志不存在：$DIRECT_DOCKER_LOG_FILE"
+    tail -n 200 -- "$DIRECT_DOCKER_LOG_FILE"
+}
+
+direct_docker_run_test() {
+    direct_docker_exec /usr/bin/docker run --rm hello-world
+}
+
 docker_state() {
     if ! rootfs_has_executable "$ROOTFS" /usr/bin/docker; then
         printf 'not-installed\n'
+        return 0
+    fi
+    if direct_docker_running; then
+        if direct_docker_exec /usr/bin/docker info >/dev/null 2>&1; then
+            printf 'direct-ready\n'
+        else
+            printf 'direct-unresponsive\n'
+        fi
         return 0
     fi
     if ! systemd_running; then
@@ -698,6 +855,7 @@ backup_container() {
     local output=$1 owner_uid=$2 owner_gid=$3 canonical_output partial_output
     [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器标记不存在，拒绝备份'
     systemd_running && die '嵌套 systemd 仍在运行；请先执行 stop'
+    direct_docker_running && die '直接 dockerd 仍在运行；请先执行 docker-direct-stop'
     is_mounted "$ROOTFS" && die '容器仍有挂载；请先执行 stop'
     canonical_output=$(realpath -m -- "$output")
     [[ $canonical_output != "$CONTAINER" && $canonical_output != "$CONTAINER"/* ]] || die '备份文件不能写入被备份的容器内部'
@@ -733,6 +891,7 @@ restore_container() {
 remove_container() {
     [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器标记不存在，拒绝删除'
     systemd_running && die '嵌套 systemd 仍在运行；请先执行 xtmoe chroot stop'
+    direct_docker_running && die '直接 dockerd 仍在运行；请先执行 xtmoe chroot stop'
     is_mounted "$ROOTFS" && die '容器仍有挂载；请先执行 xtmoe chroot stop'
     rm -rf --one-file-system -- "$CONTAINER"
 }
@@ -765,6 +924,11 @@ case "$ACTION" in
         [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
         systemd_namespace_launch "${3:-}"
         ;;
+    _docker-direct-launch)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        direct_docker_namespace_launch "${3:-}"
+        ;;
     set-dns)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
         shift 2
@@ -786,6 +950,31 @@ case "$ACTION" in
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
         [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
         docker_state
+        ;;
+    docker-direct-start)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        direct_docker_start "${3:-}"
+        ;;
+    docker-direct-stop)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        direct_docker_stop
+        ;;
+    docker-direct-status)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        direct_docker_status
+        ;;
+    docker-direct-logs)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        direct_docker_logs
+        ;;
+    docker-direct-run-test)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        direct_docker_run_test
         ;;
     systemd-check)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
@@ -840,6 +1029,8 @@ case "$ACTION" in
         [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
         if systemd_running; then
             systemd_stop
+        elif direct_docker_running; then
+            direct_docker_stop
         else
             unmount_all "$ROOTFS" || die '部分挂载无法卸载，可能仍有进程占用'
         fi

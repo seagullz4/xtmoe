@@ -19,6 +19,9 @@ Chroot 模式（需要设备 Root；当前支持原生架构 Ubuntu Base 24.04�
   xtmoe chroot docker-install [--accept-host-network-changes] [名称]
   xtmoe chroot docker-start|docker-stop|docker-restart [名称]
   xtmoe chroot docker-status|docker-logs [名称]
+  xtmoe chroot docker-direct-install [--accept-host-network-changes] [名称]
+  xtmoe chroot docker-direct-start|docker-direct-stop [名称]
+  xtmoe chroot docker-direct-status|docker-direct-logs|docker-direct-run-test [名称]
   xtmoe chroot systemd-check [名称]     检查嵌套 systemd 启动条件
   xtmoe chroot systemd-start [名称]     在 PID namespace 中启动 systemd
   xtmoe chroot systemd-login [名称]     进入 systemd 会话 Shell
@@ -652,6 +655,106 @@ chroot_docker_logs() {
     chroot_systemd_exec "$name" -- /usr/bin/journalctl -u containerd.service -u docker.service -n 200 --no-pager
 }
 
+chroot_docker_direct_install() {
+    local accept_network=0 name=ubuntu argument
+    local -a positional=()
+    for argument in "$@"; do
+        case "$argument" in
+            --accept-host-network-changes) accept_network=1 ;;
+            -*) die "未知 docker-direct-install 参数：$argument" ;;
+            *) positional+=("$argument") ;;
+        esac
+    done
+    ((${#positional[@]} <= 1)) || die 'xtmoe chroot docker-direct-install [--accept-host-network-changes] [名称]'
+    name=${positional[0]:-ubuntu}
+    require_name "$name"
+    [[ -f $(chroot_base)/$name/.xtmoe-chroot ]] || die "Chroot 容器不存在：$name"
+    if ! chroot_confirm_network_changes "$accept_network"; then
+        info '已取消直接 dockerd 安装。'
+        return 0
+    fi
+    info '安装 Docker Engine（direct dockerd 兼容模式，不依赖 systemctl）……'
+    chroot_exec "$name" -- /bin/bash -lc '
+set -Eeuo pipefail
+policy_created=0
+cleanup_policy() { if [ "$policy_created" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi; }
+trap cleanup_policy EXIT
+if [ ! -e /usr/sbin/policy-rc.d ]; then
+    printf "#!/bin/sh\nexit 101\n" >/usr/sbin/policy-rc.d
+    chmod 0755 /usr/sbin/policy-rc.d
+    policy_created=1
+fi
+for package in docker.io docker-compose docker-compose-v2 docker-doc podman-docker containerd runc; do
+    if dpkg-query -W -f="\${Status}" "$package" 2>/dev/null | grep -q "ok installed"; then
+        printf "检测到冲突软件包：%s；请先人工确认并卸载。\n" "$package" >&2
+        exit 1
+    fi
+done
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl
+install -m 0755 -d /etc/apt/keyrings
+tmp_key=/etc/apt/keyrings/docker.asc.xtmoe.tmp
+trap "rm -f -- $tmp_key; cleanup_policy" EXIT
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o "$tmp_key"
+chmod a+r "$tmp_key"
+mv -f "$tmp_key" /etc/apt/keyrings/docker.asc
+. /etc/os-release
+codename=${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}
+[ -n "$codename" ] || { printf "无法确定 Ubuntu codename\n" >&2; exit 1; }
+architecture=$(dpkg --print-architecture)
+tmp_source=/etc/apt/sources.list.d/docker.sources.xtmoe.tmp
+printf "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n" "$codename" "$architecture" >"$tmp_source"
+mv -f "$tmp_source" /etc/apt/sources.list.d/docker.sources
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+if ! grep -qw overlay /proc/filesystems && [ ! -e /etc/docker/daemon.json ]; then
+    install -d -m 0755 /etc/docker
+    printf "%s\n" "{" "  \"storage-driver\": \"vfs\"" "}" >/etc/docker/daemon.json
+    printf "OverlayFS 不可用，已配置低性能 vfs 存储驱动。\n" >&2
+fi
+'
+    chroot_systemd_stop "$name" || true
+    chroot_docker_direct_start "$name"
+}
+
+chroot_docker_direct_start() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot docker-direct-start [名称]'
+    local name=${1:-ubuntu}
+    require_name "$name"
+    chroot_root docker-direct-start "$(chroot_base)" "$name" "$(chroot_config_base)/$name.binds"
+    chroot_meta_set "$name" docker_state direct-ready
+    info 'direct dockerd 已通过 docker info 验证；请额外运行 xtmoe chroot docker-direct-run-test 验证实际容器。'
+}
+
+chroot_docker_direct_stop() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot docker-direct-stop [名称]'
+    local name=${1:-ubuntu}
+    require_name "$name"
+    chroot_root docker-direct-stop "$(chroot_base)" "$name"
+    chroot_meta_set "$name" docker_state installed-stopped
+}
+
+chroot_docker_direct_status() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot docker-direct-status [名称]'
+    local name=${1:-ubuntu}
+    require_name "$name"
+    chroot_root docker-direct-status "$(chroot_base)" "$name"
+}
+
+chroot_docker_direct_logs() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot docker-direct-logs [名称]'
+    local name=${1:-ubuntu}
+    require_name "$name"
+    chroot_root docker-direct-logs "$(chroot_base)" "$name"
+}
+
+chroot_docker_direct_run_test() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot docker-direct-run-test [名称]'
+    local name=${1:-ubuntu}
+    require_name "$name"
+    chroot_root docker-direct-run-test "$(chroot_base)" "$name"
+}
+
 chroot_repair() {
     local accept_network=0 name=ubuntu argument name_set=0
     for argument in "$@"; do
@@ -753,6 +856,12 @@ chroot_main() {
         docker-restart) chroot_docker_restart "$@" ;;
         docker-status) chroot_docker_status "$@" ;;
         docker-logs) chroot_docker_logs "$@" ;;
+        docker-direct-install) chroot_docker_direct_install "$@" ;;
+        docker-direct-start) chroot_docker_direct_start "$@" ;;
+        docker-direct-stop) chroot_docker_direct_stop "$@" ;;
+        docker-direct-status) chroot_docker_direct_status "$@" ;;
+        docker-direct-logs) chroot_docker_direct_logs "$@" ;;
+        docker-direct-run-test) chroot_docker_direct_run_test "$@" ;;
         systemd-check) chroot_systemd_check "$@" ;;
         systemd-start) chroot_systemd_start "$@" ;;
         systemd-login) chroot_systemd_login "$@" ;;

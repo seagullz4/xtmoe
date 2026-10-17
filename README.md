@@ -153,6 +153,16 @@ xtmoe chroot install --yes --skip-docker ubuntu 24.04 ubuntu
 
 若缺少 namespace、pids/devices cgroup controller 等内核能力，命令返回状态 `2`：Ubuntu 和 systemd 保持可用，但 XTMOE 不安装、不启动 Docker，也不会把它报告为可用。修复中断的 APT、systemd 或 Docker 初始化可执行 `xtmoe chroot repair ubuntu`。
 
+如果严格模式被内核阻断，但希望试用不依赖 `systemctl` 的 daemon，可在 Chroot 中显式选择 direct dockerd 兼容模式：
+
+```sh
+xtmoe chroot docker-direct-install ubuntu
+xtmoe chroot docker-direct-status ubuntu
+xtmoe chroot docker-direct-run-test ubuntu
+```
+
+它通过 `dockerd --iptables=true` 启动并验证 `docker info`；只有运行测试成功才表示实际容器可运行。该模式不代表 Docker bridge、Compose 或 1Panel 已可靠支持。
+
 ## 文档
 
 - [安装与升级](docs/INSTALL.md)
