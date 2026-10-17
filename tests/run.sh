@@ -48,6 +48,13 @@ export XTMOE_CACHE_DIR="$HOME/.cache/xtmoe"
 export NO_COLOR=1
 mkdir -p "$HOME" "$PREFIX/bin" "$TEST_TMP/mock-bin"
 
+# Git Bash has no flock. Keep offline command dispatch testable there; Linux
+# CI uses the actual binary. Lock contention is tested explicitly below.
+if ! command -v flock >/dev/null 2>&1; then
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_TMP/mock-bin/flock"
+    chmod +x "$TEST_TMP/mock-bin/flock"
+fi
+
 cat >"$TEST_TMP/mock-bin/proot-distro" <<'MOCK'
 #!/usr/bin/env bash
 if [[ ${1:-} == --version ]]; then printf 'proot-distro test\n'; exit 0; fi
@@ -116,11 +123,13 @@ export BOOTSTRAP_LOG
 assert_ok 'Fresh install bootstraps systemd and Bash by default' bash -c '
     source "$1/src/lib/common.sh"
     source "$1/src/lib/chroot.sh"
+    chroot_install_preflight() { :; }
     download_ubuntu_base() { printf /tmp/fake-ubuntu.tar.gz; }
     chroot_root() { :; }
     chroot_setup() { printf "setup\\n" >>"$BOOTSTRAP_LOG"; }
     chroot_use_bash_sh() { printf "bash\\n" >>"$BOOTSTRAP_LOG"; }
     chroot_systemd_start() { printf "start\\n" >>"$BOOTSTRAP_LOG"; }
+    chroot_systemd_verify() { :; }
     chroot_install --yes --skip-docker ubuntu 24.04 bootstrap-demo
 ' _ "$ROOT_DIR"
 [[ $(tr '\n' ' ' <"$BOOTSTRAP_LOG") == 'setup bash start ' ]] && pass 'Fresh install bootstrap order is correct' || fail 'Fresh install bootstrap order is correct'
@@ -128,6 +137,7 @@ assert_ok 'Fresh install bootstraps systemd and Bash by default' bash -c '
 assert_ok 'Fresh install allows explicit bootstrap opt-out' bash -c '
     source "$1/src/lib/common.sh"
     source "$1/src/lib/chroot.sh"
+    chroot_install_preflight() { :; }
     download_ubuntu_base() { printf /tmp/fake-ubuntu.tar.gz; }
     chroot_root() { :; }
     chroot_setup() { printf "setup\\n" >>"$BOOTSTRAP_LOG"; }
@@ -251,7 +261,7 @@ assert_ok 'Docker hard gate returns partial status before package mutation' bash
     source "$1/src/lib/common.sh"
     source "$1/src/lib/chroot.sh"
     chroot_systemd_start() { :; }
-    chroot_docker_check() { return 1; }
+    chroot_docker_kernel_check() { return 2; }
     chroot_systemd_exec() { printf "mutation\n" >>"$DOCKER_MUTATION_LOG"; }
     set +e
     chroot_docker_install --accept-host-network-changes docker-gate
@@ -264,6 +274,9 @@ assert_ok 'Embedded Docker repository installer is valid Bash' bash -c '
     source "$1/src/lib/chroot.sh"
     parsed=0
     chroot_systemd_start() { :; }
+    chroot_systemd_verify() { :; }
+    chroot_docker_kernel_check() { :; }
+    chroot_docker_dependencies() { :; }
     chroot_docker_check() { :; }
     chroot_systemd_exec() {
         if [[ ${3:-} == /bin/bash && ${4:-} == -lc ]]; then
@@ -283,6 +296,7 @@ assert_ok 'Embedded direct Docker installer is valid Bash and avoids systemd man
     source "$1/src/lib/common.sh"
     source "$1/src/lib/chroot.sh"
     parsed=0
+    chroot_docker_dependencies() { :; }
     chroot_exec() {
         [[ ${3:-} == /bin/bash && ${4:-} == -lc ]] || return 2
         bash -n -c "$5"
@@ -386,6 +400,7 @@ assert_contains 'Restored QEMU VM state is stopped' 'stopped' "$TEST_TMP/stdout"
 assert_ok 'Synthetic restored QEMU VM can be removed' bash "$CLI" qemu remove --yes qemu-restored
 
 source "$ROOT_DIR/tests/audit.sh"
+source "$ROOT_DIR/tests/chroot-init.sh"
 
 cat >"$TEST_TMP/mock-bin/id" <<'MOCK'
 #!/usr/bin/env bash
@@ -572,7 +587,7 @@ pass 'Documented PRoot actions map to CLI'
 chroot_actions=$(grep -rhoE 'xtmoe[[:space:]]+chroot[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
 for action in $chroot_actions; do
     case "$action" in
-        prepare|install|login|exec|setup|repair|update-system|reinstall|network-check|cgroup-check|docker-check|docker-install|docker-start|docker-stop|docker-restart|docker-status|docker-logs|docker-direct-install|docker-direct-start|docker-direct-stop|docker-direct-status|docker-direct-logs|docker-direct-run-test|systemd-check|systemd-start|systemd-login|systemd-exec|systemd-status|systemd-stop|use-bash-sh|status|list|stop|bind|unbind|backup|restore|remove) ;;
+        prepare|install|login|exec|setup|init|repair|update-system|reinstall|network-check|cgroup-check|docker-check|docker-install|docker-start|docker-stop|docker-restart|docker-status|docker-logs|docker-direct-install|docker-direct-start|docker-direct-stop|docker-direct-status|docker-direct-logs|docker-direct-run-test|systemd-check|systemd-start|systemd-login|systemd-exec|systemd-status|systemd-stop|use-bash-sh|status|list|stop|bind|unbind|backup|restore|remove) ;;
         *) fail "Documentation references unknown Chroot action: $action" ;;
     esac
 done
@@ -614,4 +629,3 @@ assert_ok 'Program uninstall preserves user data' bash "$PREFIX/bin/xtmoe" unins
 
 printf '# tests: %d passed, %d failed\n' "$PASS" "$FAIL"
 ((FAIL == 0))
-

@@ -13,6 +13,7 @@ src/lib/xtmoe-root         提权后的受控挂载、namespace、PID 与清理
 src/lib/qemu.sh            Cloud Image、VM、SSH、端口、备份恢复
 tests/run.sh               主模拟测试入口
 tests/audit.sh             失败路径回归，由 run.sh 载入
+tests/chroot-init.sh       Chroot 初始化、续跑、依赖与策略恢复回归
 tests/android-smoke.sh     显式确认后在 Android 执行真实生命周期
 docs/                     使用、排障、架构和验收状态
 ```
@@ -21,6 +22,8 @@ docs/                     使用、排障、架构和验收状态
 
 - PRoot 状态来自后端已安装目录和活动会话。
 - Chroot 实时状态来自容器标记、受校验的 PID 和挂载；阶段元数据只说明初始化进展。
+- Chroot `install` 负责下载/解压后调用共享初始化流水线；`init` 用于主动补全已有系统，`repair` 沿用历史选择重验并续跑，`setup` 只负责基础包。菜单不复制这些逻辑。
+- Docker 分为内核/权限预检、用户态依赖、iptables/NAT 与 systemd 完整门控，再执行官方源安装和真实容器验收。软件/服务错误返回 1，明确的能力阻断返回 2。
 - QEMU 实时状态来自 QEMU PID 和精确磁盘参数；初始化和 Docker 验证结果独立保存在配置中。
 - 菜单操作在独立 Shell 中执行；任一步失败会中止本次操作，并返回菜单。不能把安装函数放进会关闭 Bash `errexit` 的条件中，再依赖隐式退出。
 - 破坏性动作先验证目标与停止状态。Docker API、真实容器执行、systemd 和网络分别验收。

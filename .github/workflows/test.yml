@@ -33,6 +33,7 @@ jobs:
             src/lib/xtmoe-root \
             tests/run.sh \
             tests/audit.sh \
+            tests/chroot-init.sh \
             tests/android-smoke.sh \
             tests/rootfs-lifecycle.sh; do
             bash -n "$file"
@@ -52,6 +53,7 @@ jobs:
             src/lib/xtmoe-root \
             tests/run.sh \
             tests/audit.sh \
+            tests/chroot-init.sh \
             tests/android-smoke.sh \
             tests/rootfs-lifecycle.sh
 

@@ -19,6 +19,9 @@ XTMOE 直接采用可测试的模块化实现；当前开发版本为 `0.4.0-dev
 - [x] 增加 `xtmoe on` 完整管理向导，以及统一 `list`/`enter`。
 - [x] PRoot 增加状态、系统更新和确认后重装。
 - [x] Chroot 增加阶段元数据、`repair`、系统更新和确认后重装。
+- [x] 新增 Chroot `init` 一键配置已有系统；全新安装在下载前自动准备依赖并检查 Root/空间。
+- [x] DNS/NSS 修复、真实严格 APT 源验证、包安装服务策略恢复、阶段失败记录及初始化并发拒绝。
+- [x] Docker 内核/权限预检与用户态依赖拆分；alternatives 多层链接按容器根解析，临时网络 namespace 中探测 NAT。
 - [x] Chroot 固定公共 DNS，并提供可复现的网络诊断。
 - [x] 增加 cgroup v1/v2 检查和 Chroot cgroup 挂载尝试。
 - [x] 增加 Docker 官方源安装、systemd 自动启动、服务管理、日志和 `hello-world` 验收。

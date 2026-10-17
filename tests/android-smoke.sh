@@ -128,13 +128,16 @@ chroot_test() {
     [[ $install_status == 0 || $install_status == 2 ]] || die "Chroot 初始化失败，状态：$install_status"
     xtmoe list --all --no-prompt | grep -Fq "$CHROOT_NAME" || die '统一列表没有显示新 Chroot'
     xtmoe chroot network-check "$CHROOT_NAME"
+    xtmoe chroot systemd-exec "$CHROOT_NAME" -- /bin/bash -lc 'test ! -L /etc/resolv.conf && grep -qx "nameserver 1.1.1.1" /etc/resolv.conf && grep -qx "nameserver 8.8.8.8" /etc/resolv.conf && grep -qx "hosts: files dns" /etc/nsswitch.conf && apt-get -o APT::Update::Error-Mode=any update'
     xtmoe chroot cgroup-check "$CHROOT_NAME" || true
     [[ $(xtmoe chroot systemd-exec "$CHROOT_NAME" -- readlink -f /bin/sh) == /usr/bin/bash ]] || die '/bin/sh 未切换为 Bash'
     systemd_state=$(xtmoe chroot systemd-exec "$CHROOT_NAME" -- systemctl is-system-running || true)
-    [[ $systemd_state == running || $systemd_state == degraded || $systemd_state == starting ]] || die "systemd 状态异常：$systemd_state"
+    [[ $systemd_state == running || $systemd_state == degraded ]] || die "systemd 状态异常：$systemd_state"
+    xtmoe chroot systemd-exec "$CHROOT_NAME" -- /usr/sbin/iptables --version
     if [[ $install_status == 0 ]]; then
         xtmoe chroot docker-status "$CHROOT_NAME"
         xtmoe chroot systemd-exec "$CHROOT_NAME" -- docker info >/dev/null
+        xtmoe chroot systemd-exec "$CHROOT_NAME" -- docker run --rm hello-world
     else
         if xtmoe chroot systemd-exec "$CHROOT_NAME" -- /bin/bash -lc 'command -v dockerd' >/dev/null 2>&1; then
             die '内核硬阻断时不应安装 dockerd'
@@ -146,6 +149,9 @@ chroot_test() {
     xtmoe chroot bind "$CHROOT_NAME" "$HOST_SHARE" /mnt/xtmoe-smoke ro
     xtmoe chroot systemd-stop "$CHROOT_NAME"
     xtmoe chroot systemd-start "$CHROOT_NAME"
+    if [[ $install_status == 0 ]]; then
+        xtmoe chroot systemd-exec "$CHROOT_NAME" -- timeout 60 /bin/bash -c 'until systemctl is-active --quiet docker.service && docker info >/dev/null 2>&1; do sleep 2; done'
+    fi
     [[ $(xtmoe chroot systemd-exec "$CHROOT_NAME" -- cat /mnt/xtmoe-smoke/probe.txt) == host-bind-ok ]] || die 'Chroot 只读绑定读取失败'
     if xtmoe chroot systemd-exec "$CHROOT_NAME" -- touch /mnt/xtmoe-smoke/must-not-exist; then
         die 'Chroot 只读绑定仍可写入'

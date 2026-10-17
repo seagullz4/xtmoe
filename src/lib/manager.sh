@@ -311,7 +311,7 @@ menu_chroot() {
 
 Chroot 管理
   1) 准备依赖
-  2) 全新安装 Ubuntu 24.04
+  2) 一键安装 Ubuntu 24.04（自动准备依赖/网络/systemd）
   3) 启动 systemd
   4) 进入容器
   5) 停止容器
@@ -325,6 +325,7 @@ Chroot 管理
  13) cgroup 检查
  14) Docker 管理
  15) 查看状态
+ 16) 一键配置已有 Ubuntu（网络/基础包/systemd/Docker）
   0) 返回
 EOF
         choice=$(menu_read '请选择操作')
@@ -353,6 +354,7 @@ EOF
             13) menu_select_container chroot '选择要检查 cgroup 的 Chroot 容器' && menu_run chroot_main cgroup-check "$MENU_SELECTED_NAME" ;;
             14) menu_select_container chroot '选择要管理 Docker 的 Chroot 容器' && menu_chroot_docker "$MENU_SELECTED_NAME" ;;
             15) menu_select_container chroot '选择要查看状态的 Chroot 容器' && menu_run chroot_main status "$MENU_SELECTED_NAME" ;;
+            16) menu_select_container chroot '选择要一键配置的 Chroot 容器' && menu_run chroot_main init "$MENU_SELECTED_NAME" ;;
             0|'') return 0 ;;
             *) warn '无效选项。' ;;
         esac

@@ -5,22 +5,37 @@ die() { printf '[Root 错误] %s\n' "$*" >&2; exit 1; }
 warn() { printf '[Root 警告] %s\n' "$*" >&2; }
 ok() { printf '[Root] %s\n' "$*"; }
 
+# Resolve each link relative to the guest root, never the Android host root.
+# In particular, /etc/alternatives links commonly contain absolute targets.
+rootfs_resolve_path() {
+    local root_real resolved pending=${2#/} component target links=0
+    root_real=$(realpath -m -- "$1"); resolved=$root_real
+    while [[ -n $pending ]]; do
+        component=${pending%%/*}
+        if [[ $pending == */* ]]; then pending=${pending#*/}; else pending=''; fi
+        case "$component" in
+            ''|.) continue ;;
+            ..) [[ $resolved != "$root_real" ]] || return 1; resolved=${resolved%/*} ;;
+            *)
+                if [[ -L $resolved/$component ]]; then
+                    ((links += 1)); ((links <= 40)) || return 1
+                    target=$(readlink -- "$resolved/$component") || return 1
+                    [[ -n $target ]] || return 1
+                    if [[ $target == /* ]]; then resolved=$root_real; target=${target#/}; fi
+                    pending="$target${pending:+/$pending}"
+                else
+                    resolved+=/$component
+                fi
+                ;;
+        esac
+    done
+    printf '%s' "$resolved"
+}
+
 rootfs_has_executable() {
-    local rootfs=$1 relative=${2#/} target resolved root_real
-    root_real=$(realpath -m -- "$rootfs")
-    resolved=$(realpath -m -- "$rootfs/$relative")
-    if [[ $resolved == "$root_real"/* && -x $resolved ]]; then
-        return 0
-    fi
-    [[ -L $rootfs/$relative ]] || return 1
-    target=$(readlink -- "$rootfs/$relative" 2>/dev/null || true)
-    [[ -n $target ]] || return 1
-    if [[ $target == /* ]]; then
-        resolved=$(realpath -m -- "$rootfs/${target#/}")
-    else
-        resolved=$(realpath -m -- "$(dirname -- "$rootfs/$relative")/$target")
-    fi
-    [[ $resolved == "$root_real"/* && -x $resolved ]]
+    local resolved
+    resolved=$(rootfs_resolve_path "$1" "$2") || return 1
+    [[ -f $resolved && -x $resolved ]]
 }
 
 rootfs_has_shell() {
@@ -157,8 +172,11 @@ unmount_all() {
 }
 
 ensure_hosts_config() {
-    local hostname_file="$1/etc/hostname" hosts_file="$1/etc/hosts"
-    local nsswitch_file="$1/etc/nsswitch.conf"
+    local hostname_file hosts_file nsswitch_file tmp
+    hostname_file=$(rootfs_resolve_path "$1" /etc/hostname) || die 'hostname 路径越界或链接循环'
+    hosts_file=$(rootfs_resolve_path "$1" /etc/hosts) || die 'hosts 路径越界或链接循环'
+    nsswitch_file=$(rootfs_resolve_path "$1" /etc/nsswitch.conf) || die 'nsswitch 路径越界或链接循环'
+    [[ ! -d $hostname_file && ! -d $hosts_file && ! -d $nsswitch_file ]] || die '名称解析配置不能是目录'
 
     printf 'localhost\n' >"$hostname_file"
     if [[ ! -e $hosts_file ]]; then
@@ -169,18 +187,24 @@ ensure_hosts_config() {
         awk '$1 == "::1" { for (i = 2; i <= NF; i++) if ($i == "localhost") found = 1 } END { exit !found }' "$hosts_file" ||
             printf '::1\tlocalhost ip6-localhost ip6-loopback\n' >>"$hosts_file"
     fi
-    if [[ ! -e $nsswitch_file ]] || ! grep -q '^[[:space:]]*hosts:' "$nsswitch_file"; then
-        printf 'hosts: files dns\n' >>"$nsswitch_file"
+    # Repair existing "hosts: files" or systemd stub configurations as well.
+    tmp="$nsswitch_file.xtmoe.$$"
+    if [[ -f $nsswitch_file ]]; then
+        awk '/^[[:space:]]*hosts:/ { if (!seen++) print "hosts: files dns"; next } { print } END { if (!seen) print "hosts: files dns" }' "$nsswitch_file" >"$tmp"
+    else
+        printf 'hosts: files dns\n' >"$tmp"
     fi
+    chmod 0644 "$tmp"; mv -f -- "$tmp" "$nsswitch_file"
 }
 
 set_dns_config() {
-    local rootfs=$1 dns file tmp
+    local rootfs=$1 dns file tmp etc_dir
     shift
-    file="$rootfs/etc/resolv.conf"
-    [[ -d $rootfs/etc ]] || die 'rootfs 缺少 /etc'
+    etc_dir=$(rootfs_resolve_path "$rootfs" /etc) || die '/etc 路径越界或链接循环'
+    file="$etc_dir/resolv.conf"
+    [[ -d $etc_dir ]] || die 'rootfs 缺少 /etc'
     [[ ! -d $file ]] || die '/etc/resolv.conf 不能是目录'
-    tmp="$rootfs/etc/.resolv.conf.xtmoe.$$"
+    tmp="$etc_dir/.resolv.conf.xtmoe.$$"
     : >"$tmp"
     for dns in "$@"; do
         [[ $dns =~ ^[0-9A-Fa-f:.]+$ ]] || { rm -f -- "$tmp"; die "非法 DNS 地址：$dns"; }
@@ -190,6 +214,7 @@ set_dns_config() {
     rm -f -- "$file"
     mv -- "$tmp" "$file"
     chmod 0644 "$file"
+    ensure_hosts_config "$rootfs"
     ok '已写入固定 DNS：1.1.1.1、8.8.8.8'
 }
 
@@ -429,7 +454,7 @@ systemd_check() {
 }
 
 docker_gate() {
-    local failures=0 mode ip_forward
+    local failures=0 kernel_failures=0 mode ip_forward iptables_path='' output scope=${1:-full}
     printf 'Kernel: %s\nArchitecture: %s\n' "$(uname -r)" "$(uname -m)"
     namespace_check --mount mount || ((failures += 1))
     namespace_check --pid pid || ((failures += 1))
@@ -471,10 +496,29 @@ docker_gate() {
         printf '[缺失] IPv4 forwarding 未启用且不可写\n' >&2
         ((failures += 1))
     fi
-    if rootfs_has_executable "$ROOTFS" /usr/sbin/iptables || rootfs_has_executable "$ROOTFS" /usr/bin/iptables; then
-        printf '[通过] 容器内 iptables\n'
+    kernel_failures=$failures
+    if [[ $scope == kernel ]]; then
+        printf 'Summary: kernel_or_permission=%s（尚未验证 iptables/systemd/Docker 运行）\n' "$kernel_failures"
+        ((kernel_failures == 0)) || return 2
+        return 0
+    fi
+    if rootfs_has_executable "$ROOTFS" /usr/sbin/iptables; then
+        iptables_path=/usr/sbin/iptables
+    elif rootfs_has_executable "$ROOTFS" /usr/bin/iptables; then
+        iptables_path=/usr/bin/iptables
+    fi
+    if [[ -n $iptables_path ]] && output=$(timeout 10 chroot "$ROOTFS" "$iptables_path" --version 2>&1); then
+        printf '[通过] 容器内 iptables: %s\n' "$output"
+        # Inspect NAT in a throwaway network namespace. Never flush, create
+        # chains, or switch backends in Android's shared network namespace.
+        if output=$(timeout 10 unshare --net chroot "$ROOTFS" "$iptables_path" -t nat -S 2>&1); then
+            printf '[通过] 独立 network namespace 中的 iptables NAT 查询\n'
+        else
+            printf '[缺失] iptables NAT/内核权限检查失败（未修改宿主规则）：%s\n' "$output" >&2
+            ((failures += 1)); ((kernel_failures += 1))
+        fi
     else
-        printf '[缺失] 容器内 iptables\n' >&2
+        printf '[缺失] 容器内 iptables 不存在或不可执行；请运行 chroot init/setup 安装用户态依赖\n' >&2
         ((failures += 1))
     fi
     if systemd_running && systemd_manager_ready; then
@@ -483,7 +527,8 @@ docker_gate() {
         printf '[缺失] 嵌套 systemd manager\n' >&2
         ((failures += 1))
     fi
-    printf 'Summary: failures=%s\n' "$failures"
+    printf 'Summary: failures=%s kernel_or_permission=%s software_or_service=%s\n' "$failures" "$kernel_failures" "$((failures - kernel_failures))"
+    ((kernel_failures == 0)) || return 2
     ((failures == 0))
 }
 
@@ -805,7 +850,8 @@ install_rootfs() {
     done
     [[ -s $partial_rootfs/rootfs/etc/resolv.conf ]] || printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' >"$partial_rootfs/rootfs/etc/resolv.conf"
     printf 'xtmoe-chroot-format-1\n' >"$partial_rootfs/.xtmoe-chroot"
-    mv -- "$partial_rootfs" "$CONTAINER"
+    [[ ! -e $CONTAINER && ! -L $CONTAINER ]] || die '目标在解压期间已存在，拒绝覆盖'
+    mv -T -- "$partial_rootfs" "$CONTAINER"
 }
 
 run_chroot() {
@@ -941,6 +987,11 @@ case "$ACTION" in
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
         [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
         docker_gate
+        ;;
+    docker-kernel-check)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        docker_gate kernel
         ;;
     docker-state)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"

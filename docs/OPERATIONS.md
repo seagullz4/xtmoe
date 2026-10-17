@@ -1,5 +1,19 @@
 # 常用操作
 
+## Chroot 一键初始化与续跑
+
+先在源码目录执行 `sh termux.sh`，再运行 `xtmoe doctor`，通过后进入 `xtmoe on` → Chroot。全新系统选择“一键安装”；已有系统选择“一键配置已有 Ubuntu”，按数字选择目标。
+
+直接命令：
+
+```sh
+xtmoe chroot init --skip-docker ubuntu
+xtmoe chroot init --accept-host-network-changes ubuntu
+xtmoe chroot repair ubuntu
+```
+
+前两条是不同选择：第一条只配置 Ubuntu、网络和 systemd；第二条还接受 Docker 对宿主网络规则的影响并尝试安装。网络/APT 失败会停止后续阶段；`repair` 保留已有安装选择并重验实时条件。缺少 iptables 会先安装用户态依赖，不能直接归因于 Android 内核。
+
 ## 文件交换
 
 PRoot 可以在登录时添加绑定：
@@ -160,4 +174,3 @@ xtmoe chroot list
 ```
 
 Ubuntu Base 下载缓存位于 `~/.cache/xtmoe/ubuntu-base`。只有在没有安装任务运行时才应清理缓存。
-

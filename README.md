@@ -152,7 +152,19 @@ xtmoe chroot install --yes --accept-host-network-changes ubuntu 24.04 ubuntu
 xtmoe chroot install --yes --skip-docker ubuntu 24.04 ubuntu
 ```
 
-若缺少 namespace、pids/devices cgroup controller 等内核能力，命令返回状态 `2`：Ubuntu 和 systemd 保持可用，但 XTMOE 不安装、不启动 Docker，也不会把它报告为可用。修复中断的 APT、systemd 或 Docker 初始化可执行 `xtmoe chroot repair ubuntu`。
+安装会在下载前检查 Root、依赖和存储空间，自动补齐缺少的 Termux 依赖；配置 DNS 后通过真实 APT update 验证网络，再安装基础包并验证 systemd。iptables 等用户态依赖会先准备，再执行 Docker 完整门控，不再把缺包一概误报成内核缺失。
+
+已有 Ubuntu 无需重装，使用一键配置：
+
+```sh
+xtmoe chroot init ubuntu
+# 只配置 Ubuntu、网络和 systemd，不安装 Docker：
+xtmoe chroot init --skip-docker ubuntu
+```
+
+向导中也可选择 Chroot → “一键配置已有 Ubuntu”，按数字选择容器。`init` 主动补全默认配置；修复中断、沿用已保存的 Bash/Docker 选择则用 `xtmoe chroot repair ubuntu`。`setup` 只安装基础包，不等同完整初始化。
+
+若缺少 namespace、pids/devices cgroup controller 或受 Root 权限阻断，命令返回状态 `2`：已完成的 Ubuntu/systemd 保留，但 XTMOE 不安装、不启动 Docker，也不会把它报告为可用。网络/APT/用户态依赖或服务异常返回 `1`。systemd 本身若启动失败也不会宣称其可用。
 
 如果严格模式被内核阻断，但希望试用不依赖 `systemctl` 的 daemon，可在 Chroot 中显式选择 direct dockerd 兼容模式：
 

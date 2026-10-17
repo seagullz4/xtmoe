@@ -38,14 +38,6 @@ sh termux.sh
 ~/.cache/xtmoe
 ```
 
-Chroot 全新安装由 `xtmoe chroot install` 默认询问并完成 Ubuntu 标准组件、systemd、Bash Shell 和 Docker 初始化。自动化完整安装除 `--yes` 外还必须显式确认 Docker bridge 风险：
-
-```sh
-xtmoe chroot install --yes --accept-host-network-changes ubuntu 24.04 ubuntu
-```
-
-不需要 Docker 时使用 `--skip-docker`；`--skip-systemd` 会同时跳过 Docker。
-
 安装完成后必须先运行：
 
 ```sh
@@ -53,6 +45,16 @@ xtmoe doctor
 ```
 
 只有 `doctor` 完成且未报告基础环境错误后，才开始使用 `xtmoe on`、`xtmoe list`、PRoot、Chroot 或 QEMU 管理命令。基础安装器只复制 QEMU 模块，不下载大型虚拟机依赖；使用时执行 `xtmoe qemu prepare`。
+
+Chroot 全新安装会自动检查并补齐宿主依赖，在下载前检查 Root、原生架构及空间，默认完成网络、Ubuntu 标准组件、systemd、Bash 和严格 Docker 初始化。自动化完整安装除 `--yes` 外还必须显式确认 Docker bridge 风险：
+
+```sh
+xtmoe chroot install --yes --accept-host-network-changes ubuntu 24.04 ubuntu
+```
+
+不需要 Docker 时使用 `--skip-docker`；`--skip-systemd` 仅配置基础 rootfs/网络并同时跳过 Docker。数据/缓存文件系统各至少需要 2 GiB 可用空间，实际容器与 Docker 数据应另留余量。
+
+已有容器使用 `xtmoe chroot init --skip-docker ubuntu` 一键补全 Ubuntu/systemd，或 `xtmoe chroot init --accept-host-network-changes ubuntu` 同时配置严格 Docker。失败后沿用历史选择继续执行 `xtmoe chroot repair ubuntu`，无需重新解压镜像。
 
 ## 更新
 
@@ -142,4 +144,3 @@ xtmoe uninstall proot ubuntu
 xtmoe chroot stop ubuntu
 xtmoe uninstall chroot ubuntu
 ```
-

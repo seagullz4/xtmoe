@@ -245,6 +245,7 @@ assert_ok 'QEMU Docker test propagates failure and saves partial status' bash -c
 assert_ok 'Direct Docker package failure never starts a daemon' bash -c '
     source "$1/src/lib/common.sh"
     source "$1/src/lib/chroot.sh"
+    chroot_docker_dependencies() { :; }
     chroot_exec() { return 1; }
     chroot_systemd_stop() { printf forbidden >"$2"; }
     chroot_docker_direct_start() { printf forbidden >"$2"; }

@@ -10,6 +10,8 @@ Chroot 模式（需要设备 Root；当前支持原生架构 Ubuntu Base 24.04�
   xtmoe chroot login [名称]
   xtmoe chroot exec <名称> -- <命令>
   xtmoe chroot setup [名称]             更新 apt 并安装常用基础包
+  xtmoe chroot init [--skip-docker] [--skip-bash-sh] [--accept-host-network-changes] [名称]
+                                        一键配置已有 Ubuntu 的网络、基础包、systemd 和 Docker
   xtmoe chroot repair [--accept-host-network-changes] [名称]
   xtmoe chroot update-system [名称]
   xtmoe chroot reinstall [--yes] [--skip-docker] [--accept-host-network-changes] [名称]
@@ -46,6 +48,7 @@ chroot_base() { printf '%s/chroot' "$XTMOE_DATA_DIR"; }
 chroot_config_base() { printf '%s/chroot' "$XTMOE_CONFIG_DIR"; }
 
 chroot_meta_file() {
+    require_name "$1"
     printf '%s/%s.meta' "$(chroot_config_base)" "$1"
 }
 
@@ -97,11 +100,15 @@ chroot_helper() {
     printf '%s' "$candidate"
 }
 
-chroot_root() {
+chroot_root() (
     local helper
     helper=$(chroot_helper)
+    # The parent keeps its flock descriptors. A long-lived systemd/dockerd
+    # descendant must not inherit them and pin initialization locks forever.
+    if [[ ${CHROOT_INSTALL_LOCK_FD:-} =~ ^[0-9]+$ ]]; then exec {CHROOT_INSTALL_LOCK_FD}>&-; fi
+    if [[ ${CHROOT_INIT_LOCK_FD:-} =~ ^[0-9]+$ ]]; then exec {CHROOT_INIT_LOCK_FD}>&-; fi
     run_root "${PREFIX:?PREFIX 未设置}/bin/bash" "$helper" "$PREFIX" "$@"
-}
+)
 
 require_chroot() {
     require_termux
@@ -109,16 +116,40 @@ require_chroot() {
 }
 
 chroot_prepare() {
+    require_arg_range 0 0 "$#" 'xtmoe chroot prepare'
     require_termux
     require_command pkg '请使用官方 Termux 客户端'
     info '安装 Chroot 所需的 Termux 软件包……'
-    pkg install -y tsu mount-utils util-linux coreutils curl tar
+    pkg install -y tsu mount-utils util-linux coreutils curl tar || return 1
     if root_available; then
         ok 'Chroot 依赖与 Root 授权可用'
     else
         warn '依赖已安装，但未取得 Root；请检查 Magisk/KernelSU/APatch 授权。'
         return 1
     fi
+}
+
+chroot_install_preflight() {
+    local available_kb command missing=0
+    require_termux
+    for command in tsu mount umount unshare nsenter chroot flock curl tar sha256sum realpath df; do
+        command_exists "$command" || missing=1
+    done
+    if ((missing)); then
+        info '检测到缺少宿主依赖，先执行 Chroot 依赖准备……'
+        chroot_prepare || return 1
+    fi
+    require_chroot || return 1
+    for command in mount umount unshare nsenter chroot flock curl tar sha256sum realpath df; do
+        require_command "$command" '请执行 xtmoe chroot prepare'
+    done
+    ubuntu_arch >/dev/null
+    mkdir -p "$XTMOE_DATA_DIR" "$XTMOE_CACHE_DIR"
+    for command in "$XTMOE_DATA_DIR" "$XTMOE_CACHE_DIR"; do
+        available_kb=$(df -Pk "$command" | awk 'NR == 2 {print $4}')
+        [[ $available_kb =~ ^[0-9]+$ && $available_kb -ge 2097152 ]] || die '安装前要求数据和缓存所在文件系统各至少有 2 GiB 可用空间。'
+    done
+    ok '安装前置检查通过：Root、原生架构、依赖与可用空间'
 }
 
 ubuntu_arch() {
@@ -146,13 +177,13 @@ download_ubuntu_base() {
     sums="$XTMOE_CACHE_DIR/ubuntu-base/$version/SHA256SUMS"
 
     info "读取 Ubuntu Base $version 官方发布列表……" >&2
-    curl -fL --retry 3 --connect-timeout 20 -o "$index" "$base_url/"
+    curl -fL --retry 3 --connect-timeout 20 -o "$index" "$base_url/" || return 1
     version_regex=${version//./[.]}
     filename=$(grep -oE "ubuntu-base-${version_regex}[.][0-9]+-base-${arch}[.]tar[.]gz" "$index" | sort -Vu | tail -n 1)
     [[ -n $filename ]] || die "没有找到 Ubuntu Base $version/$arch 镜像"
     archive="$XTMOE_CACHE_DIR/ubuntu-base/$version/$filename"
 
-    curl -fL --retry 3 --connect-timeout 20 -o "$sums" "$base_url/SHA256SUMS"
+    curl -fL --retry 3 --connect-timeout 20 -o "$sums" "$base_url/SHA256SUMS" || return 1
     line=$(awk -v expected="$filename" '$2 == expected || $2 == "*" expected { print; exit }' "$sums")
     [[ -n $line ]] || die "SHA256SUMS 中没有 $filename"
 
@@ -166,14 +197,14 @@ download_ubuntu_base() {
     fi
 
     info "下载 $filename……" >&2
-    curl -fL --retry 3 --connect-timeout 20 --continue-at - -o "$archive" "$base_url/$filename"
-    (cd -- "$(dirname -- "$archive")" && printf '%s\n' "$line" | sha256sum -c -) >&2
+    curl -fL --retry 3 --connect-timeout 20 --continue-at - -o "$archive" "$base_url/$filename" || return 1
+    (cd -- "$(dirname -- "$archive")" && printf '%s\n' "$line" | sha256sum -c -) >&2 || return 1
     printf '%s' "$archive"
 }
 
-chroot_install() {
+chroot_install() (
     local yes=0 skip_systemd=0 skip_bash_sh=0 skip_docker=0 accept_network=0
-    local distro version name archive base config_base docker_requested=yes result
+    local distro version name archive base config_base docker_requested=yes result CHROOT_INSTALL_LOCK_FD
     local -a positional=()
     while (($#)); do
         case $1 in
@@ -204,12 +235,21 @@ chroot_install() {
         die '非交互完整安装必须添加 --accept-host-network-changes；如不安装 Docker，请使用 --skip-docker。'
     fi
     ((yes)) && export XTMOE_YES=1
+    if ((skip_docker == 0 && accept_network == 0)); then
+        if chroot_confirm_network_changes 0; then accept_network=1; else skip_docker=1; docker_requested=no; fi
+    fi
     ensure_dirs
     base=$(chroot_base); config_base=$(chroot_config_base)
     mkdir -p "$base" "$config_base"
-    [[ ! -e $base/$name ]] || die "Chroot 容器已存在：$name"
-    archive=$(download_ubuntu_base "$version")
+    chroot_install_preflight || return 1
+    exec {CHROOT_INSTALL_LOCK_FD}>"$config_base/$name.install.lock"
+    flock -n "$CHROOT_INSTALL_LOCK_FD" || die '该名称正在执行另一项安装；请等待后重试。'
+    [[ ! -e $base/$name && ! -L $base/$name ]] || die "Chroot 容器已存在：$name"
+    confirm "创建 Chroot '$name' 并下载、初始化 Ubuntu 24.04？" || { info '已取消'; return 0; }
+    archive=$(download_ubuntu_base "$version") || return 1
     chroot_meta_initialize "$name" "$version" "$(ubuntu_arch)" "$docker_requested"
+    chroot_meta_set "$name" systemd_requested "$((1 - skip_systemd))"
+    chroot_meta_set "$name" bash_sh_requested "$((1 - skip_bash_sh))"
     chroot_meta_set "$name" state extracting
     : >"$config_base/$name.binds"
     info "以 Root 身份解压并初始化 Chroot：$name"
@@ -220,17 +260,8 @@ chroot_install() {
     chroot_meta_set "$name" state base-ready
 
     if ((skip_systemd)); then
-        chroot_meta_set "$name" state ready
-        ok "Chroot '$name' 基础系统安装完成；已跳过 systemd 和 Docker。"
-        return 0
-    elif confirm_default_yes "安装完整 Ubuntu 标准组件和 systemd，并启动嵌套 systemd？"; then
-        :
-    else
-        chroot_meta_set "$name" docker_requested no
-        chroot_meta_set "$name" state ready
-        info '已跳过 systemd 和 Docker 初始化'
-        ok "Chroot '$name' 安装完成；执行：xtmoe chroot login $name"
-        return 0
+        chroot_basic_repair "$name"
+        return $?
     fi
 
     local -a bootstrap_args=()
@@ -243,10 +274,27 @@ chroot_install() {
         result=$?
     fi
     return "$result"
+)
+
+chroot_stage() {
+    local name=$1 stage=$2 result
+    shift 2
+    chroot_meta_set "$name" current_stage "$stage"
+    info "初始化阶段：$stage"
+    if "$@"; then
+        chroot_meta_set "$name" last_completed_stage "$stage"
+        return 0
+    else
+        result=$?
+    fi
+    chroot_mark_partial "$name" "$stage"
+    warn "阶段 $stage 未完成；保留 rootfs，可执行：xtmoe chroot repair $name"
+    return "$result"
 }
 
-chroot_bootstrap() {
+chroot_bootstrap() (
     local name=${1:?缺少容器名称} skip_bash_sh=0 skip_docker=0 accept_network=0 result
+    local CHROOT_INIT_LOCK_FD
     shift
     while (($#)); do
         case "$1" in
@@ -258,57 +306,50 @@ chroot_bootstrap() {
         shift
     done
     require_name "$name"
+    mkdir -p "$(chroot_config_base)"
+    exec {CHROOT_INIT_LOCK_FD}>"$(chroot_config_base)/$name.init.lock"
+    flock -n "$CHROOT_INIT_LOCK_FD" || { warn '该容器正在执行另一项初始化；请等待后重试。'; return 1; }
+    # Save user intent before any stage can fail. Metadata is not proof that a
+    # service is running; repair always revalidates network and live services.
+    chroot_meta_set "$name" systemd_requested 1
+    chroot_meta_set "$name" bash_sh_requested "$((1 - skip_bash_sh))"
+    if ((skip_docker)); then chroot_meta_set "$name" docker_requested no; else chroot_meta_set "$name" docker_requested yes; fi
 
-    info '写入 XTMOE 管理的公共 DNS 配置……'
-    if ! chroot_apply_dns "$name"; then
-        chroot_mark_partial "$name" dns
-        return 1
-    fi
-    info '验证 Ubuntu 软件源域名解析……'
-    if ! chroot_network_preflight "$name"; then
-        chroot_mark_partial "$name" network
-        warn "网络检查失败；修复 DNS/VPN/代理后执行：xtmoe chroot repair $name"
-        return 1
-    fi
+    chroot_stage "$name" dns chroot_apply_dns "$name" || return 1
+    chroot_stage "$name" network chroot_network_preflight "$name" || return 1
     chroot_meta_set "$name" state network-ready
 
-    info '安装 Ubuntu 标准组件、systemd 和网络工具……'
-    if ! chroot_setup "$name"; then
-        chroot_mark_partial "$name" packages
-        warn "APT 初始化失败；修复网络或 dpkg 后执行：xtmoe chroot repair $name"
-        return 1
-    fi
+    chroot_stage "$name" packages chroot_setup "$name" || return 1
+    chroot_meta_set "$name" state packages-ready
 
     if ((skip_bash_sh)); then
         info '已按要求保留 /bin/sh'
-    elif confirm_default_yes "将容器内 /bin/sh 切换为 Bash？"; then
-        if ! chroot_use_bash_sh "$name"; then
-            chroot_mark_partial "$name" bash
-            return 1
-        fi
     else
-        info '已保留默认 Shell'
+        chroot_stage "$name" bash chroot_use_bash_sh "$name" || return 1
     fi
 
-    if ! chroot_systemd_start "$name"; then
-        chroot_mark_partial "$name" systemd
-        return 1
-    fi
+    chroot_stage "$name" systemd chroot_systemd_start "$name" || return 1
+    chroot_stage "$name" systemd-verify chroot_systemd_verify "$name" || return 1
     chroot_meta_set "$name" state system-ready
 
     if ((skip_docker)); then
         chroot_meta_set "$name" docker_requested no
+        chroot_meta_set "$name" docker_state skipped-by-user
         chroot_meta_set "$name" state ready
+        chroot_meta_set "$name" failed_stage ''
+        chroot_meta_set "$name" current_stage complete
         ok "Chroot '$name' 已完成 Ubuntu/systemd 初始化；已跳过 Docker。"
         return 0
     fi
 
     chroot_meta_set "$name" docker_requested yes
+    chroot_meta_set "$name" current_stage docker
     local -a docker_args=("$name")
     ((accept_network)) && docker_args=(--accept-host-network-changes "$name")
     if chroot_docker_install "${docker_args[@]}"; then
         chroot_meta_set "$name" state ready
         chroot_meta_set "$name" failed_stage ''
+        chroot_meta_set "$name" current_stage complete
         if [[ $(chroot_meta_get "$name" docker_state 2>/dev/null || true) == skipped-by-user ]]; then
             ok "Chroot '$name' 已完成 Ubuntu/systemd 初始化；已按用户选择跳过 Docker。"
         else
@@ -320,10 +361,55 @@ chroot_bootstrap() {
     fi
     chroot_mark_partial "$name" docker
     if ((result == 2)); then
-        warn 'Ubuntu/systemd 已完成，但 Docker 被 Android 内核能力阻断。'
+        warn 'Ubuntu/systemd 已完成，但 Docker 被内核或 Root 权限条件阻断。'
         return 2
     fi
     return "$result"
+)
+
+chroot_init() {
+    local name=ubuntu argument name_set=0
+    local -a args=()
+    for argument in "$@"; do
+        case "$argument" in
+            --skip-docker|--skip-bash-sh|--accept-host-network-changes) args+=("$argument") ;;
+            -*) die "未知 init 参数：$argument" ;;
+            *) ((name_set == 0)) || die 'init 只接受一个容器名称'; name=$argument; name_set=1 ;;
+        esac
+    done
+    require_name "$name"
+    [[ -f $(chroot_base)/$name/.xtmoe-chroot ]] || die "Chroot 容器不存在：$name"
+    # Resolve bridge consent before making configuration changes, not halfway
+    # through APT/systemd setup. --yes never substitutes for this consent.
+    if [[ " ${args[*]} " != *' --skip-docker '* && " ${args[*]} " != *' --accept-host-network-changes '* ]]; then
+        if chroot_confirm_network_changes 0; then args+=(--accept-host-network-changes); else args+=(--skip-docker); fi
+    fi
+    chroot_bootstrap "$name" "${args[@]}"
+}
+
+chroot_basic_repair() (
+    local name=$1 CHROOT_INIT_LOCK_FD
+    mkdir -p "$(chroot_config_base)"
+    exec {CHROOT_INIT_LOCK_FD}>"$(chroot_config_base)/$name.init.lock"
+    flock -n "$CHROOT_INIT_LOCK_FD" || { warn '该容器正在初始化，请稍后重试。'; return 1; }
+    chroot_stage "$name" dns chroot_apply_dns "$name" || return 1
+    chroot_stage "$name" network chroot_network_preflight "$name" || return 1
+    chroot_meta_set "$name" state ready
+    chroot_meta_set "$name" failed_stage ''
+    chroot_meta_set "$name" current_stage complete
+    ok "Chroot '$name' 基础 rootfs 和网络就绪；按原选择未配置 systemd/Docker，完整初始化可执行：xtmoe chroot init $name"
+)
+
+chroot_systemd_verify() {
+    chroot_systemd_exec "$1" -- /bin/bash -lc '
+state=$(timeout --kill-after=2 60 systemctl is-system-running --wait 2>/dev/null || true)
+printf "systemd: %s\n" "$state"
+case "$state" in running|degraded) :;; *) systemctl --failed --no-pager; exit 1;; esac
+for unit in basic.target dbus.service systemd-journald.service; do
+    systemctl is-active --quiet "$unit" || { systemctl status "$unit" --no-pager; exit 1; }
+done
+if [ "$state" = degraded ]; then systemctl --failed --no-pager; printf "systemd 可操作且基础单元正常，但存在其他失败单元；未标记为 running。\n" >&2; fi
+'
 }
 chroot_login() {
     require_arg_range 0 1 "$#" 'xtmoe chroot login [名称]'
@@ -384,8 +470,11 @@ chroot_network_preflight() {
 set -e
 printf "resolv.conf:\n"
 cat /etc/resolv.conf
-printf "ports.ubuntu.com:\n"
-getent hosts ports.ubuntu.com
+case "$(dpkg --print-architecture)" in amd64|i386) host=archive.ubuntu.com;; *) host=ports.ubuntu.com;; esac
+printf "Ubuntu DNS: %s\n" "$host"
+getent ahostsv4 "$host" || { printf "DNS 解析失败；停止 APT/Docker 安装，请检查 VPN、私有 DNS 或网络。\n" >&2; exit 1; }
+printf "验证已配置的 APT 源（源签名及下载错误均视为失败）……\n"
+timeout --kill-after=5 600 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o APT::Update::Error-Mode=any update
 '
 }
 
@@ -397,19 +486,22 @@ chroot_network_check() {
 failures=0
 printf "%s\n" "--- /etc/resolv.conf ---"
 cat /etc/resolv.conf 2>&1 || failures=$((failures + 1))
-printf "%s\n" "--- getent hosts ports.ubuntu.com ---"
-getent hosts ports.ubuntu.com 2>&1 || failures=$((failures + 1))
+case "$(dpkg --print-architecture)" in amd64|i386) host=archive.ubuntu.com; path=ubuntu;; *) host=ports.ubuntu.com; path=ubuntu-ports;; esac
+printf -- "--- DNS: %s ---\n" "$host"
+getent ahostsv4 "$host" 2>&1 || failures=$((failures + 1))
 printf "%s\n" "--- ping -c 2 8.8.8.8 ---"
-if command -v ping >/dev/null 2>&1; then ping -c 2 8.8.8.8 2>&1 || true; else printf "ping 未安装\n"; fi
+if command -v ping >/dev/null 2>&1; then ping -c 2 -W 3 8.8.8.8 2>&1 || printf "ICMP 可能被限制；以 APT/HTTP 检查结果为准。\n"; else printf "ping 未安装\n"; fi
 printf "%s\n" "--- curl IPv4 Ubuntu source ---"
 if command -v curl >/dev/null 2>&1; then
-    curl -4 -I --connect-timeout 10 http://ports.ubuntu.com 2>&1 || failures=$((failures + 1))
+    for scheme in http https; do
+        curl -4 -fI --connect-timeout 10 --max-time 20 "$scheme://$host/$path/dists/noble/InRelease" 2>&1 || failures=$((failures + 1))
+    done
 else
     printf "curl 未安装\n"
 fi
 printf "%s\n" "--- proxy environment ---"
-for variable in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY; do
-    eval "value=\${$variable-}"
+for variable in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy no_proxy NO_PROXY; do
+    value=${!variable-}
     if [ -n "$value" ]; then printf "%s=set\n" "$variable"; else printf "%s=unset\n" "$variable"; fi
 done
 printf "Summary: failures=%s\n" "$failures"
@@ -427,14 +519,57 @@ chroot_cgroup_check() {
 chroot_setup() {
     require_arg_range 0 1 "$#" 'xtmoe chroot setup [名称]'
     local name=${1:-ubuntu}
-    chroot_exec "$name" -- /bin/bash -lc 'set -Eeuo pipefail; policy_created=0; cleanup_policy() { if [ "$policy_created" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi; }; trap cleanup_policy EXIT; if [ ! -e /usr/sbin/policy-rc.d ]; then printf "#!/bin/sh\\nexit 101\\n" > /usr/sbin/policy-rc.d; chmod 0755 /usr/sbin/policy-rc.d; policy_created=1; fi; apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y ubuntu-standard ca-certificates curl locales openssh-server sudo systemd-sysv dbus bash procps util-linux kmod mount iproute2 iptables iputils-ping'
+    chroot_exec "$name" -- /bin/bash -lc "$(chroot_apt_guard_script)
+dpkg --configure -a
+apt-get -o APT::Update::Error-Mode=any update
+apt-get install -y ubuntu-standard ca-certificates curl locales openssh-server sudo systemd-sysv dbus bash procps util-linux kmod mount iproute2 iptables iputils-ping
+command -v systemctl
+/usr/sbin/iptables --version
+"
+}
+
+chroot_apt_guard_script() {
+    cat <<'APT_GUARD'
+set -Eeuo pipefail
+export DEBIAN_FRONTEND=noninteractive
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+apt-get() {
+    command apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o DPkg::Lock::Timeout=30 "$@"
+}
+# Serialize package/service-policy changes, including an already running guest.
+exec 9>/run/xtmoe-apt.lock
+flock -w 30 9 || { printf '另一项 APT 操作正在执行，请稍后重试。\n' >&2; exit 1; }
+policy_dir=$(mktemp -d /usr/sbin/.xtmoe-policy.XXXXXX)
+cleanup_policy() {
+    if [ -e "$policy_dir/original" ] || [ -L "$policy_dir/original" ]; then
+        mv -Tf -- "$policy_dir/original" /usr/sbin/policy-rc.d
+    else
+        rm -f -- /usr/sbin/policy-rc.d
+    fi
+    rm -f -- "$policy_dir/guard"
+    rmdir -- "$policy_dir"
+}
+if [ -e /usr/sbin/policy-rc.d ] || [ -L /usr/sbin/policy-rc.d ]; then
+    cp -a -- /usr/sbin/policy-rc.d "$policy_dir/original"
+fi
+trap cleanup_policy EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+printf '#!/bin/sh\nexit 101\n' >"$policy_dir/guard"
+chmod 0755 "$policy_dir/guard"
+mv -Tf -- "$policy_dir/guard" /usr/sbin/policy-rc.d
+APT_GUARD
 }
 
 chroot_update_system() {
     require_arg_range 0 1 "$#" 'xtmoe chroot update-system [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
-    chroot_exec "$name" -- /bin/bash -lc 'set -Eeuo pipefail; policy_created=0; cleanup_policy() { if [ "$policy_created" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi; }; trap cleanup_policy EXIT; if [ ! -d /run/systemd/system ] && [ ! -e /usr/sbin/policy-rc.d ]; then printf "#!/bin/sh\\nexit 101\\n" >/usr/sbin/policy-rc.d; chmod 0755 /usr/sbin/policy-rc.d; policy_created=1; fi; apt-get update; DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y; if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi'
+    chroot_exec "$name" -- /bin/bash -lc "$(chroot_apt_guard_script)
+apt-get -o APT::Update::Error-Mode=any update
+apt-get dist-upgrade -y
+if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
+"
 }
 
 chroot_use_bash_sh() {
@@ -515,23 +650,15 @@ chroot_confirm_network_changes() {
 }
 
 chroot_docker_packages_script() {
+    chroot_apt_guard_script
     cat <<'DOCKER_PACKAGES'
-set -Eeuo pipefail
-policy_created=0
-cleanup_policy() { if [ "$policy_created" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi; }
-trap cleanup_policy EXIT
-if [ ! -e /usr/sbin/policy-rc.d ]; then
-    printf "#!/bin/sh\nexit 101\n" >/usr/sbin/policy-rc.d
-    chmod 0755 /usr/sbin/policy-rc.d
-    policy_created=1
-fi
 for package in docker.io docker-compose docker-compose-v2 docker-doc podman-docker containerd runc; do
     if dpkg-query -W -f="\${Status}" "$package" 2>/dev/null | grep -q "ok installed"; then
         printf "检测到冲突软件包：%s；请先人工确认并卸载。\n" "$package" >&2
         exit 1
     fi
 done
-apt-get update
+apt-get -o APT::Update::Error-Mode=any update
 DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl iptables iproute2
 install -m 0755 -d /etc/apt/keyrings
 tmp_key=/etc/apt/keyrings/docker.asc.xtmoe.tmp
@@ -546,7 +673,7 @@ architecture=$(dpkg --print-architecture)
 tmp_source=/etc/apt/sources.list.d/docker.sources.xtmoe.tmp
 printf "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n" "$codename" "$architecture" >"$tmp_source"
 mv -f "$tmp_source" /etc/apt/sources.list.d/docker.sources
-apt-get update
+apt-get -o APT::Update::Error-Mode=any update
 DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 if ! grep -qw overlay /proc/filesystems && [ ! -e /etc/docker/daemon.json ]; then
     install -d -m 0755 /etc/docker
@@ -554,6 +681,20 @@ if ! grep -qw overlay /proc/filesystems && [ ! -e /etc/docker/daemon.json ]; the
     printf "OverlayFS 不可用，已配置低性能 vfs 存储驱动。\n" >&2
 fi
 DOCKER_PACKAGES
+}
+
+chroot_docker_kernel_check() { chroot_root docker-kernel-check "$(chroot_base)" "$1"; }
+
+chroot_docker_dependencies() {
+    local name=$1 mode=${2:-systemd} packages='ca-certificates curl iptables iproute2'
+    chroot_network_preflight "$name" || return 1
+    [[ $mode != systemd ]] || packages+=' systemd-sysv dbus'
+    info '先补齐 Docker 用户态依赖，再检查 iptables 和 systemd……'
+    chroot_exec "$name" -- /bin/bash -lc "$(chroot_apt_guard_script)
+dpkg --configure -a
+apt-get install -y $packages
+/usr/sbin/iptables --version
+"
 }
 
 chroot_docker_install() {
@@ -576,14 +717,36 @@ chroot_docker_install() {
         chroot_meta_set "$name" docker_state skipped-by-user
         return 0
     fi
-    if ! chroot_systemd_start "$name"; then
+    if chroot_docker_kernel_check "$name"; then :; else
+        result=$?
+        if ((result == 2)); then
+            chroot_meta_set "$name" docker_state kernel-blocked
+            warn 'Docker 未安装：namespace/cgroup/转发等内核或 Root 权限条件未满足。'
+        else
+            chroot_meta_set "$name" docker_state check-failed
+            warn 'Docker 内核检查执行异常，未安装 Docker。'
+        fi
+        return "$result"
+    fi
+    if ! chroot_docker_dependencies "$name"; then
+        chroot_meta_set "$name" docker_state dependencies-failed
+        warn 'Docker 依赖准备失败；这是网络/APT/用户态问题，不是已确认的内核阻断。'
+        return 1
+    fi
+    if ! chroot_systemd_start "$name" || ! chroot_systemd_verify "$name"; then
         chroot_meta_set "$name" docker_state systemd-failed
         return 1
     fi
-    if ! chroot_docker_check "$name"; then
-        chroot_meta_set "$name" docker_state kernel-blocked
-        warn 'Docker 未安装：Android 内核缺少上方列出的必要能力。'
-        return 2
+    if chroot_docker_check "$name"; then :; else
+        result=$?
+        if ((result == 2)); then
+            chroot_meta_set "$name" docker_state kernel-blocked
+            warn 'Docker 未安装：内核/Root 权限或 iptables NAT 能力未通过；未修改宿主规则。'
+        else
+            chroot_meta_set "$name" docker_state prerequisites-failed
+            warn 'Docker 未安装：iptables 用户态依赖或 systemd 服务检查失败，不等同于内核不支持。'
+        fi
+        return "$result"
     fi
 
     info '配置 Docker 官方 APT 仓库并安装 Docker Engine……'
@@ -598,7 +761,7 @@ chroot_docker_install() {
         chroot_docker_logs "$name" || true
         return 1
     fi
-    if ! chroot_docker_status "$name"; then
+    if ! chroot_docker_status "$name" || ! chroot_systemd_verify "$name"; then
         chroot_meta_set "$name" docker_state daemon-failed
         chroot_docker_logs "$name" || true
         return 1
@@ -682,6 +845,10 @@ chroot_docker_direct_install() {
         info '已取消直接 dockerd 安装。'
         return 0
     fi
+    if ! chroot_docker_dependencies "$name" direct; then
+        chroot_meta_set "$name" docker_state dependencies-failed
+        return 1
+    fi
     info '安装 Docker Engine（direct dockerd 兼容模式，不依赖 systemctl）……'
     if ! chroot_exec "$name" -- /bin/bash -lc "$(chroot_docker_packages_script)"; then
         chroot_meta_set "$name" docker_state install-failed
@@ -745,10 +912,15 @@ chroot_repair() {
     done
     require_name "$name"
     [[ -f $(chroot_base)/$name/.xtmoe-chroot ]] || die "Chroot 容器不存在：$name"
+    if [[ $(chroot_meta_get "$name" systemd_requested 2>/dev/null || printf 1) == 0 ]]; then
+        chroot_basic_repair "$name"
+        return $?
+    fi
     local -a args=()
     [[ $(chroot_meta_get "$name" docker_requested 2>/dev/null || printf no) == yes ]] || args+=(--skip-docker)
+    [[ $(chroot_meta_get "$name" bash_sh_requested 2>/dev/null || printf 0) == 1 ]] || args+=(--skip-bash-sh)
     ((accept_network)) && args+=(--accept-host-network-changes)
-    chroot_bootstrap "$name" "${args[@]}"
+    chroot_init "$name" "${args[@]}"
 }
 
 chroot_reinstall() {
@@ -769,12 +941,14 @@ chroot_reinstall() {
     fi
     ((yes)) && export XTMOE_YES=1
     confirm "重装 Chroot 容器 '$name'？rootfs 和 Docker 数据都会永久删除且不会自动备份" || { info '已取消'; return 0; }
+    chroot_install_preflight || return 1
+    download_ubuntu_base 24.04 >/dev/null || return 1
     base=$(chroot_base); config_base=$(chroot_config_base)
-    chroot_root stop "$base" "$name"
-    chroot_root remove "$base" "$name"
+    chroot_root stop "$base" "$name" || return 1
+    chroot_root remove "$base" "$name" || return 1
     rm -f -- "$config_base/$name.binds" "$config_base/$name.meta"
     local -a install_args=()
-    ((yes)) && install_args+=(--yes)
+    install_args+=(--yes)
     ((skip_docker)) && install_args+=(--skip-docker)
     ((accept_network)) && install_args+=(--accept-host-network-changes)
     chroot_install "${install_args[@]}" ubuntu 24.04 "$name"
@@ -815,14 +989,19 @@ chroot_main() {
     local action=${1:-help}
     shift || true
     [[ $action == help || $action == -h || $action == --help ]] && { chroot_help; return; }
-    [[ $action == prepare ]] && { chroot_prepare; return; }
+    [[ $action == prepare ]] && { chroot_prepare "$@"; return; }
+    if [[ $action == install || $action == add ]]; then
+        require_termux
+        chroot_install "$@"
+        return $?
+    fi
     require_chroot
     ensure_dirs
     case "$action" in
-        install|add) chroot_install "$@" ;;
         login|shell) chroot_login "$@" ;;
         exec) chroot_exec "$@" ;;
         setup) chroot_setup "$@" ;;
+        init) chroot_init "$@" ;;
         repair) chroot_repair "$@" ;;
         update-system) chroot_update_system "$@" ;;
         reinstall) chroot_reinstall "$@" ;;
@@ -868,4 +1047,3 @@ chroot_main() {
         *) die "未知 Chroot 操作：$action" ;;
     esac
 }
-

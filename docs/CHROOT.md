@@ -22,7 +22,7 @@ xtmoe chroot prepare
 xtmoe doctor
 ```
 
-`prepare` 安装 `tsu`、`mount-utils`、`coreutils`、`curl` 和 `tar`。Root 授权由 Magisk、KernelSU 或 APatch 等外部方案提供。
+`prepare` 安装 `tsu`、`mount-utils`、`util-linux`、`coreutils`、`curl` 和 `tar`。全新 `install` 也会自动检测并补齐缺少的宿主依赖，在下载前检查 Root、架构、必需命令，以及数据/缓存所在文件系统是否各至少有 2 GiB 可用空间；如果二者在同一文件系统，此检查不是合计 4 GiB 保证，实际应为 Ubuntu 标准组件和 Docker 数据预留更多空间。Root 授权仍由 Magisk、KernelSU 或 APatch 等外部方案提供。
 
 不要这样运行：
 
@@ -41,18 +41,20 @@ xtmoe chroot install ubuntu 24.04 ubuntu
 
 流程如下：
 
-1. 根据 `uname -m` 选择 `arm64`、`armhf` 或 `amd64`；
+1. 检查宿主依赖、Root 和空间，根据 `uname -m` 选择 `arm64`、`armhf` 或 `amd64`；
 2. 从 Canonical Ubuntu Base 24.04 发布页寻找最新的 24.04.x 镜像；
 3. 下载官方 `SHA256SUMS`；
 4. 校验镜像；
 5. 以 Root 保留原始 UID/GID 解压；
-6. 写入固定公共 DNS `1.1.1.1`、`8.8.8.8` 并验证 `ports.ubuntu.com`；
-7. 初始化 `/etc/hostname`、`/etc/hosts`、名称解析策略、`/etc/resolv.conf`、`/etc/mtab` 和运行目录；
-8. 默认确认后安装 Ubuntu 标准组件和 systemd，把 `/bin/sh` 切换为 Bash，并启动嵌套 systemd；
-9. 检查 namespace、cgroup、iptables 和转发能力；只有检查通过才安装 Docker；
+6. 初始化 hostname、hosts、运行目录和普通文件形式的 resolv.conf，固定 DNS 为 `1.1.1.1`、`8.8.8.8`，修正 `hosts: files dns`；
+7. 按原生架构解析 Ubuntu 官方源域名，并执行严格的 APT update，实际验证配置源的下载和签名，不把“DNS 能解析”当作网络验收通过；
+8. 安装 Ubuntu 标准组件、systemd、D-Bus 和网络工具，默认切换 `/bin/sh` 到 Bash，启动并验证嵌套 systemd 及基础服务；使用 `--skip-bash-sh` 保留原 Shell；
+9. Docker 先做内核/权限检查，再补齐用户态依赖，最后检查 iptables 执行、独立网络 namespace 中的 NAT 查询和 systemd；全通过才添加官方 Docker 源及安装 Docker；
 10. 启用 `containerd`/`docker`，并通过 `docker info` 和 `hello-world` 实际验收。
 
-初始化阶段记录为 `base-ready`、`network-ready`、`system-ready`、`docker-ready`、`ready` 或 `partial`。网络、APT、systemd 或 Docker 中途失败时保留 rootfs，修复外部条件后继续：
+创建确认和 Docker 宿主网络风险确认各自独立，`--yes` 不能代替后者。拒绝 Docker 风险仍可完成 Ubuntu/systemd。`--skip-systemd` 则仅准备基础 rootfs 与网络，同时跳过 Docker；后续可使用 `init` 补全。
+
+阶段状态包括 `extracting`、`base-ready`、`network-ready`、`packages-ready`、`system-ready`、`docker-ready`、`ready` 和 `partial`。元数据还保存 `current_stage`、`last_completed_stage`、`failed_stage` 与 systemd/Bash/Docker 安装选择。网络、APT、systemd 或 Docker 中途失败时保留 rootfs，修复外部条件后继续：
 
 ```sh
 xtmoe chroot repair ubuntu
@@ -63,6 +65,24 @@ xtmoe chroot repair ubuntu
 ```sh
 xtmoe chroot repair --accept-host-network-changes ubuntu
 ```
+
+`repair` 重新验证实时网络/服务，幂等补齐软件包，不重新下载解压 rootfs；保留之前选择的跳过 Bash/Docker 设置。仅基础 rootfs 的安装不会因修复而静默启用 systemd。初始化有容器级锁，重复并发执行会拒绝；APT 和临时服务策略修改另行串行化。
+
+## 已有 Ubuntu 一键配置
+
+已有容器、旧版初始化不完整，或希望主动补全 systemd/Docker 时，无需重装：
+
+```sh
+xtmoe chroot init ubuntu
+# 不安装 Docker，仍完整配置网络、Ubuntu 基础组件和 systemd：
+xtmoe chroot init --skip-docker ubuntu
+# 自动化完整配置；单独接受宿主网络风险：
+xtmoe chroot init --accept-host-network-changes ubuntu
+# 不改变原 /bin/sh：
+xtmoe chroot init --skip-docker --skip-bash-sh ubuntu
+```
+
+在 `xtmoe on` → Chroot 中，全新系统选择“一键安装”，已有系统选择“一键配置已有 Ubuntu”，后者按数字选择容器。`init` 默认启用 systemd、Bash 和严格 Docker 流程；`repair` 才是沿用历史选择的续跑入口。
 
 目前不支持跨架构 Chroot。需要跨架构时请使用 PRoot 加 QEMU。
 
@@ -82,7 +102,7 @@ xtmoe chroot login ubuntu
 xtmoe chroot setup ubuntu
 ```
 
-`setup` 会更新 apt，并安装 `ubuntu-standard`、CA 证书、curl、locale、OpenSSH Server、sudo、systemd、D-Bus、Bash、procps、util-linux、kmod、mount、iproute2、iptables 和 iputils-ping。安装期间临时阻止包脚本启动宿主服务，之后由嵌套 systemd 管理。
+`setup` 仅负责基础包，不等于完整初始化；一键操作请使用 `init`。基础包包括 `ubuntu-standard`、CA 证书、curl、locale、OpenSSH Server、sudo、systemd、D-Bus、Bash、procps、util-linux、kmod、mount、iproute2、iptables 和 iputils-ping。安装时先配置未完成的 dpkg，再执行严格 APT update。临时 `policy-rc.d` 阻止包脚本自动启动服务，成功或失败时恢复原策略（包含原符号链接），之后由嵌套 systemd 管理服务。不会自动安装或启动 1Panel，也不会设置 SSH 密码；Ubuntu 服务启用情况会影响宿主共享网络上的监听端口，需按 [日常操作](OPERATIONS.md#ssh) 检查 SSH 配置与访问范围。
 
 完整网络诊断会打印 DNS、域名解析、数字 IP Ping、Ubuntu 源 HTTP 访问和代理变量是否设置：
 
@@ -121,13 +141,13 @@ XTMOE 只挂载内核真实提供的 cgroup 文件系统。缺少的 `pids`、`d
 
 ## Bash 作为 `/bin/sh`
 
-全新安装默认询问是否把 `/bin/sh` 切换为 Bash；接受后即可兼容声明 `#!/bin/sh` 却使用 Bash 数组的第三方脚本。也可以随时显式执行：
+完整安装及 `init` 默认把 `/bin/sh` 切换为 Bash，以兼容声明 `#!/bin/sh` 却使用 Bash 数组的第三方脚本。也可以随时显式执行：
 
 ```sh
 xtmoe chroot use-bash-sh ubuntu
 ```
 
-该命令通过 dash 的包配置切换默认 Shell，并把 `/bin/sh` 以相对链接指向 Bash，避免 usrmerge rootfs 在宿主侧被误判。原生 Ubuntu 默认使用 dash；XTMOE 专用容器默认选择 Bash，以兼容 1Panel 等安装器。拒绝切换时使用 `--skip-bash-sh`，或在安装确认提示中回答 `n`。
+该命令通过 dash 的包配置切换默认 Shell，并把 `/bin/sh` 以相对链接指向 Bash。原生 Ubuntu 默认使用 dash；XTMOE 专用容器默认选择 Bash，以兼容部分第三方安装器。拒绝切换时使用 `--skip-bash-sh`；修复会保留记录的选择，旧版未记录此项的容器默认不改动 Shell。
 
 ## Docker 生命周期
 
@@ -137,7 +157,7 @@ xtmoe chroot use-bash-sh ubuntu
 xtmoe chroot docker-check ubuntu
 ```
 
-它实际尝试创建 mount、PID、network、IPC 和 UTS namespace，并检查 cgroup hierarchy、`pids`、v1 `devices`、OverlayFS、IPv4 转发、iptables 和嵌套 systemd。只要存在 `[缺失]`，Docker 安装就会被严格跳过。
+它实际尝试创建 mount、PID、network、IPC 和 UTS namespace，并检查 cgroup hierarchy、`pids`、v1 `devices`、OverlayFS、IPv4 转发、iptables 和嵌套 systemd。iptables 的绝对路径/alternatives 链接按容器根目录解析，不会错误解析到 Android 的 `/etc`。NAT 查询仅在新建的临时 network namespace 内执行，不修改宿主规则、不自动切换 nft/legacy 后端。只要存在 `[缺失]`，Docker 安装就会被跳过；退出状态 `1` 表示软件/服务或操作异常，`2` 表示内核/权限阻断，不能混报。
 
 检查通过后安装 Docker 官方仓库版本：
 
@@ -316,4 +336,3 @@ xtmoe chroot reinstall ubuntu
 ## systemd 兼容边界
 
 systemd 必须在 PID namespace 中作为 PID 1，并使用可写 cgroup。XTMOE 会在内核允许时附加 IPC、UTS 和 cgroup namespace，但不能补造 Android 内核未编译的 controllers。缺少 pids controller 时 systemd 可能启动，但 Docker/1Panel 仍可能降级或失败。`systemd-container` 或 `systemctl` 文件存在并不代表 Android 内核已经满足运行条件。
-

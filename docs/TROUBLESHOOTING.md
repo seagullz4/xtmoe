@@ -218,6 +218,20 @@ xtmoe chroot systemd-status ubuntu
 
 若 `systemd-check` 报缺失，说明 Android 内核条件不满足；切换 Shell 不能修复 cgroup、PID namespace 或 systemd 缺失。
 
+## Docker 检查报告缺少 iptables
+
+先区分软件包缺失、alternatives 多层绝对链接被旧版误判，以及内核 NAT/权限受限。不要直接清空宿主规则、切换 legacy/nft 后端或关闭 iptables。升级已安装命令后，已有容器可以执行：
+
+```sh
+xtmoe chroot init --skip-docker ubuntu
+xtmoe chroot docker-check ubuntu
+xtmoe chroot docker-install ubuntu
+```
+
+第一步补齐网络、基础包、systemd 及 iptables；第三步仍需单独接受 Docker bridge 风险。新版 Docker 安装先做内核预检，再补用户态依赖、检查 iptables 执行和临时 network namespace 的 NAT 查询，最后才添加 Docker 源。缺包/APT/服务异常返回 `1`，内核/Root 权限失败返回 `2`，两者分别记录而非一概提示“内核缺失”。
+
+如果 NAT 查询失败，保留检查的原始错误；可能是后端不受支持、内核模块或权限受限。安装 iptables 软件包不能保证内核 netfilter 可用，只有 daemon 和真实容器测试通过才算 Docker 完全可用。
+
 ## Android 杀死后台任务
 
 关闭 Termux 的电池优化，允许后台活动，并避免清理最近任务。部分 Android 12+ 设备还受 Phantom Process Killer 限制；具体设置随厂商和系统版本变化。
