@@ -354,8 +354,10 @@ systemd_exec() {
     local -a nsenter_args
     (($#)) || die '缺少要在 systemd 容器内执行的命令'
     pid=$(systemd_target_pid)
-    nsenter_args=(--target "$pid" --pid --mount --ipc --uts)
-    if nsenter --help 2>&1 | grep -q -- '--cgroup'; then
+    nsenter_args=(--target "$pid" --pid --mount)
+    [[ -e /proc/$pid/ns/ipc ]] && nsenter_args+=(--ipc)
+    [[ -e /proc/$pid/ns/uts ]] && nsenter_args+=(--uts)
+    if [[ -e /proc/$pid/ns/cgroup ]] && nsenter --help 2>&1 | grep -q -- '--cgroup'; then
         nsenter_args+=(--cgroup)
     fi
     nsenter "${nsenter_args[@]}" -- \
