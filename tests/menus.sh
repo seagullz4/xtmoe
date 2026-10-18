@@ -40,6 +40,25 @@ assert_ok 'Port mapping prompts preserve address, protocol and argument boundari
     [[ $(<"$log") == "port-add ubuntu --listen 192.168.0.6:18080 --to 80 --proto udp" ]]
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
+assert_ok 'Port menu accepts automatic mappings and defaults a bare port to auto' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/manager.sh"
+    log="$2/auto-port-menu"; chroot_main() { printf "%s\n" "$*" >>"$log"; }
+    printf "18080\n80\ntcp\n" | menu_dispatch_action chroot port-add ubuntu
+    printf "auto:18080\ntcp\n" | menu_dispatch_action chroot port-remove ubuntu
+    [[ $(head -n 1 "$log") == "port-add ubuntu --listen auto:18080 --to 80 --proto tcp" && $(tail -n 1 "$log") == "port-remove ubuntu --listen auto:18080 --proto tcp" ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Maintenance menu confirms force updates and cancellation never calls updater' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/manager.sh"
+    log="$2/force-menu"; update_main() { printf "%s\n" "$*" >>"$log"; }
+    confirm() { return 1; }
+    printf "5\n0\n" | menu_maintenance
+    [[ ! -e $log ]] || exit 1
+    confirm() { return 0; }
+    printf "5\n" | menu_maintenance
+    [[ $(<"$log") == --force ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
 assert_ok 'Menu command execution is explicit and keeps the command as one argument' bash -c '
     source "$1/src/lib/common.sh"; source "$1/src/lib/manager.sh"
     log="$2/exec-menu"; chroot_main() { printf "%s\n" "$@" >"$log"; }

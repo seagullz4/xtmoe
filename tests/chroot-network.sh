@@ -22,10 +22,108 @@ assert_ok 'Private port parser rejects malformed or linked configuration' bash -
     NET_PORTS="$2/private-ports"
     printf "192.168.0.6|28081|18081|tcp\n" >"$NET_PORTS"
     [[ $(net_port_lines) == "192.168.0.6|28081|18081|tcp" ]] || exit 1
+    printf "auto|28081|18081|tcp\n" >"$NET_PORTS"
+    [[ $(net_port_lines) == "auto|28081|18081|tcp" ]] || exit 1
+    printf "auto;id|28081|18081|tcp\n" >"$NET_PORTS"
+    if net_port_lines; then exit 1; fi
     printf "192.168.0.6|28081|18081|tcp|extra\n" >"$NET_PORTS"
     if net_port_lines; then exit 1; fi
     ln -s "$NET_PORTS" "$NET_PORTS.link"; NET_PORTS+=.link
     if net_port_lines; then exit 1; fi
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Auto LAN discovery excludes VPN, cellular, bridges, public and invalid addresses' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/xtmoe-network"
+    ip() { printf "%s\n" \
+        "2: wlan0 inet 192.168.1.123/24 brd 192.168.1.255 scope global wlan0" \
+        "3: ap0 inet 192.168.43.1/24 scope global ap0" \
+        "4: eth0@if1 inet 10.0.0.3/24 scope global eth0" \
+        "5: tun0 inet 10.8.0.2/24 scope global tun0" \
+        "6: ccmni0 inet 10.9.0.2/24 scope global ccmni0" \
+        "7: rmnet_data0 inet 10.9.0.3/24 scope global rmnet_data0" \
+        "8: docker0 inet 172.17.0.1/16 scope global docker0" \
+        "9: xnfixture inet 10.203.0.1/30 scope global xnfixture" \
+        "2: wlan0 inet 203.0.113.2/24 scope global wlan0" \
+        "2: wlan0 inet 192.168.1.124/24 scope global tentative wlan0" \
+        "2: wlan0 inet 999.168.1.1/24 scope global wlan0"; }
+    [[ $(net_auto_addresses) == $(printf "10.0.0.3\n192.168.1.123\n192.168.43.1") ]]
+' _ "$ROOT_DIR"
+
+assert_ok 'Auto mappings rebind A to B, pause offline, recover and retry occupied ports' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/xtmoe-network"
+    NET_SLOT=0; NET_HOST=xnfixture; NET_CHAIN=XNfixture; NET_RUN="$2/auto-refresh"; mkdir "$NET_RUN"
+    NET_PORTS="$NET_RUN/ports"; printf "auto|18080|80|tcp\n192.168.1.123|18081|81|udp\n" >"$NET_PORTS"
+    log="$NET_RUN/rules"; lan=192.168.1.123; occupied=0
+    warn() { :; }; net_running() { return 0; }
+    net_egress() { NET_EGRESS=tun0; NET_EGRESS_TABLE=100; }
+    ip() {
+        if [[ $* == *addr* && -n $lan ]]; then printf "2: wlan0 inet %s/24 scope global wlan0\n" "$lan"; fi
+        return 0
+    }
+    ss() { if ((occupied)); then printf "tcp LISTEN 0 128 0.0.0.0:18080 *:*\n"; fi; return 0; }
+    net_ipt() { printf "%s\n" "$*" >>"$log"; [[ $* != *" -C "* && $1 != -C ]]; }
+    net_refresh
+    grep -F -- "-d 192.168.1.123/32 -p tcp --dport 18080 -j DNAT" "$log" || exit 1
+    : >"$log"; lan=192.168.99.123; net_refresh
+    grep -F -- "-d 192.168.99.123/32 -p tcp --dport 18080 -j DNAT" "$log" || exit 1
+    if grep -F -- "-d 192.168.1.123/32" "$log"; then exit 1; fi
+    : >"$log"; lan=""; net_refresh
+    grep -F -- "-t nat -F XNfixture" "$log" || exit 1
+    if grep -F -- "-j DNAT" "$log"; then exit 1; fi
+    [[ $(net_ports_status) == *waiting-lan* ]] || exit 1
+    : >"$log"; lan=192.168.99.123; occupied=1; net_refresh
+    if grep -F -- "-j DNAT" "$log"; then exit 1; fi
+    [[ $(net_ports_status) == *port-occupied* ]] || exit 1
+    : >"$log"; occupied=0; net_refresh
+    grep -F -- "-d 192.168.99.123/32 -p tcp --dport 18080 -j DNAT" "$log" || exit 1
+    [[ $(net_ports_status) == *pending* ]] || exit 1
+    printf /fixture/iptables >"$NET_RUN/iptables"
+    net_ipt() { return 0; }
+    [[ $(net_ports_status) == *"auto:18080 => 192.168.99.123:18080 -> 80/tcp [active]"* ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Auto reservations survive offline creation and reject fixed or cross-container overlap' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/xtmoe-network"
+    BASE="$2/auto-reservations"; CONTAINER="$BASE/first"; mkdir -p "$CONTAINER" "$BASE/second"
+    NET_PORTS="$CONTAINER/.xtmoe-ports"; NET_MODE=isolated
+    die() { exit 1; }; net_paths() { :; }; net_lock() { :; }; net_unlock() { :; }; net_running() { return 1; }
+    net_lan_address() { return 0; }; ss() { :; }
+    net_port_change add --listen auto:18080 --to 80 --proto tcp
+    [[ $(net_port_lines) == "auto|18080|80|tcp" ]] || exit 1
+    if (net_port_change add --listen 192.168.1.123:18080 --to 81 --proto tcp); then exit 1; fi
+    CONTAINER="$BASE/second"; NET_PORTS="$CONTAINER/.xtmoe-ports"
+    if (net_port_change add --listen auto:18080 --to 82 --proto tcp); then exit 1; fi
+    net_port_change add --listen auto:18080 --to 83 --proto udp
+    net_port_change remove --listen auto:18080 --proto udp
+    [[ -z $(net_port_lines) ]] || exit 1
+    CONTAINER="$BASE/first"; NET_PORTS="$CONTAINER/.xtmoe-ports"
+    net_port_change remove --listen auto:18080 --proto tcp
+    net_port_change add --listen 192.168.1.123:18080 --to 80 --proto tcp
+    CONTAINER="$BASE/second"; NET_PORTS="$CONTAINER/.xtmoe-ports"
+    if (net_port_change add --listen auto:18080 --to 80 --proto tcp); then exit 1; fi
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Auto mappings report each LAN and fail closed when listener inspection fails' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/xtmoe-network"
+    ss() { printf "udp UNCONN 0 0 192.168.1.123:18080 *:*\n"; }
+    result=$(net_resolved_ports "auto|18080|80|udp" $'"'"'192.168.1.123\n192.168.43.1'"'"')
+    [[ $result == *"auto|192.168.1.123|18080|80|udp|port-occupied"* && $result == *"auto|192.168.43.1|18080|80|udp|ready"* ]] || exit 1
+    ss() { return 1; }
+    [[ $(net_resolved_ports "auto|18080|80|tcp" "192.168.1.123") == *listener-check-failed ]]
+' _ "$ROOT_DIR"
+
+assert_ok 'Adding auto mapping to a pinned old watcher requires a container restart' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/xtmoe-network"
+    fixture="$2/legacy-watcher"; mkdir "$fixture"
+    net_paths() { NET_MODE=isolated; NET_RUN=$fixture; NET_PORTS="$fixture/ports"; }
+    net_lock() { :; }; net_unlock() { :; }; net_running() { return 0; }; die() { exit 1; }
+    if (net_port_change add --listen auto:18080 --to 80); then exit 1; fi
+    [[ ! -e $fixture/ports ]]
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
 assert_ok 'Port reservation distinguishes protocol, explicit address and wildcard listeners' bash -c '

@@ -172,8 +172,8 @@ net_rule_ensure() {
 net_egress() {
     local route word index
     local -a words=()
-    route=$(ip -4 route get 1.1.1.1) || return 1
     NET_EGRESS='' NET_EGRESS_TABLE=main
+    route=$(ip -4 route get 1.1.1.1) || return 1
     read -r -a words <<<"$route"
     for ((index=0;index<${#words[@]};index++)); do
         word=${words[index]}
@@ -229,35 +229,87 @@ net_port_lines() {
     [[ -f $NET_PORTS ]] || return 0
     local address host guest proto extra
     while IFS='|' read -r address host guest proto extra; do
-        net_ipv4 "$address" && net_port "$host" && net_port "$guest" && [[ $proto == tcp || $proto == udp ]] && [[ -z $extra ]] || return 1
+        { [[ $address == auto ]] || net_ipv4 "$address"; } && net_port "$host" && net_port "$guest" && [[ $proto == tcp || $proto == udp ]] && [[ -z $extra ]] || return 1
         printf '%s|%s|%s|%s\n' "$address" "$host" "$guest" "$proto"
     done <"$NET_PORTS"
 }
 
-net_lan_address() {
+net_private_address() {
     net_ipv4 "$1" || return 1
     case "$1" in 10.*|192.168.*) ;; 172.*) local second=${1#*.}; second=${second%%.*}; ((10#$second>=16 && 10#$second<=31)) || return 1 ;; *) return 1 ;; esac
+}
+
+net_lan_address() {
+    net_private_address "$1" || return 1
     ip -4 -o addr show | awk -v ip="$1" '{split($4,a,"/"); if (a[1] == ip) found=1} END {exit !found}'
 }
 
+net_lan_interface() {
+    # Never choose a VPN/default egress or a container bridge as a LAN listener.
+    [[ $1 =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || return 1
+    [[ -d /sys/class/net/$1/wireless || -e /sys/class/net/$1/phy80211 ]] && return 0
+    [[ $1 =~ ^(wlan|swlan|ap|softap|eth|rndis|usb)[0-9]+$ || $1 =~ ^en[a-zA-Z0-9]+$ ]]
+}
+
+net_auto_addresses() {
+    local snapshot index interface family cidr rest
+    snapshot=$(ip -4 -o addr show up scope global) || return 1
+    while read -r index interface family cidr rest; do
+        [[ $family == inet && $rest != *tentative* && $rest != *dadfailed* && $rest != *deprecated* ]] || continue
+        interface=${interface%%@*}
+        net_lan_interface "$interface" && net_private_address "${cidr%/*}" || continue
+        printf '%s\n' "${cidr%/*}"
+    done <<<"$snapshot" | sort -u
+}
+
 net_port_busy() {
-    local address=$1 host=$2 proto=$3
-    ss -H -lntu | awk -v address="$address" -v port=":$host" -v proto="$proto" '
+    local address=$1 host=$2 proto=$3 listeners
+    listeners=$(ss -H -lntu) || return 2
+    awk -v address="$address" -v port=":$host" -v proto="$proto" '
         $1 == proto && $5 ~ port"$" {
             local_address=$5; sub(/:[0-9]+$/, "", local_address)
             if (local_address==address || local_address=="*" || local_address=="0.0.0.0" || local_address=="[::]") found=1
-        } END {exit !found}'
+        } END {exit !found}' <<<"$listeners"
+}
+
+net_resolved_ports() {
+    local ports=$1 automatic=$2 selector address host guest proto addresses state result
+    while IFS='|' read -r selector host guest proto; do
+        [[ -n $selector ]] || continue
+        addresses=$selector
+        if [[ $selector == auto ]]; then
+            addresses=$automatic
+            if [[ -z $addresses ]]; then
+                printf 'auto||%s|%s|%s|waiting-lan\n' "$host" "$guest" "$proto"
+                continue
+            fi
+        fi
+        while IFS= read -r address; do
+            state=ready
+            if [[ $selector != auto ]] && ! net_lan_address "$address"; then
+                state='address-unavailable'
+            else
+                result=0
+                net_port_busy "$address" "$host" "$proto" || result=$?
+                case "$result" in 0) state='port-occupied' ;; 1) ;; *) state='listener-check-failed' ;; esac
+            fi
+            printf '%s|%s|%s|%s|%s|%s\n' "$selector" "$address" "$host" "$guest" "$proto" "$state"
+        done <<<"$addresses"
+    done <<<"$ports"
 }
 
 net_refresh() {
     net_running || return 0
-    local ports address host guest proto egress_ok=0 old_table signature old_signature=''
+    local ports automatic resolved selector state address host guest proto egress_ok=0 old_table signature old_signature=''
     net_addresses
     ports=$(net_port_lines) || return 1
+    automatic=$(net_auto_addresses) || return 1
+    resolved=$(net_resolved_ports "$ports" "$automatic") || return 1
     net_egress && egress_ok=1
-    signature="$egress_ok|$NET_EGRESS|$NET_EGRESS_TABLE|$ports|$(ip -4 -o addr show)"
+    signature="$egress_ok|$NET_EGRESS|$NET_EGRESS_TABLE|$resolved|$(ip -4 -o addr show)"
     [[ ! -f $NET_RUN/signature ]] || old_signature=$(<"$NET_RUN/signature")
     [[ $signature != "$old_signature" ]] || return 0
+    rm -f "$NET_RUN/signature"
     # Keep this veth closed while replacing rules; failures leave it closed until retry.
     net_ipt -C FORWARD -i "$NET_HOST" -j DROP 2>/dev/null || net_ipt -I FORWARD 1 -i "$NET_HOST" -j DROP || return
     net_ipt -C FORWARD -o "$NET_HOST" -j DROP 2>/dev/null || net_ipt -I FORWARD 1 -o "$NET_HOST" -j DROP || return
@@ -288,14 +340,13 @@ net_refresh() {
     net_ipt -t nat -S "${NET_CHAIN}S" >/dev/null 2>&1 || net_ipt -t nat -N "${NET_CHAIN}S" || return
     net_ipt -t nat -F "${NET_CHAIN}S" || return
     net_ipt -A "$NET_CHAIN" -i "$NET_HOST" -s "$NET_GUEST/32" -j ACCEPT || return
-    while IFS='|' read -r address host guest proto; do
-        [[ -n $address ]] || continue
-        if ! net_lan_address "$address"; then warn "映射未生效：$address:$host（地址不在手机上）"; continue; fi
-        if net_port_busy "$address" "$host" "$proto"; then warn "映射未生效：$address:$host（宿主端口已占用）"; continue; fi
+    while IFS='|' read -r selector address host guest proto state; do
+        [[ -n $selector ]] || continue
+        if [[ $state != ready ]]; then warn "映射未生效：$selector:$host/$proto [$state]"; continue; fi
         net_ipt -t nat -A "$NET_CHAIN" -d "$address/32" -p "$proto" --dport "$host" -j DNAT --to-destination "$NET_GUEST:$guest" || return
         net_ipt -A "$NET_CHAIN" -o "$NET_HOST" -d "$NET_GUEST/32" -p "$proto" --dport "$guest" -m conntrack --ctstate DNAT -j ACCEPT || return
         net_ipt -t nat -A "${NET_CHAIN}S" -o "$NET_HOST" -d "$NET_GUEST/32" -p "$proto" --dport "$guest" -m conntrack --ctstate DNAT -j SNAT --to-source "$NET_GATEWAY" || return
-    done <<<"$ports"
+    done <<<"$resolved"
     net_ipt -A "$NET_CHAIN" -o "$NET_HOST" -j DROP || return
     net_ipt -A "$NET_CHAIN" -i "$NET_HOST" -j DROP || return
     if ((egress_ok)); then net_ipt -t nat -A "${NET_CHAIN}S" -s "$NET_GUEST/32" -o "$NET_EGRESS" -j MASQUERADE || return; fi
@@ -372,6 +423,7 @@ net_create_locked() {
     if [[ ! -f $NET_ROOT/forwarding ]]; then printf '%s\n' "$forwarding" >"$NET_ROOT/forwarding"; fi
     [[ $forwarding == 1 ]] || sysctl -q -w net.ipv4.ip_forward=1 || return
     net_refresh || return
+    printf '1\n' >"$NET_RUN/auto-rebind"
     nohup "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" _net-watch "$BASE" "$CONTAINER_NAME" \
         {NET_LOCK_FD}>&- </dev/null >"$NET_RUN/watch.log" 2>&1 &
     net_record_pid "$!" "$NET_RUN/watcher"
@@ -385,7 +437,7 @@ net_cleanup_locked() {
     while ip -4 rule del priority "$((NET_PRIORITY+30))" iif "$NET_HOST" unreachable 2>/dev/null; do :; done
     ip link show "$NET_HOST" >/dev/null 2>&1 && ip link delete "$NET_HOST" || true
     net_kill_record "$NET_RUN/holder"
-    rm -f "$NET_RUN/signature" "$NET_RUN/egress" "$NET_RUN/master" "$NET_RUN/iptables"
+    rm -f "$NET_RUN/signature" "$NET_RUN/egress" "$NET_RUN/master" "$NET_RUN/iptables" "$NET_RUN/auto-rebind"
     for file in "$NET_ROOT"/*/holder; do net_pid_alive "$file" && remaining=1; done
     if ((remaining == 0)) && [[ -f $NET_ROOT/forwarding ]]; then
         if [[ $(<"$NET_ROOT/forwarding") == 0 && $(cat /proc/sys/net/ipv4/ip_forward) == 1 ]]; then sysctl -q -w net.ipv4.ip_forward=0 || return; fi
@@ -555,19 +607,27 @@ net_status() {
 }
 
 net_ports_status() {
-    local address host guest proto state lines
+    local address host guest proto state lines automatic resolved selector
     lines=$(net_port_lines) || return 1
-    while IFS='|' read -r address host guest proto; do
-        [[ -n $address ]] || continue
-        state=stopped
-        if net_running; then
-            state=active
-            net_lan_address "$address" || state='address-unavailable'
-            if net_port_busy "$address" "$host" "$proto"; then state='port-occupied'; fi
-            [[ ! -f $NET_RUN/signature ]] && state=pending
+    automatic=$(net_auto_addresses) || return 1
+    resolved=$(net_resolved_ports "$lines" "$automatic") || return 1
+    while IFS='|' read -r selector address host guest proto state; do
+        [[ -n $selector ]] || continue
+        if ! net_running; then state=stopped
+        elif [[ $state == ready ]]; then
+            state=pending
+            if [[ -f $NET_RUN/signature ]]; then
+                net_addresses
+                NET_IPTABLES=$(<"$NET_RUN/iptables")
+                if net_ipt -t nat -C "$NET_CHAIN" -d "$address/32" -p "$proto" --dport "$host" -j DNAT --to-destination "$NET_GUEST:$guest" 2>/dev/null; then state=active; fi
+            fi
         fi
-        printf '%s:%s -> %s/%s [%s]\n' "$address" "$host" "$guest" "$proto" "$state"
-    done <<<"$lines"
+        if [[ $selector == auto ]]; then
+            printf 'auto:%s => %s -> %s/%s [%s]\n' "$host" "${address:+$address:$host}" "$guest" "$proto" "$state"
+        else
+            printf '%s:%s -> %s/%s [%s]\n' "$address" "$host" "$guest" "$proto" "$state"
+        fi
+    done <<<"$resolved"
 }
 
 net_mode_set() {
@@ -589,22 +649,30 @@ net_port_change() {
         case "$1" in --listen) listen=$2 ;; --to) guest=$2 ;; --proto) proto=$2 ;; *) die '未知端口参数' ;; esac
         shift 2
     done
-    [[ $listen == *:* && ( $proto == tcp || $proto == udp ) ]] || die '需要 --listen IPv4:端口 [--proto tcp|udp]'
+    [[ $listen == *:* && ( $proto == tcp || $proto == udp ) ]] || die '需要 --listen auto:端口或IPv4:端口 [--proto tcp|udp]'
     address=${listen%:*}; host=${listen##*:}
-    net_ipv4 "$address" && net_port "$host" || die '无效监听地址或端口'
+    { [[ $address == auto ]] || net_ipv4 "$address"; } && net_port "$host" || die '无效监听地址或端口'
     if [[ $action == add ]]; then
-        net_port "$guest" && net_lan_address "$address" || die '需要有效容器端口和手机当前持有的局域网 IPv4'
+        net_port "$guest" && { [[ $address == auto ]] || net_lan_address "$address"; } || die '需要有效容器端口及 auto 或手机当前持有的局域网 IPv4'
     fi
     net_paths; [[ $NET_MODE == isolated ]] || die '端口管理仅用于独立网络'
     net_lock
+    if [[ $action == add && $address == auto ]] && net_running && [[ ! -f $NET_RUN/auto-rebind ]]; then
+        net_unlock; die '当前网络助手来自旧版本；请先停止并重新启动此容器，再添加自动映射'
+    fi
     current=$(net_port_lines) || { net_unlock; return 1; }
     if [[ $action == add ]]; then
-        # Reserve the explicit tuple across stopped and running XTMOE containers too.
+        # Auto reserves this protocol/port on every LAN; fixed entries must not overlap it.
         for other in "$BASE"/*/.xtmoe-ports; do
-            [[ -f $other && ! -L $other && $other != "$NET_PORTS" ]] || continue
-            if awk -F'|' -v a="$address" -v h="$host" -v p="$proto" '$1==a && $2==h && $4==p {found=1} END {exit !found}' "$other"; then net_unlock; die '端口已被其他 XTMOE 容器预留'; fi
+            [[ -f $other && ! -L $other ]] || continue
+            if awk -F'|' -v a="$address" -v h="$host" -v p="$proto" -v same="$([[ $other == "$NET_PORTS" ]] && printf yes)" '
+                $2==h && $4==p && ($1==a || $1=="auto" || a=="auto") && !(same=="yes" && $1==a) {found=1} END {exit !found}' "$other"; then net_unlock; die '端口与已有 XTMOE 映射冲突；请先删除旧映射'; fi
         done
-        if net_port_busy "$address" "$host" "$proto"; then net_unlock; die '宿主端口已有监听'; fi
+        if [[ $address != auto ]]; then
+            local busy=0
+            net_port_busy "$address" "$host" "$proto" || busy=$?
+            if ((busy != 1)); then net_unlock; die '宿主端口已有监听或无法检查'; fi
+        fi
     fi
     tmp=$(mktemp "$CONTAINER/.ports.XXXXXX") || { net_unlock; return 1; }
     while IFS= read -r line; do

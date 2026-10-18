@@ -22,6 +22,7 @@ show_help() {
 用法：
   xtmoe on                          管理向导（安装、服务、网络、代理、数据和维护）
   xtmoe doctor                      环境与能力检查
+  xtmoe update [--force]             更新程序；--force 丢弃源码本地修改
   xtmoe list [--all|--running] [--no-prompt]
   xtmoe proot install [镜像] [名称]  默认 ubuntu:24.04 / ubuntu
   xtmoe proot login [名称]
@@ -47,13 +48,18 @@ source_root() {
     [[ -r $source_file ]] || source_file="${PREFIX:?PREFIX 未设置}/libexec/xtmoe/source-root"
     [[ -r $source_file ]] || die '缺少源码位置记录；请在 XTMOE 源码目录重新执行 sh termux.sh'
     IFS= read -r root <"$source_file"
-    [[ -n $root && -d $root/.git && -r $root/termux.sh && -r $root/src/bin/xtmoe ]] ||
+    [[ -n $root && -d $root/.git ]] ||
         die "源码目录无效：${root:-未记录}；请重新克隆 XTMOE 并执行 sh termux.sh"
     printf '%s' "$root"
 }
 
 update_main() (
-    (($# == 0)) || die 'xtmoe on → 程序维护 → 更新程序 不接受额外参数'
+    local force=0
+    case "$*" in
+        '') ;;
+        --force) (($# == 1)) || die '用法：xtmoe update [--force]'; force=1 ;;
+        *) die '用法：xtmoe update [--force]' ;;
+    esac
     require_termux
     require_command git '执行 pkg install git'
     require_command flock '执行 pkg install util-linux'
@@ -62,15 +68,37 @@ update_main() (
     [[ ! -L $update_lock ]] || die '更新锁不能是符号链接'
     exec 8>"$update_lock"
     flock -n 8 || die '另一个程序更新正在进行，请稍后重试'
-    local root status new_version
-    root=$(source_root)
-    status=$(git -C "$root" status --porcelain --untracked-files=no)
-    [[ -z $status ]] || die "源码目录存在未提交修改，拒绝覆盖：$root"
+    local root status new_version top branch remote merge target path
+    root=$(source_root) || exit 1
+    root=$(realpath -e -- "$root") || exit 1
+    top=$(git -C "$root" rev-parse --show-toplevel) || exit 1
+    top=$(realpath -e -- "$top") || exit 1
+    [[ $root -ef $top && ! $root -ef / && ! $root -ef "$XTMOE_HOME" && ! $root -ef "$PREFIX" ]] || die '源码位置不是独立的仓库根目录，拒绝更新'
+    [[ $PREFIX/ != "$root/"* ]] || die '程序安装目录不能位于源码仓库内'
+    status=$(git -C "$root" status --porcelain --untracked-files=normal) || exit 1
+    if ((force == 0)); then
+        [[ -z $status ]] || die "源码目录存在未提交修改，拒绝覆盖：$root；确认丢弃后可使用 xtmoe update --force"
+    fi
     info "更新源码：$root"
-    git -C "$root" pull --ff-only
+    if ((force)); then
+        branch=$(git -C "$root" symbolic-ref --quiet --short HEAD) || die '源码处于 detached HEAD，无法确定远端更新分支'
+        remote=$(git -C "$root" config --get "branch.$branch.remote") || die '当前分支没有配置远端'
+        merge=$(git -C "$root" config --get "branch.$branch.merge") || die '当前分支没有配置远端分支'
+        [[ -n $remote && $remote != . && $remote != -* && $merge == refs/heads/* && $merge != *$'\n'* ]] || die '远端分支配置无效'
+        info "强制同步 $remote/${merge#refs/heads/}；下载成功后丢弃源码本地提交、已跟踪修改和未跟踪文件（忽略文件保留）。"
+        git -C "$root" fetch --no-tags -- "$remote" "$merge" || die '远端下载失败；未执行强制覆盖'
+        target=$(git -C "$root" rev-parse --verify 'FETCH_HEAD^{commit}') || exit 1
+        for path in termux.sh src/bin/xtmoe src/lib/common.sh src/lib/xtmoe-root src/lib/xtmoe-network; do
+            git -C "$root" cat-file -e "$target:$path" || die "远端缺少 XTMOE 文件：$path；未执行强制覆盖"
+        done
+        git -C "$root" reset --hard "$target" || exit 1
+        git -C "$root" clean -fd || exit 1
+    else
+        git -C "$root" pull --ff-only || exit 1
+    fi
     info '原子更新已安装命令和模块'
-    sh "$root/termux.sh"
-    new_version=$(bash "${PREFIX:?PREFIX 未设置}/bin/xtmoe" version)
+    sh "$root/termux.sh" || exit 1
+    new_version=$(bash "${PREFIX:?PREFIX 未设置}/bin/xtmoe" version) || exit 1
     ok "更新完成：$new_version"
 )
 
@@ -132,6 +160,7 @@ main() {
         list) list_main "$@" ;;
         proot) public_proot "$@" ;;
         chroot) public_chroot "$@" ;;
+        update) update_main "$@" ;;
         uninstall) uninstall_main "$@" ;;
         version|-V|--version) printf 'xtmoe %s\n' "$XTMOE_VERSION" ;;
         help|-h|--help) show_help ;;

@@ -97,7 +97,7 @@ assert_ok 'CLI version' bash "$CLI" version
 assert_contains 'Version is v1.0.0' 'xtmoe v1.0.0' "$TEST_TMP/stdout"
 assert_ok 'PRoot shortcut help' bash "$CLI" proot help
 assert_ok 'Chroot shortcut help' bash "$CLI" chroot help
-for command in proxy update uninstall-app enter; do
+for command in proxy uninstall-app enter; do
     assert_fail "Unpublished top-level action is rejected: $command" bash "$CLI" "$command"
 done
 for action in exec login backup repair network-status docker-start systemd-start; do

@@ -5,7 +5,7 @@ import re
 
 root = Path(__file__).resolve().parent.parent
 documents = [root / "README.md", root / "CHANGELOG.md", *sorted((root / "docs").glob("*.md"))]
-top = {"on", "doctor", "list", "version", "help", "proot", "chroot", "uninstall"}
+top = {"on", "doctor", "list", "version", "help", "proot", "chroot", "uninstall", "update"}
 actions = {
     "proot": {"install", "login", "exec", "list", "ps", "stop", "backup", "update-system", "status", "help"},
     "chroot": {"prepare", "install", "systemd-login", "stop", "status", "help"},

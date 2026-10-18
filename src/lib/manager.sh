@@ -318,8 +318,9 @@ menu_dispatch_action() {
             ;;
         port-add)
             if [[ $mode == chroot ]]; then
-                host=$(menu_read '手机局域网 IPv4:端口（留空取消）') || return 0
+                host=$(menu_read '监听 auto:端口（自动跟随局域网）或固定 IPv4:端口（留空取消）') || return 0
                 [[ -n $host ]] || return 0
+                [[ $host == *:* ]] || host="auto:$host"
                 guest=$(menu_read '容器端口') || return 0
                 protocol=$(menu_read '协议 tcp/udp' tcp) || return 0
                 menu_run "$backend" port-add "$name" --listen "$host" --to "$guest" --proto "$protocol"
@@ -328,8 +329,9 @@ menu_dispatch_action() {
             ;;
         port-remove)
             if [[ $mode == chroot ]]; then
-                host=$(menu_read '手机局域网 IPv4:端口（留空取消）') || return 0
+                host=$(menu_read '配置中的 auto:端口或固定 IPv4:端口（留空取消）') || return 0
                 [[ -n $host ]] || return 0
+                [[ $host == *:* ]] || host="auto:$host"
                 protocol=$(menu_read '协议 tcp/udp' tcp) || return 0
                 menu_run "$backend" port-remove "$name" --listen "$host" --proto "$protocol"
                 return 0
@@ -408,10 +410,18 @@ menu_proxy() {
 menu_maintenance() {
     local action
     while true; do
-        action=$(menu_pick_entry '程序维护' '环境与能力检查|doctor' '更新程序|update' '查看版本|version' '卸载程序（保留容器）|uninstall') || return 0
+        action=$(menu_pick_entry '程序维护' '环境与能力检查|doctor' '更新程序|update' '查看版本|version' '卸载程序（保留容器）|uninstall' '强制更新（丢弃源码本地修改）|force-update') || return 0
         case "$action" in
             doctor) menu_run doctor ;;
             update) menu_run update_main; info '更新操作结束，请退出并重新运行 xtmoe on。'; return 0 ;;
+            force-update)
+                if confirm '强制同步当前分支的远端源码？本地源码修改、提交和未跟踪文件将被丢弃，忽略文件保留；容器及配置不在覆盖范围内'; then
+                    menu_run update_main --force
+                    info '更新操作结束，请退出并重新运行 xtmoe on。'
+                    return 0
+                fi
+                info '已取消强制更新'
+                ;;
             version) printf 'XTMOE %s\n' "$XTMOE_VERSION" ;;
             uninstall) menu_run uninstall_app_main ;;
         esac

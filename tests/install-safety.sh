@@ -148,3 +148,111 @@ assert_ok 'Updater lock rejection happens before any Git operation' bash -c '
     if (update_main); then exit 1; fi
     [[ ! -e $2 ]]
 ' _ "$ROOT_DIR" "$TEST_TMP/update-must-not-call-git"
+
+assert_ok 'Public update dispatch preserves --force' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/bin/xtmoe"
+    update_main() { [[ $# == 1 && $1 == --force ]]; }
+    main update --force
+' _ "$ROOT_DIR"
+
+# Real Git repositories exercise fetching, divergence and destructive scope offline.
+updater_fixture() {
+    local fixture="$TEST_TMP/updater-$1"
+    mkdir -p "$fixture/seed"
+    git init -q --bare --initial-branch=main "$fixture/remote.git"
+    git init -q --initial-branch=main "$fixture/seed"
+    git -C "$fixture/seed" config user.name Fixture
+    git -C "$fixture/seed" config user.email fixture@example.invalid
+    git -C "$fixture/seed" config core.autocrlf false
+    cp -R "$ROOT_DIR/src" "$fixture/seed/src"
+    printf '#!/bin/sh\nprintf installed >>"$UPDATE_TEST_INSTALL_LOG"\n' >"$fixture/seed/termux.sh"
+    printf 'ignored-local\n' >"$fixture/seed/.gitignore"
+    git -C "$fixture/seed" add .
+    git -C "$fixture/seed" commit -qm initial
+    git -C "$fixture/seed" remote add origin "$fixture/remote.git"
+    git -C "$fixture/seed" push -qu origin main
+    git -c core.autocrlf=false clone -q "$fixture/remote.git" "$fixture/client"
+    git -C "$fixture/client" config user.name Fixture
+    git -C "$fixture/client" config user.email fixture@example.invalid
+    printf remote-next >"$fixture/seed/remote-marker"
+    git -C "$fixture/seed" add .
+    git -C "$fixture/seed" commit -qm remote-next
+    git -C "$fixture/seed" push -q
+}
+
+for update_case in clean dirty force fetch-failure invalid-remote no-upstream detached; do
+    updater_fixture "$update_case"
+    assert_ok "Real updater fetch, installation and scope: $update_case" bash -c '
+        set -Eeuo pipefail
+        source "$1/src/bin/xtmoe"
+        fixture="$2/updater-$3"; client="$fixture/client"; seed="$fixture/seed"
+        export UPDATE_TEST_INSTALL_LOG="$fixture/installed"
+        require_termux() { :; }
+        XTMOE_LIB_DIR="$fixture/bundle/lib"; mkdir -p "$XTMOE_LIB_DIR"
+        printf "%s\n" "$client" >"$fixture/bundle/source-root"
+        before=$(git -C "$client" rev-parse HEAD)
+        case "$3" in
+            clean)
+                main update
+                [[ $(git -C "$client" rev-parse HEAD) == $(git -C "$seed" rev-parse HEAD) && -e $fixture/installed ]]
+                ;;
+            dirty)
+                printf local >"$client/untracked"
+                if (main update) >"$fixture/update.log" 2>&1; then exit 1; fi
+                grep -F "未提交修改" "$fixture/update.log" || exit 1
+                [[ -e $client/untracked && $(git -C "$client" rev-parse HEAD) == "$before" && ! -e $fixture/installed ]] || exit 1
+                rm "$client/untracked"
+                printf local >>"$client/src/bin/xtmoe"
+                if (main update) >"$fixture/update.log" 2>&1; then exit 1; fi
+                grep -F "未提交修改" "$fixture/update.log" || exit 1
+                [[ $(git -C "$client" rev-parse HEAD) == "$before" && ! -e $fixture/installed ]]
+                ;;
+            force)
+                printf local-commit >"$client/local-commit"
+                git -C "$client" add .; git -C "$client" commit -qm local-divergence
+                git -C "$client" rm -q src/bin/xtmoe
+                rm "$client/termux.sh"
+                printf local >"$client/untracked"; printf ignored >"$client/ignored-local"
+                printf container-data >"$fixture/container-data"
+                main update --force
+                [[ $(git -C "$client" rev-parse HEAD) == $(git -C "$seed" rev-parse HEAD) ]] || exit 1
+                [[ -z $(git -C "$client" status --porcelain) && ! -e $client/untracked && ! -e $client/local-commit ]] || exit 1
+                [[ $(<"$client/ignored-local") == ignored && $(<"$fixture/container-data") == container-data && -e $fixture/installed ]]
+                ;;
+            fetch-failure|invalid-remote|no-upstream|detached)
+                printf local >>"$client/src/bin/xtmoe"
+                printf keep >"$client/untracked"
+                case "$3" in
+                    fetch-failure) git -C "$client" remote set-url origin "$fixture/missing.git" ;;
+                    invalid-remote)
+                        git -C "$seed" rm -q src/lib/xtmoe-network
+                        git -C "$seed" commit -qm invalid; git -C "$seed" push -q
+                        ;;
+                    no-upstream) git -C "$client" branch --unset-upstream ;;
+                    detached) git -C "$client" checkout -q --detach ;;
+                esac
+                hash=$(sha256sum "$client/src/bin/xtmoe")
+                if (main update --force) >"$fixture/update.log" 2>&1; then exit 1; fi
+                case "$3" in
+                    fetch-failure) grep -F "远端下载失败" "$fixture/update.log" ;;
+                    invalid-remote) grep -F "远端缺少 XTMOE 文件" "$fixture/update.log" ;;
+                    no-upstream) grep -F "当前分支没有配置远端" "$fixture/update.log" ;;
+                    detached) grep -F "detached HEAD" "$fixture/update.log" ;;
+                esac || exit 1
+                [[ $(git -C "$client" rev-parse HEAD) == "$before" && $(sha256sum "$client/src/bin/xtmoe") == "$hash" && -e $client/untracked && ! -e $fixture/installed ]]
+                ;;
+        esac
+    ' _ "$ROOT_DIR" "$TEST_TMP" "$update_case"
+done
+unset -f updater_fixture
+
+assert_ok 'Unsupported update options fail before touching Git or installation' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/bin/xtmoe"
+    log="$2/invalid-update-option"
+    git() { touch "$log"; }
+    if (main update --force extra); then exit 1; fi
+    if (main update --unknown); then exit 1; fi
+    [[ ! -e $log ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
