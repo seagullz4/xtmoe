@@ -8,7 +8,7 @@ proxy_help() {
   xtmoe proxy on <URL或端口>           保存并启用 HTTP/HTTPS 代理，同步运行中的 Chroot
   xtmoe proxy on                      重新启用已保存地址；没有地址时交互输入
   xtmoe proxy set <URL或端口>          与 on 相同
-  xtmoe proxy off                     关闭 XTMOE 代理并同步 Chroot
+  xtmoe proxy off                     关闭 XTMOE 显式代理并同步 Chroot，不关闭 Android VPN
   xtmoe proxy status                  查看状态（隐藏认证信息）
   xtmoe proxy test [HTTP/HTTPS测试URL] 验证实际代理请求，默认 https://github.com
   xtmoe proxy apply [Chroot名称]       同步指定或全部 Chroot；不启动已停止容器
@@ -23,6 +23,8 @@ proxy_help() {
 支持 XTMOE 宿主下载、PRoot/Chroot 新会话和 Chroot Docker daemon 拉镜像。
 不会修改父 Termux Shell，不是透明代理；QEMU 客体及 Docker 应用内部代理需单独配置。
 HTTP/HTTPS 代理不承载 ping 的 ICMP；ping 失败不代表代理请求失败，请使用 proxy test。
+Android VPN 是独立的全局/分应用网络层；即使 off，普通 curl 仍可能经 VPN 使用代理出口。
+reset 是删除保存配置并恢复继承环境，不等于强制关闭代理。
 EOF
 }
 
@@ -141,6 +143,7 @@ proxy_status() {
     esac
     printf '状态仅表示配置；实际连通性请运行 xtmoe proxy test。\n'
     printf 'HTTP/HTTPS 代理不承载 ICMP/ping；ping 仍遵循 Android/VPN 路由。\n'
+    printf '关闭 XTMOE 显式代理不会关闭 Android VPN；普通 curl 的出口仍可能受 VPN、父 Shell 或 curl 配置影响。\n'
 }
 
 proxy_sync_chroots() {
@@ -243,6 +246,7 @@ proxy_main() {
             proxy_write 0 "$url" "$bypass" || return 1
             proxy_load || return 1
             ok '已关闭 XTMOE 代理。'
+            info '仅关闭 XTMOE 显式代理；Android VPN 需在手机代理软件中关闭，已打开的父 Shell 不会被修改。'
             proxy_sync_chroots
             ;;
         status)
@@ -258,6 +262,7 @@ proxy_main() {
             rm -f -- "$file" || return 1
             proxy_load || return 1
             ok '已删除保存配置，恢复沿用当前 Termux 环境。'
+            info 'reset 不等于关闭代理；若父 Shell 已设置代理或 Android VPN 仍开启，流量仍可能经过代理。'
             proxy_sync_chroots
             ;;
         exec)

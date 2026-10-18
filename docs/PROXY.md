@@ -65,6 +65,29 @@ xtmoe proxy reset
 
 `off` 清除 XTMOE 进程使用的代理变量，并清理其托管的 Docker 代理文件；不修改父 Termux Shell 或第三方 Docker 配置。配置已保存但 Root 不可用、服务同步失败时会返回非零，保存设置仍保留，解决条件后再执行 apply。
 
+### 为什么关闭后 `curl -4 ip.sb` 仍是代理出口
+
+XTMOE 的显式代理与 Android VPN 是两个独立的开关。手机代理软件的 VPN/TUN 仍在运行时，即使 Termux 没有任何代理变量，普通 curl 也可能被系统 VPN 接管。`-4` 只要求 curl 的本地连接使用 IPv4，不保证远端代理服务器也使用 IPv4 出口，更不等于绕过 VPN。
+
+先在手机代理软件里停止 VPN，再在普通 Termux 中执行：
+
+```sh
+xtmoe proxy off
+curl -4 --connect-timeout 5 --max-time 20 http://ip.sb
+# 忽略默认 curl 配置和所有显式代理，作为对照；注意 -q 必须是第一个参数：
+"$PREFIX/bin/curl" -q -4 --proxy '' --noproxy '*' --connect-timeout 5 --max-time 20 http://ip.sb
+```
+
+第二条对照仍不会绕过 Android VPN。若 VPN 运行时两者都是相同代理出口，而 VPN 停止后两者恢复运营商出口，问题在系统 VPN 层，不是 Termux 环境损坏。XTMOE 不会仅为关闭自己的 HTTP 代理而自动停止全手机 VPN，也不会自动修改分应用绕行规则。
+
+如果只有普通 curl 仍用代理，而对照请求已经直连，再检查当前 Shell 的代理变量、curl 别名/函数以及 `.curlrc` 等配置；不要公开含认证信息的变量或文件。可在当前 Shell 手工取消旧环境（不会修改配置文件）：
+
+```sh
+unset http_proxy HTTP_PROXY https_proxy HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
+```
+
+`xtmoe proxy reset` 是删除保存配置并恢复继承环境，不是关闭代理；需要明确关闭时用 `off`。已停止的 Chroot 不会因 off 被启动，其旧 Docker 配置将在下次通过正常 systemd 启动流程时按关闭状态同步；不要仅凭磁盘上旧文件存在判断 daemon 仍在运行。
+
 ## 在 Termux 中使用
 
 一个子进程不能直接修改已经运行的父 Shell。需要让普通 Termux 命令使用保存的代理时，用：

@@ -88,8 +88,24 @@ assert_ok 'Proxy help and status distinguish persistent HTTP configuration from 
     XTMOE_CONFIG_DIR="$2/proxy-icmp-guidance"
     output=$(proxy_help) || exit 1
     [[ $output == *ICMP* && $output == *"proxy test"* ]] || exit 1
+    [[ $output == *"不关闭 Android VPN"* && $output == *"reset 是删除保存配置"* ]] || exit 1
     output=$(proxy_status) || exit 1
-    [[ $output == *未保存配置* && $output == *ICMP/ping* && $output == *Android/VPN* ]]
+    [[ $output == *未保存配置* && $output == *ICMP/ping* && $output == *Android/VPN* && $output == *"不会关闭 Android VPN"* ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Proxy off and reset report their explicit-proxy scope without promising to stop the Android VPN or change the parent shell' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/proxy.sh"
+    XTMOE_CONFIG_DIR="$2/proxy-off-scope"
+    require_termux() { :; }; proxy_sync_chroots() { :; }
+    export http_proxy=http://parent.example:3128
+    output=$(proxy_main off) || exit 1
+    [[ $output == *"仅关闭 XTMOE 显式代理"* && $output == *"父 Shell 不会被修改"* ]] || exit 1
+    [[ $http_proxy == http://parent.example:3128 ]] || exit 1
+    proxy_read || exit 1
+    [[ $XTMOE_PROXY_ENABLED == 0 ]] || exit 1
+    output=$(proxy_main reset) || exit 1
+    [[ $output == *"reset 不等于关闭代理"* && $output == *"Android VPN 仍开启"* ]] || exit 1
+    [[ $http_proxy == http://parent.example:3128 && ! -e $XTMOE_CONFIG_DIR/proxy.conf ]]
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
 assert_ok 'Chroot network diagnostics bound local DNS and distinguish failed ICMP from successful proxy requests' bash -c '
