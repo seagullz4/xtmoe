@@ -107,7 +107,7 @@ assert_ok 'Chroot DNS failure prevents APT and strict source failure propagates'
     INIT_TEST_LOG="$2/network-apt-calls"; export INIT_TEST_LOG
     dpkg() { printf arm64; }; cat() { printf "nameserver 1.1.1.1\n"; }
     getent() { return 1; }; apt-get() { printf "%s\n" "$*" >>"$INIT_TEST_LOG"; return 1; }
-    timeout() { shift 2; "$@"; }
+    timeout() { [[ $1 != --kill-after=* ]] || shift; shift; "$@"; }
     export -f dpkg cat getent apt-get timeout
     chroot_exec() { bash -c "$5"; }
     if chroot_network_preflight init-order; then exit 1; fi
@@ -374,7 +374,7 @@ assert_ok 'Proxy-assisted preflight allows remote DNS only after real APT succee
     unset http_proxy HTTP_PROXY https_proxy HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
     export http_proxy=http://127.0.0.1:7890
     dpkg() { printf arm64; }; cat() { :; }; getent() { return 1; }
-    apt-get() { return "${APT_FIXTURE_RESULT:-0}"; }; timeout() { shift 2; "$@"; }
+    apt-get() { return "${APT_FIXTURE_RESULT:-0}"; }; timeout() { [[ $1 != --kill-after=* ]] || shift; shift; "$@"; }
     export -f dpkg cat getent apt-get timeout
     chroot_exec() { bash -c "$5"; }
     chroot_network_preflight fixture || exit 1

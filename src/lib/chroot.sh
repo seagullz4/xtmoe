@@ -638,7 +638,7 @@ printf "resolv.conf:\n"
 cat /etc/resolv.conf
 case "$(dpkg --print-architecture)" in amd64|i386) host=archive.ubuntu.com;; *) host=ports.ubuntu.com;; esac
 printf "Ubuntu DNS: %s\n" "$host"
-if ! getent ahostsv4 "$host"; then
+if ! timeout 15 getent ahostsv4 "$host"; then
     if [ -n "${http_proxy:-${HTTP_PROXY:-}}${https_proxy:-${HTTPS_PROXY:-}}" ]; then
         printf "本地 DNS 未通过；使用已配置代理继续实际 APT 源验证，不把代理场景误判为直连失败。\n"
     else
@@ -657,12 +657,14 @@ chroot_network_check() {
     require_name "$name"
     chroot_exec "$name" -- /bin/bash -lc '
 failures=0
+http_failures=0
+icmp_status=unavailable
 printf "%s\n" "--- /etc/resolv.conf ---"
 cat /etc/resolv.conf 2>&1 || failures=$((failures + 1))
 case "$(dpkg --print-architecture)" in amd64|i386) host=archive.ubuntu.com; path=ubuntu;; *) host=ports.ubuntu.com; path=ubuntu-ports;; esac
 printf -- "--- DNS: %s ---\n" "$host"
 dns_failed=0
-getent ahostsv4 "$host" 2>&1 || dns_failed=1
+timeout 15 getent ahostsv4 "$host" 2>&1 || dns_failed=1
 if [ "$dns_failed" -ne 0 ]; then
     if [ -n "${http_proxy:-${HTTP_PROXY:-}}${https_proxy:-${HTTPS_PROXY:-}}${all_proxy:-${ALL_PROXY:-}}" ]; then
         printf "本地 DNS 失败；后续 HTTP 检查验证代理路径，直连 DNS 仍未通过。\n"
@@ -671,14 +673,28 @@ if [ "$dns_failed" -ne 0 ]; then
     fi
 fi
 printf "%s\n" "--- ping -c 2 8.8.8.8 ---"
-if command -v ping >/dev/null 2>&1; then ping -c 2 -W 3 8.8.8.8 2>&1 || printf "ICMP 可能被限制；以 APT/HTTP 检查结果为准。\n"; else printf "ping 未安装\n"; fi
+printf "%s\n" "ICMP/ping 不使用 HTTP/HTTPS 代理，仍遵循 Android/VPN 路由；此处只测数字 IP，不测试 DNS。"
+if command -v ping >/dev/null 2>&1; then
+    if timeout 10 ping -4 -n -c 2 -W 3 8.8.8.8 2>&1; then
+        icmp_status=pass
+    else
+        icmp_status=failed
+        printf "%s\n" "ICMP 检查未通过，不等于代理不可用；请结合 HTTP 结果检查 VPN/TUN、路由或目标限制。不会自动绕过 VPN。"
+    fi
+else
+    printf "ping 未安装\n"
+fi
 printf "%s\n" "--- curl IPv4 Ubuntu source ---"
 if command -v curl >/dev/null 2>&1; then
     for scheme in http https; do
-        curl -4 -fI --connect-timeout 10 --max-time 20 "$scheme://$host/$path/dists/noble/InRelease" 2>&1 || failures=$((failures + 1))
+        if ! curl -4 -fI --connect-timeout 10 --max-time 20 "$scheme://$host/$path/dists/noble/InRelease" 2>&1; then
+            http_failures=$((http_failures + 1))
+            failures=$((failures + 1))
+        fi
     done
 else
     printf "curl 未安装\n"
+    http_failures=$((http_failures + 1))
     failures=$((failures + 1))
 fi
 printf "%s\n" "--- proxy environment ---"
@@ -703,7 +719,9 @@ if command -v docker >/dev/null 2>&1 && timeout 10 docker info >/dev/null 2>&1; 
     printf "%s\n" "--- Docker default bridge ---"
     timeout 10 docker network inspect bridge --format "{{json .IPAM.Config}}" 2>&1 || true
 fi
-printf "Summary: failures=%s\n" "$failures"
+printf "DNS: local_failed=%s; ICMP: %s; HTTP/HTTPS: failures=%s\n" "$dns_failed" "$icmp_status" "$http_failures"
+printf "%s\n" "HTTP 检查采用当前代理环境及 NO_PROXY；HTTP 通过不表示直连 DNS 或 ICMP 已修复。"
+printf "Summary: failures=%s (ICMP is informational)\n" "$failures"
 [ "$failures" -eq 0 ]
 '
 }

@@ -22,6 +22,7 @@ proxy_help() {
 需要代理软件实际提供 HTTP/混合端口；纯 SOCKS 端口不能直接当 HTTP 代理。
 支持 XTMOE 宿主下载、PRoot/Chroot 新会话和 Chroot Docker daemon 拉镜像。
 不会修改父 Termux Shell，不是透明代理；QEMU 客体及 Docker 应用内部代理需单独配置。
+HTTP/HTTPS 代理不承载 ping 的 ICMP；ping 失败不代表代理请求失败，请使用 proxy test。
 EOF
 }
 
@@ -139,6 +140,7 @@ proxy_status() {
             ;;
     esac
     printf '状态仅表示配置；实际连通性请运行 xtmoe proxy test。\n'
+    printf 'HTTP/HTTPS 代理不承载 ICMP/ping；ping 仍遵循 Android/VPN 路由。\n'
 }
 
 proxy_sync_chroots() {
@@ -220,6 +222,7 @@ proxy_test() {
     # Never let curl print credential-bearing proxy URLs on error.
     if curl --proxy "$url" --noproxy '' --head --fail --silent --connect-timeout 10 --max-time 30 --output /dev/null "$target" 2>/dev/null; then
         ok '代理实际 HTTP/HTTPS 请求通过。'
+        info '此结果验证代理请求，不代表 ICMP/ping 可用；ping 仍遵循 Android/VPN 路由。'
     else
         result=$?
         warn "代理测试失败（curl 退出码 $result）；检查代理软件、HTTP 端口和应用联网规则。"

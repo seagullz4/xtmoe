@@ -76,10 +76,47 @@ assert_ok 'Proxy real-request test forces the proxy, hides credentials and prese
         [[ ${CURL_TEST_FAILURE:-0} == 0 ]] && return 0
         printf "sensitive user:private error\n" >&2; return 7
     }
-    proxy_test https://example.com || exit 1
+    output=$(proxy_test https://example.com) || exit 1
+    [[ $output == *ICMP/ping* && $output == *Android/VPN* ]] || exit 1
     CURL_TEST_FAILURE=1
     result=0; output=$(proxy_test https://example.com 2>&1) || result=$?
     [[ $result == 7 && $output != *private* && $output != *sensitive* ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Proxy help and status distinguish persistent HTTP configuration from ICMP routing' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/proxy.sh"
+    XTMOE_CONFIG_DIR="$2/proxy-icmp-guidance"
+    output=$(proxy_help) || exit 1
+    [[ $output == *ICMP* && $output == *"proxy test"* ]] || exit 1
+    output=$(proxy_status) || exit 1
+    [[ $output == *未保存配置* && $output == *ICMP/ping* && $output == *Android/VPN* ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Chroot network diagnostics bound local DNS and distinguish failed ICMP from successful proxy requests' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    chroot_exec() { eval "$5"; }
+    cat() { :; }
+    dpkg() { printf arm64; }
+    timeout() {
+        case "$2" in
+            getent) [[ $1 == 15 && $3 == ahostsv4 ]] || return 99; printf "DNS_TIMEOUT_BOUND\n"; return 124 ;;
+            ping) [[ $1 == 10 && $3 == -4 && $4 == -n ]] || return 99; printf "ICMP_TIMEOUT_BOUND\n"; return 1 ;;
+            docker) return 1 ;;
+            *) shift; "$@" ;;
+        esac
+    }
+    curl() { return "${HTTP_TEST_FAILURE:-0}"; }
+    ping() { return 1; }
+    ip() { :; }; ss() { :; }; docker() { return 1; }; systemctl() { :; }
+    unset http_proxy HTTP_PROXY https_proxy HTTPS_PROXY all_proxy ALL_PROXY
+    export https_proxy=http://127.0.0.1:7890
+    output=$(chroot_network_check ubuntu) || exit 1
+    [[ $output == *"local_failed=1; ICMP: failed; HTTP/HTTPS: failures=0"* && $output == *"Summary: failures=0"* && $output == *不会自动绕过* ]] || exit 1
+    [[ $output == *DNS_TIMEOUT_BOUND* && $output == *ICMP_TIMEOUT_BOUND* ]] || exit 1
+    unset https_proxy
+    if chroot_network_check ubuntu >/dev/null; then exit 1; fi
+    export https_proxy=http://127.0.0.1:7890 HTTP_TEST_FAILURE=7
+    if chroot_network_check ubuntu >/dev/null; then exit 1; fi
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
 assert_ok 'Proxy test distinguishes a broken curl runtime before attempting a proxy connection' bash -c '

@@ -77,4 +77,22 @@ xtmoe proxy exec -- bash
 
 这不是全流量透明代理。仅支持代理环境变量的软件会采用这些设置，UDP、任意应用/systemd 服务不自动接管；原生 Android 应用继续由代理软件自身规则管理。
 
+### 开启代理后 ping 不通
+
+`ping` 发送 ICMP，不读取 `http_proxy`/`https_proxy`；保存 HTTP 代理不会让 ICMP 经过 HTTP 端口。手机的 VPN/TUN 仍可能影响 ping，包括数字 IP。因此不能用 `ping google.com` 判断 HTTP 代理是否成功，也不能用 HTTP 成功声称 ping 已修复。
+
+分别验证实际需求（在普通 Termux 执行）：
+
+```sh
+xtmoe proxy status
+xtmoe proxy test https://www.baidu.com
+xtmoe proxy test https://www.google.com
+xtmoe chroot exec ubuntu -- curl -I --connect-timeout 10 --max-time 20 https://www.google.com
+xtmoe chroot network-check ubuntu
+```
+
+状态显示“未保存配置，环境中未设置代理”时，新进程没有可用的代理设置；先用实际 HTTP/混合端口执行 `xtmoe proxy on 端口`，再退出并重新进入旧容器 Shell。新配置不反向修改已经打开的 Shell。
+
+`network-check` 将本地 DNS、数字 IP ICMP、当前环境下的 HTTP/HTTPS 分开显示，DNS 最多等待 15 秒。代理可代为解析目标时，本地 DNS 失败但 HTTP 成功是可能的；这不代表本地 DNS 已正常。数字 IP ping 同样失败时，先检查 VPN/TUN、策略路由、目标 ICMP 限制，而不是反复改 hosts 或重装 Ubuntu。工具不自动修改全局 VPN、添加绕行路由、改写 ping 或固定公共网站 IP。
+
 Docker bridge 应用与 QEMU VM 有自己的回环网络，里面的 `127.0.0.1` 不指向手机代理。它们需单独安排可达的宿主地址/受控转发及应用代理配置；本命令不会自动暴露手机代理端口，也不会配置 Docker 客户端向新应用容器批量注入宿主回环地址。

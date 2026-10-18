@@ -118,6 +118,8 @@ xtmoe chroot setup ubuntu
 
 完整网络诊断会打印 DNS、域名解析、数字 IP Ping、Ubuntu 源 HTTP 访问和代理变量是否设置：
 
+本地 DNS 检测限时 15 秒，ICMP 与 HTTP/HTTPS 单独汇总。HTTP 代理不承载 ping；VPN 下数字 IP ping 失败也不自动判定代理失败，不会自动添加绕过 VPN 的路由。详情见 [代理与 ping](PROXY.md#开启代理后-ping-不通)。
+
 ```sh
 xtmoe chroot network-check ubuntu
 xtmoe chroot network-repair ubuntu
