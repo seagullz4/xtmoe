@@ -316,6 +316,200 @@ assert_ok 'Chroot generated scripts parse and APT update treats repository error
     chroot_network_check init-order
 ' _ "$ROOT_DIR"
 
+assert_ok 'Systemd start repairs DNS around launch and never refreshes after launch failure' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    lifecycle_log="$2/systemd-start-network"
+    chroot_apply_dns() { printf "dns\n" >>"$lifecycle_log"; }
+    chroot_exec() { printf "proxy\n" >>"$lifecycle_log"; }
+    chroot_root() { printf "launch\n" >>"$lifecycle_log"; }
+    chroot_systemd_network_refresh() { printf "refresh\n" >>"$lifecycle_log"; }
+    chroot_systemd_start fixture || exit 1
+    [[ $(tr "\n" " " <"$lifecycle_log") == "dns proxy launch refresh " ]] || exit 1
+    : >"$lifecycle_log"
+    chroot_root() { printf "launch\n" >>"$lifecycle_log"; return 1; }
+    if chroot_systemd_start fixture; then exit 1; fi
+    [[ $(tr "\n" " " <"$lifecycle_log") == "dns proxy launch " ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Proxy forwarding normalizes case, protects local access, and rejects injected lines' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    unset http_proxy HTTP_PROXY https_proxy HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
+    [[ -z $(chroot_proxy_environment) ]] || exit 1
+    HTTP_PROXY=http://127.0.0.1:7890; HTTPS_PROXY=http://127.0.0.1:7890; NO_PROXY=example.internal
+    values=$(chroot_proxy_environment) || exit 1
+    grep -qx "http_proxy=http://127.0.0.1:7890" <<<"$values" && grep -qx "HTTPS_PROXY=http://127.0.0.1:7890" <<<"$values" || exit 1
+    grep -qx "NO_PROXY=example.internal,localhost,127.0.0.1,::1" <<<"$values" || exit 1
+    HTTP_PROXY=$'"'"'http://127.0.0.1:7890\nPATH=/bad'"'"'
+    if chroot_proxy_environment; then exit 1; fi
+' _ "$ROOT_DIR"
+
+assert_ok 'Proxy daemon drop-in escapes systemd specifiers and only clears managed configuration' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    unset http_proxy HTTP_PROXY https_proxy HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
+    fixture="$2/proxy-dropin"; mkdir -p "$fixture"
+    script=$(chroot_docker_proxy_script)
+    script=${script//\/etc\/systemd\/system/$fixture}
+    http_proxy=http://user:pa%25ss@127.0.0.1:7890 bash -c "$script" || exit 1
+    file="$fixture/docker.service.d/90-xtmoe-proxy.conf"
+    grep -q "pa%%25ss" "$file" || exit 1
+    bash -c "$script" || exit 1
+    [[ ! -e $file ]] || exit 1
+    printf "user-owned\n" >"$file"
+    if bash -c "$script"; then exit 1; fi
+    [[ $(<"$file") == user-owned ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Proxy-assisted preflight allows remote DNS only after real APT succeeds' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    unset http_proxy HTTP_PROXY https_proxy HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
+    export http_proxy=http://127.0.0.1:7890
+    dpkg() { printf arm64; }; cat() { :; }; getent() { return 1; }
+    apt-get() { return "${APT_FIXTURE_RESULT:-0}"; }; timeout() { shift 2; "$@"; }
+    export -f dpkg cat getent apt-get timeout
+    chroot_exec() { bash -c "$5"; }
+    chroot_network_preflight fixture || exit 1
+    export APT_FIXTURE_RESULT=1
+    if chroot_network_preflight fixture; then exit 1; fi
+' _ "$ROOT_DIR"
+
+assert_ok 'Systemd restart refuses to launch over a failed stop and verifies a successful restart' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    lifecycle_log="$2/systemd-restart"
+    chroot_systemd_stop() { printf "stop\n" >>"$lifecycle_log"; return 1; }
+    chroot_systemd_start() { printf "start\n" >>"$lifecycle_log"; }
+    chroot_systemd_verify() { printf "verify\n" >>"$lifecycle_log"; }
+    if chroot_systemd_restart fixture; then exit 1; fi
+    [[ $(<"$lifecycle_log") == stop ]] || exit 1
+    : >"$lifecycle_log"
+    chroot_systemd_stop() { printf "stop\n" >>"$lifecycle_log"; }
+    chroot_systemd_restart fixture || exit 1
+    [[ $(tr "\n" " " <"$lifecycle_log") == "stop start verify " ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Login boots a configured systemd environment and never silently falls back after boot failure' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    lifecycle_log="$2/login-start"; runtime_mode=stopped
+    chroot_meta_get() { printf 1; }
+    chroot_root() { if [[ $1 == status ]]; then printf "%s\n" "$runtime_mode"; else printf "login\n" >>"$lifecycle_log"; fi; }
+    chroot_systemd_start() { printf "start\n" >>"$lifecycle_log"; }
+    chroot_systemd_verify() { printf "verify\n" >>"$lifecycle_log"; }
+    chroot_login fixture || exit 1
+    [[ $(tr "\n" " " <"$lifecycle_log") == "start verify login " ]] || exit 1
+    : >"$lifecycle_log"; runtime_mode=direct-docker
+    chroot_login fixture || exit 1
+    [[ $(<"$lifecycle_log") == login ]] || exit 1
+    : >"$lifecycle_log"; runtime_mode=stopped
+    chroot_systemd_start() { return 1; }
+    if chroot_login fixture; then exit 1; fi
+    [[ ! -s $lifecycle_log ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Live network refresh fixes DNS, refreshes active Docker only, and preserves bus errors' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    lifecycle_log="$2/live-network"; service_state=active; export service_state
+    dockerd() { :; }
+    systemctl() { [[ $service_state != bus-error ]] || return 1; printf "%s\n" "$service_state"; }
+    export -f dockerd systemctl
+    chroot_apply_dns() { printf "dns\n" >>"$lifecycle_log"; }
+    chroot_docker_routing_setup() { printf "route\n" >>"$lifecycle_log"; }
+    chroot_systemd_exec() { bash -c "$5"; }
+    chroot_systemd_network_refresh fixture || exit 1
+    [[ $(tr "\n" " " <"$lifecycle_log") == "dns route " ]] || exit 1
+    for service_state in inactive failed activating; do
+        : >"$lifecycle_log"
+        chroot_systemd_network_refresh fixture || exit 1
+        [[ $(<"$lifecycle_log") == dns ]] || exit 1
+    done
+    service_state=bus-error
+    if chroot_systemd_network_refresh fixture; then exit 1; fi
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Network repair leaves stopped services stopped, avoids APT, and propagates network failure' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    lifecycle_log="$2/network-repair"; runtime_mode=stopped
+    chroot_root() { [[ $1 == status ]] || exit 9; printf "%s\n" "$runtime_mode"; }
+    chroot_apply_dns() { printf "dns\n" >>"$lifecycle_log"; }
+    chroot_systemd_network_refresh() { printf "refresh\n" >>"$lifecycle_log"; }
+    chroot_network_check() { printf "check\n" >>"$lifecycle_log"; }
+    chroot_network_preflight() { exit 9; }; chroot_setup() { exit 9; }; chroot_systemd_start() { exit 9; }
+    chroot_network_repair fixture || exit 1
+    [[ $(tr "\n" " " <"$lifecycle_log") == "dns check " ]] || exit 1
+    : >"$lifecycle_log"; runtime_mode=systemd
+    chroot_network_repair fixture || exit 1
+    [[ $(tr "\n" " " <"$lifecycle_log") == "refresh check " ]] || exit 1
+    chroot_network_check() { return 1; }
+    if chroot_network_repair fixture; then exit 1; fi
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Docker start and restart refresh routing, propagate failures, and stop includes socket activation' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    lifecycle_log="$2/docker-lifecycle"
+    chroot_systemd_start() { printf "systemd\n" >>"$lifecycle_log"; }
+    chroot_systemd_exec() { printf "command\n" >>"$lifecycle_log"; }
+    chroot_systemd_network_refresh() { printf "refresh\n" >>"$lifecycle_log"; }
+    chroot_docker_status() { printf "status\n" >>"$lifecycle_log"; }
+    for action in chroot_docker_start chroot_docker_restart; do
+        : >"$lifecycle_log"; "$action" fixture || exit 1
+        [[ $(tr "\n" " " <"$lifecycle_log") == "systemd command refresh status " ]] || exit 1
+    done
+    chroot_systemd_exec() { return 1; }
+    : >"$lifecycle_log"
+    if chroot_docker_start fixture; then exit 1; fi
+    [[ $(<"$lifecycle_log") == systemd ]] || exit 1
+    chroot_systemd_exec() { [[ $* == *"stop docker.service docker.socket containerd.service" ]]; }
+    chroot_docker_stop fixture
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Docker install restores DNS after package hooks before daemon or registry access' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    lifecycle_log="$2/docker-final-dns"; packages_done=0; dns_fixed=0
+    chroot_docker_kernel_check() { :; }; chroot_docker_dependencies() { :; }; chroot_docker_compat_prepare() { :; }
+    chroot_systemd_start() { :; }; chroot_systemd_verify() { :; }; chroot_docker_check() { :; }
+    chroot_docker_packages_script() { printf fixture-packages; }
+    chroot_apply_dns() { [[ $packages_done == 1 ]] || return 1; dns_fixed=1; printf "dns\n" >>"$lifecycle_log"; }
+    chroot_docker_status() { :; }; chroot_docker_routing_setup() { printf "route\n" >>"$lifecycle_log"; }
+    chroot_systemd_exec() {
+        case "$*" in
+            *fixture-packages) packages_done=1; dns_fixed=0; printf "packages\n" >>"$lifecycle_log";;
+            *"restart containerd.service"*) [[ $dns_fixed == 1 ]] || return 1; printf "daemon\n" >>"$lifecycle_log";;
+            *"docker pull hello-world") [[ $dns_fixed == 1 ]] || return 1; printf "pull\n" >>"$lifecycle_log";;
+            *) return 0;;
+        esac
+    }
+    chroot_docker_install --accept-host-network-changes docker-gate || exit 1
+    [[ $(tr "\n" " " <"$lifecycle_log") == "packages dns daemon route pull " ]] || exit 1
+    : >"$lifecycle_log"
+    chroot_apply_dns() { return 1; }
+    if chroot_docker_install --accept-host-network-changes docker-gate; then exit 1; fi
+    [[ $(<"$lifecycle_log") == packages && $(chroot_meta_get docker-gate docker_state) == dns-failed ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Routing refresh reruns an already-active oneshot and preserves unmanaged files' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    XTMOE_LIB_DIR="$1/src/lib"; routing_fixture="$2/routing-refresh"
+    mkdir -p "$routing_fixture/system"
+    ROUTE_REFRESH_LOG="$routing_fixture/commands"; export ROUTE_REFRESH_LOG
+    systemctl() { printf "%s\n" "$*" >>"$ROUTE_REFRESH_LOG"; }; export -f systemctl
+    chroot_systemd_exec() {
+        local script=$5
+        script=${script//\/usr\/local\/libexec/$routing_fixture/libexec}
+        script=${script//\/etc\/systemd\/system/$routing_fixture/system}
+        bash -c "$script" _ "$7" "$8"
+    }
+    chroot_docker_routing_setup fixture && chroot_docker_routing_setup fixture || exit 1
+    [[ $(grep -c "^restart xtmoe-docker-routing.service$" "$ROUTE_REFRESH_LOG") == 2 ]] || exit 1
+    printf "user-owned\n" >"$routing_fixture/system/xtmoe-docker-routing.service"
+    if chroot_docker_routing_setup fixture; then exit 1; fi
+    [[ $(<"$routing_fixture/system/xtmoe-docker-routing.service") == user-owned ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Systemd stop reports remaining mounts instead of allowing restart over them' bash -c '
+    source <(awk "/^\\[\\[ .*id -u/ {skip=1} /^valid_name\\(\\)/ {skip=0} /^ACTION=/ {exit} !skip {print}" "$1/src/lib/xtmoe-root")
+    CONTAINER="$2/stop-mounts"; ROOTFS="$CONTAINER/rootfs"; mkdir -p "$ROOTFS"
+    systemd_running() { return 1; }; is_mounted() { return 0; }; unmount_all() { return 1; }
+    if systemd_stop; then exit 1; fi
+' _ "$ROOT_DIR" "$TEST_TMP"
+
 assert_ok 'Chroot package setup script validates and blocks service autostart' bash -c '
     source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
     chroot_exec() {

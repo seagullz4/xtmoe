@@ -255,7 +255,13 @@ su -c '/system/bin/dmesg' | grep -iE 'avc:.*denied|systemd|unshare|killed proces
 
 ## Docker 检查报告缺少 iptables
 
-若首次 APT 下载成功，而安装 systemd-resolved 后 Docker 阶段又 DNS 失败，请检查 `/etc/resolv.conf` 是否被包脚本替换成指向 `127.0.0.53` 的 stub。`policy-rc.d` 只阻止服务启动，不阻止软件包改写配置。新版在基础包安装后、systemd 启动后及 Docker 依赖准备时重新落地普通文件和固定 DNS，并再次实际验证源访问；更新系统也在前后恢复 DNS。不要仅凭安装最初写过 nameserver 就认为整个流程都不会变化。
+若首次 APT 下载成功，而安装 systemd-resolved 后 Docker 阶段又 DNS 失败，请检查 `/etc/resolv.conf` 是否被包脚本替换成指向 `127.0.0.53` 的 stub。`policy-rc.d` 只阻止服务启动，不阻止软件包改写配置。新版在基础包安装后、systemd 启动前后、Docker 依赖与最终软件包安装后重新落地普通文件和固定 DNS，并实际验证源访问；更新系统也在前后恢复 DNS。不要仅凭安装最初写过 nameserver 就认为整个流程都不会变化。
+
+若安装后 Docker/1Panel 不可访问，手工修复后才恢复，先使用 `xtmoe chroot network-check ubuntu` 对比 DNS、监听端口、服务状态和 Docker 端口映射。路由辅助服务是 `RemainAfterExit=yes` 的 oneshot；已有 active 状态时 `enable --now` 不会重新执行路由探测。新版在 systemd/Docker 启动和 Docker 重启时自动修复 DNS，并对运行中的 Docker 显式重启路由服务。网络或 VPN 切换后可使用 `xtmoe chroot network-repair ubuntu`，无需重新执行完整 `repair` 安装流程。仅凭“修复后能访问”不能断定是 DNS；1Panel 未启动、只监听回环地址、访问端口或安全入口错误仍需按实际输出诊断。
+
+若停止后再次进入 Ubuntu，`systemctl` 不可用且 1Panel 没有监听，检查是否进入了普通 Chroot Shell。新版 login 对已配置 systemd 的容器先启动并验证服务环境；失败时不静默降级。若 Docker 重启日志出现 `Force shutdown daemon` 且原应用未恢复，避免并行重启 containerd 与 Docker；日常 `docker-restart` 只重启 Docker，应用是否自动恢复仍遵循应用自己的 restart policy。
+
+若 1Panel 返回 HTTP 200，但网页写着 `Access Temporarily Unavailable` / `secure login access`，这是现有安全入口提示，不能按 HTTP 状态码将其误报为登录页可用，也不应靠改 DNS 或反复 repair 处理。进入 Ubuntu 后自行执行 `1pctl user-info`，使用它给出的完整登录地址；该输出可能包含账户信息，不要公开粘贴。不要为了连通性验证关闭安全入口或重置账号。
 
 若先出现 nft 的 `addrtype`/`PREROUTING` 错误，紧接着是 `/bin/bash: line 3: install: command not found`，这不是一条 DNS 错误，也不一定是真的没有安装 coreutils。旧后端切换分支直接执行 chroot 非登录 Bash，继承了 Termux/Android 的 PATH；Ubuntu 的 `/usr/bin/install` 即使存在，也可能找不到。新版通过清理环境、指定 Ubuntu 的 PATH 执行探测、备份和 alternatives 切换；基础包与 Docker 依赖显式包含 coreutils，并验证 install/timeout/mktemp/flock 等工具。
 

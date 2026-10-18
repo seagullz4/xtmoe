@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Sourced by run.sh. Menu simulations dispatch only to recording backends.
 
-assert_ok 'Grouped menu first pages stay small and every original action remains reachable' bash -c '
+assert_ok 'Chroot exposes four task groups and requested actions while other modes retain their menus' bash -c '
     source "$1/src/lib/common.sh"; source "$1/src/lib/manager.sh"
-    [[ $(menu_entries chroot main | wc -l) == 5 && $(menu_entries qemu main | wc -l) == 5 && $(menu_entries proot main | wc -l) == 3 ]] || exit 1
+    [[ $(menu_entries chroot main | wc -l) == 4 && $(menu_entries qemu main | wc -l) == 5 && $(menu_entries proot main | wc -l) == 3 ]] || exit 1
     for mode in proot chroot qemu; do
         case "$mode" in
             proot) groups="runtime data"; expected="backup install login reinstall remove restore status stop update-system"; actions=install;;
-            chroot) groups="install runtime data diagnostics docker-systemd docker-direct"; expected="backup cgroup-check docker-check docker-direct-install docker-direct-logs docker-direct-run-test docker-direct-start docker-direct-status docker-direct-stop docker-install docker-logs docker-restart docker-start docker-status docker-stop init install login network-check prepare reinstall remove repair restore status stop systemd-check systemd-start systemd-status update-system"; actions=docker-check;;
+            chroot) groups="containers systemd docker network"; expected="backup docker-check docker-install docker-logs docker-restart docker-start docker-status docker-stop install login network-check network-repair prepare remove restore status systemd-check systemd-restart systemd-start systemd-status systemd-stop"; actions="";;
             qemu) groups="install runtime data ports docker"; expected="backup console docker-status docker-test install port-add port-remove ports prepare reinstall remove restore ssh start status stop update-system wait-ready"; actions="";;
         esac
         for group in $groups; do
@@ -43,24 +43,23 @@ assert_ok 'Canceled container selection clears a previous target' bash -c '
     [[ -z $MENU_SELECTED_NAME ]]
 ' _ "$ROOT_DIR"
 
-assert_ok 'Chroot grouped navigation retains numbered selection and direct daemon separation' bash -c '
+assert_ok 'Chroot Docker actions keep a single numbered target without an extra mode submenu' bash -c '
     set -Eeuo pipefail
     source "$1/src/lib/common.sh"; source "$1/src/lib/manager.sh"
     MENU_TEST_LOG="$2/chroot-navigation"
     manager_chroot_names() { printf "alpha\nubuntu\n"; }
     chroot_main() { printf "%s\n" "$*" >>"$MENU_TEST_LOG"; }
-    # Docker -> ubuntu -> systemd -> status -> back -> direct -> status -> back -> capability -> back -> root exit.
-    printf "5\n2\n1\n5\n0\n2\n4\n0\n3\n0\n0\n" | menu_chroot
-    [[ $(wc -l <"$MENU_TEST_LOG") == 3 ]] && grep -qx "docker-status ubuntu" "$MENU_TEST_LOG" && grep -qx "docker-direct-status ubuntu" "$MENU_TEST_LOG" && grep -qx "docker-check ubuntu" "$MENU_TEST_LOG"
+    printf "3\n2\n5\n1\n3\n0\n0\n" | menu_chroot
+    [[ $(wc -l <"$MENU_TEST_LOG") == 3 ]] && grep -qx "docker-status ubuntu" "$MENU_TEST_LOG" && grep -qx "docker-stop ubuntu" "$MENU_TEST_LOG" && grep -qx "docker-check ubuntu" "$MENU_TEST_LOG"
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
-assert_ok 'Chroot grouped runtime and diagnostics return to the parent without dispatch on back' bash -c '
+assert_ok 'Chroot systemd restart and network repair dispatch to their selected targets' bash -c '
     source "$1/src/lib/common.sh"; source "$1/src/lib/manager.sh"
     MENU_TEST_LOG="$2/chroot-runtime"
     manager_chroot_names() { printf "alpha\nubuntu\n"; }
     chroot_main() { printf "%s\n" "$*" >>"$MENU_TEST_LOG"; }
-    printf "2\n5\n2\n0\n4\n1\n1\n0\n0\n" | menu_chroot
-    [[ $(wc -l <"$MENU_TEST_LOG") == 2 ]] && grep -qx "status ubuntu" "$MENU_TEST_LOG" && grep -qx "network-check alpha" "$MENU_TEST_LOG"
+    printf "2\n2\n5\n4\n0\n4\n1\n1\n2\n0\n0\n" | menu_chroot
+    [[ $(wc -l <"$MENU_TEST_LOG") == 4 ]] && grep -qx "systemd-status ubuntu" "$MENU_TEST_LOG" && grep -qx "systemd-restart ubuntu" "$MENU_TEST_LOG" && grep -qx "network-check alpha" "$MENU_TEST_LOG" && grep -qx "network-repair alpha" "$MENU_TEST_LOG"
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
 assert_ok 'Grouped menus preserve destructive confirmations by never adding --yes' bash -c '
@@ -70,10 +69,11 @@ assert_ok 'Grouped menus preserve destructive confirmations by never adding --ye
     proot_main() { printf "proot:%s\n" "$*" >>"$MENU_TEST_LOG"; }
     chroot_main() { printf "chroot:%s\n" "$*" >>"$MENU_TEST_LOG"; }
     qemu_main() { printf "qemu:%s\n" "$*" >>"$MENU_TEST_LOG"; }
-    for mode in proot chroot qemu; do
+    for mode in proot qemu; do
         printf "3\n1\n4\n1\n0\n" | menu_category "$mode" data "data"
     done
-    [[ $(wc -l <"$MENU_TEST_LOG") == 6 ]] && ! grep -q -- --yes "$MENU_TEST_LOG" && [[ $(grep -c "reinstall ubuntu" "$MENU_TEST_LOG") == 3 && $(grep -c "remove ubuntu" "$MENU_TEST_LOG") == 3 ]]
+    printf "4\n1\n0\n" | menu_category chroot containers "containers"
+    [[ $(wc -l <"$MENU_TEST_LOG") == 5 ]] && ! grep -q -- --yes "$MENU_TEST_LOG" && [[ $(grep -c "reinstall ubuntu" "$MENU_TEST_LOG") == 2 && $(grep -c "remove ubuntu" "$MENU_TEST_LOG") == 3 ]]
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
 assert_ok 'Grouped restore does not demand an existing container and respects PRoot archive naming' bash -c '
@@ -117,7 +117,7 @@ assert_ok 'Grouped menus tolerate repeated back navigation and EOF without growi
     chroot_main() { exit 9; }
     MENU_DEPTH_LOG="$2/menu-depth"
     menu_read() { local answer; printf "%s\n" "${#FUNCNAME[@]}" >>"$MENU_DEPTH_LOG"; IFS= read -r answer || return 1; printf "%s" "$answer"; }
-    { for ((i=0; i<12; i++)); do printf "1\n0\n2\n0\n3\n0\n4\n0\n5\n1\n1\n0\n0\n"; done; printf "0\n"; } | menu_chroot >/dev/null 2>&1
+    { for ((i=0; i<12; i++)); do printf "1\n0\n2\n1\n0\n3\n1\n0\n4\n1\n0\n"; done; printf "0\n"; } | menu_chroot >/dev/null 2>&1
     menu_chroot </dev/null >/dev/null 2>&1
     menu_proot </dev/null >/dev/null 2>&1
     menu_qemu </dev/null >/dev/null 2>&1

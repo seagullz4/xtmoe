@@ -16,6 +16,7 @@ Chroot 模式（需要设备 Root；当前支持原生架构 Ubuntu Base 24.04�
   xtmoe chroot update-system [名称]
   xtmoe chroot reinstall [--yes] [--skip-docker] [--accept-host-network-changes] [名称]
   xtmoe chroot network-check [名称]
+  xtmoe chroot network-repair [名称]    修复 DNS，刷新运行中 Docker 的默认 bridge 路由并检测
   xtmoe chroot cgroup-check [名称]
   xtmoe chroot docker-check [名称]      只读检查 Docker/1Panel 内核条件
   xtmoe chroot docker-install [--accept-host-network-changes] [名称]
@@ -30,6 +31,7 @@ Chroot 模式（需要设备 Root；当前支持原生架构 Ubuntu Base 24.04�
   xtmoe chroot systemd-exec <名称> -- <命令>
   xtmoe chroot systemd-status [名称]
   xtmoe chroot systemd-stop [名称]      停止嵌套 systemd 并卸载
+  xtmoe chroot systemd-restart [名称]   停止后重新启动并验证 systemd
   xtmoe chroot use-bash-sh [名称]       将 /bin/sh 切换为 Bash
   xtmoe chroot status [名称]
   xtmoe chroot list
@@ -101,14 +103,38 @@ chroot_helper() {
 }
 
 chroot_root() (
-    local helper
+    local helper proxy_values assignment
+    local -a proxy_args=()
     helper=$(chroot_helper)
+    proxy_values=$(chroot_proxy_environment) || return 1
+    if [[ -n $proxy_values ]]; then
+        while IFS= read -r assignment; do proxy_args+=(--proxy-env "$assignment"); done <<<"$proxy_values"
+    fi
     # The parent keeps its flock descriptors. A long-lived systemd/dockerd
     # descendant must not inherit them and pin initialization locks forever.
     if [[ ${CHROOT_INSTALL_LOCK_FD:-} =~ ^[0-9]+$ ]]; then exec {CHROOT_INSTALL_LOCK_FD}>&-; fi
     if [[ ${CHROOT_INIT_LOCK_FD:-} =~ ^[0-9]+$ ]]; then exec {CHROOT_INIT_LOCK_FD}>&-; fi
-    run_root "${PREFIX:?PREFIX 未设置}/bin/bash" "$helper" "$PREFIX" "$@"
+    run_root "${PREFIX:?PREFIX 未设置}/bin/bash" "$helper" "$PREFIX" "${proxy_args[@]}" "$@"
 )
+
+# Only network proxy settings cross the Root boundary, never Termux PATH or LD_PRELOAD.
+chroot_proxy_environment() {
+    local lower upper value any=0
+    for lower in http_proxy https_proxy all_proxy; do
+        upper=${lower^^}; value=${!lower:-${!upper:-}}
+        [[ -n $value ]] || continue
+        [[ $value != *$'\n'* && $value != *$'\r'* ]] || { warn '代理设置不能包含换行。'; return 1; }
+        printf '%s=%s\n%s=%s\n' "$lower" "$value" "$upper" "$value"
+        any=1
+    done
+    if ((any)); then
+        value=${no_proxy:-${NO_PROXY:-}}
+        [[ $value != *$'\n'* && $value != *$'\r'* ]] || { warn 'NO_PROXY 不能包含换行。'; return 1; }
+        value="${value:+$value,}localhost,127.0.0.1,::1"
+        printf 'no_proxy=%s\nNO_PROXY=%s\n' "$value" "$value"
+    fi
+    return 0
+}
 
 require_chroot() {
     require_termux
@@ -477,8 +503,18 @@ SYSTEMD_VERIFY
 }
 chroot_login() {
     require_arg_range 0 1 "$#" 'xtmoe chroot login [名称]'
-    local name=${1:-ubuntu} base config
+    local name=${1:-ubuntu} base config mode
     require_name "$name"; base=$(chroot_base); config="$(chroot_config_base)/$name.binds"
+    if [[ $(chroot_meta_get "$name" systemd_requested 2>/dev/null || true) == 1 ]]; then
+        mode=$(chroot_root status "$base" "$name") || return 1
+        case "$mode" in
+            systemd|direct-docker) ;;
+            *)
+                chroot_systemd_start "$name" || return 1
+                chroot_systemd_verify "$name" || return 1
+                ;;
+        esac
+    fi
     chroot_root login "$base" "$name" "$config"
 }
 
@@ -499,8 +535,63 @@ chroot_systemd_check() {
 chroot_systemd_start() {
     require_arg_range 0 1 "$#" 'xtmoe chroot systemd-start [名称]'
     local name=${1:-ubuntu} config
+    require_name "$name"
     config="$(chroot_config_base)/$name.binds"
-    chroot_root systemd-start "$(chroot_base)" "$name" "$config"
+    chroot_apply_dns "$name" || return 1
+    chroot_exec "$name" -- /bin/bash -c "$(chroot_docker_proxy_script)" || return 1
+    chroot_root systemd-start "$(chroot_base)" "$name" "$config" || return 1
+    chroot_systemd_network_refresh "$name"
+}
+
+# Also used for an already-running session: services/packages may have replaced
+# resolv.conf, or Android/VPN routing may have changed since the previous start.
+chroot_systemd_network_refresh() {
+    local name=$1 result
+    chroot_apply_dns "$name" || return 1
+    if chroot_systemd_exec "$name" -- /bin/bash -c '
+systemctl daemon-reload || exit 1
+command -v dockerd >/dev/null 2>&1 || exit 3
+state=$(systemctl show docker.service --property=ActiveState --value) || exit 1
+case "$state" in active) exit 0;; inactive|failed|activating|deactivating) exit 3;; *) exit 1;; esac
+'; then
+        chroot_docker_routing_setup "$name"
+    else
+        result=$?
+        ((result == 3)) || return "$result"
+    fi
+}
+
+chroot_docker_proxy_script() {
+    cat <<'PROXY_CONFIG'
+set -Eeuo pipefail
+directory=/etc/systemd/system/docker.service.d
+file=$directory/90-xtmoe-proxy.conf
+[ ! -L "$directory" ] || { printf "拒绝符号链接形式的 Docker 代理目录。\n" >&2; exit 1; }
+if [ -e "$file" ] || [ -L "$file" ]; then
+    [ ! -L "$file" ] && grep -q "^# XTMOE managed:" "$file" || { printf "拒绝覆盖非 XTMOE 代理配置。\n" >&2; exit 1; }
+fi
+entries=()
+for key in http_proxy HTTP_PROXY https_proxy HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY; do
+    value=${!key-}
+    [ -n "$value" ] || continue
+    [[ $value != *$'\n'* && $value != *$'\r'* ]] || exit 1
+    assignment="$key=$value"
+    assignment=${assignment//\\/\\\\}
+    assignment=${assignment//\"/\\\"}
+    assignment=${assignment//%/%%}
+    entries+=("Environment=\"$assignment\"")
+done
+if ((${#entries[@]} == 0)); then
+    rm -f -- "$file"
+    exit 0
+fi
+install -d -m 0755 "$directory"
+temporary=$(mktemp "$directory/.xtmoe-proxy.XXXXXX")
+trap 'rm -f -- "$temporary"' EXIT
+chmod 0600 "$temporary"
+printf '%s\n' '# XTMOE managed: proxy settings from the current Termux session.' '[Service]' "${entries[@]}" >"$temporary"
+mv -T -- "$temporary" "$file"
+PROXY_CONFIG
 }
 
 chroot_systemd_login() {
@@ -526,6 +617,15 @@ chroot_systemd_stop() {
     chroot_root systemd-stop "$(chroot_base)" "${1:-ubuntu}"
 }
 
+chroot_systemd_restart() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot systemd-restart [名称]'
+    local name=${1:-ubuntu}
+    require_name "$name"
+    chroot_systemd_stop "$name" || return 1
+    chroot_systemd_start "$name" || return 1
+    chroot_systemd_verify "$name"
+}
+
 chroot_network_preflight() {
     require_arg_range 0 1 "$#" 'xtmoe chroot network-preflight [名称]'
     local name=${1:-ubuntu}
@@ -536,7 +636,14 @@ printf "resolv.conf:\n"
 cat /etc/resolv.conf
 case "$(dpkg --print-architecture)" in amd64|i386) host=archive.ubuntu.com;; *) host=ports.ubuntu.com;; esac
 printf "Ubuntu DNS: %s\n" "$host"
-getent ahostsv4 "$host" || { printf "DNS 解析失败；停止 APT/Docker 安装，请检查 VPN、私有 DNS 或网络。\n" >&2; exit 1; }
+if ! getent ahostsv4 "$host"; then
+    if [ -n "${http_proxy:-${HTTP_PROXY:-}}${https_proxy:-${HTTPS_PROXY:-}}" ]; then
+        printf "本地 DNS 未通过；使用已配置代理继续实际 APT 源验证，不把代理场景误判为直连失败。\n"
+    else
+        printf "DNS 解析失败；停止 APT/Docker 安装，请检查 VPN、私有 DNS 或网络。\n" >&2
+        exit 1
+    fi
+fi
 printf "验证已配置的 APT 源（源签名及下载错误均视为失败）……\n"
 timeout --kill-after=5 600 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o APT::Update::Error-Mode=any update
 '
@@ -552,7 +659,15 @@ printf "%s\n" "--- /etc/resolv.conf ---"
 cat /etc/resolv.conf 2>&1 || failures=$((failures + 1))
 case "$(dpkg --print-architecture)" in amd64|i386) host=archive.ubuntu.com; path=ubuntu;; *) host=ports.ubuntu.com; path=ubuntu-ports;; esac
 printf -- "--- DNS: %s ---\n" "$host"
-getent ahostsv4 "$host" 2>&1 || failures=$((failures + 1))
+dns_failed=0
+getent ahostsv4 "$host" 2>&1 || dns_failed=1
+if [ "$dns_failed" -ne 0 ]; then
+    if [ -n "${http_proxy:-${HTTP_PROXY:-}}${https_proxy:-${HTTPS_PROXY:-}}${all_proxy:-${ALL_PROXY:-}}" ]; then
+        printf "本地 DNS 失败；后续 HTTP 检查验证代理路径，直连 DNS 仍未通过。\n"
+    else
+        failures=$((failures + 1))
+    fi
+fi
 printf "%s\n" "--- ping -c 2 8.8.8.8 ---"
 if command -v ping >/dev/null 2>&1; then ping -c 2 -W 3 8.8.8.8 2>&1 || printf "ICMP 可能被限制；以 APT/HTTP 检查结果为准。\n"; else printf "ping 未安装\n"; fi
 printf "%s\n" "--- curl IPv4 Ubuntu source ---"
@@ -562,15 +677,51 @@ if command -v curl >/dev/null 2>&1; then
     done
 else
     printf "curl 未安装\n"
+    failures=$((failures + 1))
 fi
 printf "%s\n" "--- proxy environment ---"
 for variable in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy no_proxy NO_PROXY; do
     value=${!variable-}
     if [ -n "$value" ]; then printf "%s=set\n" "$variable"; else printf "%s=unset\n" "$variable"; fi
 done
+printf "%s\n" "--- IPv4 addresses / policy routing ---"
+if command -v ip >/dev/null 2>&1; then
+    ip -4 -brief address 2>&1 || true
+    ip -4 rule show 2>&1 || true
+fi
+printf "%s\n" "--- TCP listening ports (Android/Chroot shared network) ---"
+if command -v ss >/dev/null 2>&1; then ss -lnt 2>&1 || true; fi
+printf "%s\n" "--- Docker / 1Panel services (if systemd is running) ---"
+if [ -d /run/systemd/system ]; then
+    timeout 10 systemctl --no-pager --all --type=service list-units "docker.service" "xtmoe-docker-routing.service" "1panel*.service" 2>&1 || true
+fi
+if command -v docker >/dev/null 2>&1 && timeout 10 docker info >/dev/null 2>&1; then
+    printf "%s\n" "--- Docker containers / published ports ---"
+    timeout 10 docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>&1 || true
+    printf "%s\n" "--- Docker default bridge ---"
+    timeout 10 docker network inspect bridge --format "{{json .IPAM.Config}}" 2>&1 || true
+fi
 printf "Summary: failures=%s\n" "$failures"
 [ "$failures" -eq 0 ]
 '
+}
+
+chroot_network_repair() {
+    require_arg_range 0 1 "$#" 'xtmoe chroot network-repair [名称]'
+    local name=${1:-ubuntu} mode
+    require_name "$name"
+    mode=$(chroot_root status "$(chroot_base)" "$name") || return 1
+    case "$mode" in
+        systemd) chroot_systemd_network_refresh "$name" || return 1 ;;
+        direct-docker)
+            chroot_apply_dns "$name" || return 1
+            info 'direct 模式仅修复 DNS；自动 bridge 路由服务需要 systemd 模式。'
+            ;;
+        mounted|stopped) chroot_apply_dns "$name" || return 1 ;;
+        *) warn "无法识别容器运行状态：$mode"; return 1 ;;
+    esac
+    info '修复步骤已完成；保留已停止服务的状态。开始网络检测（检测失败仍返回失败）……'
+    chroot_network_check "$name"
 }
 
 chroot_cgroup_check() {
@@ -785,7 +936,10 @@ printf "%s\n" "$2" >/etc/systemd/system/xtmoe-docker-routing.service.xtmoe.tmp
 chmod 0644 /etc/systemd/system/xtmoe-docker-routing.service.xtmoe.tmp
 mv -T /etc/systemd/system/xtmoe-docker-routing.service.xtmoe.tmp /etc/systemd/system/xtmoe-docker-routing.service
 systemctl daemon-reload
-systemctl enable --now xtmoe-docker-routing.service
+systemctl enable xtmoe-docker-routing.service
+# start/enable --now is a no-op for an active oneshot (RemainAfterExit).
+# Restart so the current Android/VPN route is probed on every explicit refresh.
+systemctl restart xtmoe-docker-routing.service
 ' _ "$script" "$unit"
 }
 
@@ -853,18 +1007,25 @@ chroot_docker_install() {
         return 1
     fi
 
-    if ! chroot_systemd_exec "$name" -- /bin/bash -lc 'set -e; systemctl enable containerd.service docker.service; systemctl restart containerd.service; systemctl restart docker.service'; then
-        chroot_meta_set "$name" docker_state daemon-failed
-        chroot_docker_logs "$name" || true
+    # Docker dependencies can run package hooks after bootstrap's DNS repair.
+    # Repair again BEFORE dockerd starts and reads resolver configuration.
+    if ! chroot_apply_dns "$name"; then
+        chroot_meta_set "$name" docker_state dns-failed
         return 1
     fi
-    if ! chroot_docker_status "$name" || ! chroot_systemd_verify "$name"; then
+
+    if ! chroot_systemd_exec "$name" -- /bin/bash -lc 'set -e; systemctl daemon-reload; systemctl enable containerd.service docker.service; systemctl stop docker.service docker.socket; systemctl restart containerd.service; systemctl start docker.service'; then
         chroot_meta_set "$name" docker_state daemon-failed
         chroot_docker_logs "$name" || true
         return 1
     fi
     if ! chroot_docker_routing_setup "$name"; then
         chroot_meta_set "$name" docker_state bridge-routing-failed
+        return 1
+    fi
+    if ! chroot_docker_status "$name" || ! chroot_systemd_verify "$name"; then
+        chroot_meta_set "$name" docker_state daemon-failed
+        chroot_docker_logs "$name" || true
         return 1
     fi
     info '验证 Docker registry 并拉取 hello-world……'
@@ -890,21 +1051,24 @@ chroot_docker_install() {
 chroot_docker_start() {
     require_arg_range 0 1 "$#" 'xtmoe chroot docker-start [名称]'
     local name=${1:-ubuntu}
-    chroot_systemd_start "$name"
-    chroot_systemd_exec "$name" -- /usr/bin/systemctl start containerd.service docker.service
+    chroot_systemd_start "$name" || return 1
+    chroot_systemd_exec "$name" -- /usr/bin/systemctl start containerd.service docker.service || return 1
+    chroot_systemd_network_refresh "$name" || return 1
     chroot_docker_status "$name"
 }
 
 chroot_docker_stop() {
     require_arg_range 0 1 "$#" 'xtmoe chroot docker-stop [名称]'
     local name=${1:-ubuntu}
-    chroot_systemd_exec "$name" -- /usr/bin/systemctl stop docker.service containerd.service
+    chroot_systemd_exec "$name" -- /usr/bin/systemctl stop docker.service docker.socket containerd.service
 }
 
 chroot_docker_restart() {
     require_arg_range 0 1 "$#" 'xtmoe chroot docker-restart [名称]'
     local name=${1:-ubuntu}
-    chroot_systemd_exec "$name" -- /usr/bin/systemctl restart containerd.service docker.service
+    chroot_systemd_start "$name" || return 1
+    chroot_systemd_exec "$name" -- /bin/bash -ec 'systemctl start containerd.service; systemctl restart docker.service' || return 1
+    chroot_systemd_network_refresh "$name" || return 1
     chroot_docker_status "$name"
 }
 
@@ -916,9 +1080,14 @@ set -u
 failures=0
 systemctl is-active containerd.service || failures=$((failures + 1))
 systemctl is-active docker.service || failures=$((failures + 1))
+if [ "$(systemctl show xtmoe-docker-routing.service --property=LoadState --value 2>/dev/null)" = loaded ]; then
+    printf "default bridge routing: "
+    systemctl is-active xtmoe-docker-routing.service || failures=$((failures + 1))
+fi
 [ -S /var/run/docker.sock ] && printf "socket: ready\n" || { printf "socket: missing\n"; failures=$((failures + 1)); }
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     printf "daemon: ready\n"
+    docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" || failures=$((failures + 1))
 else
     printf "daemon: unavailable\n"
     failures=$((failures + 1))
@@ -1111,6 +1280,7 @@ chroot_main() {
         update-system) chroot_update_system "$@" ;;
         reinstall) chroot_reinstall "$@" ;;
         network-check) chroot_network_check "$@" ;;
+        network-repair) chroot_network_repair "$@" ;;
         cgroup-check) chroot_cgroup_check "$@" ;;
         docker-check) chroot_docker_check "$@" ;;
         docker-install) chroot_docker_install "$@" ;;
@@ -1131,6 +1301,7 @@ chroot_main() {
         systemd-exec) chroot_systemd_exec "$@" ;;
         systemd-status) chroot_systemd_status "$@" ;;
         systemd-stop) chroot_systemd_stop "$@" ;;
+        systemd-restart) chroot_systemd_restart "$@" ;;
         use-bash-sh) chroot_use_bash_sh "$@" ;;
         list|ls)
             require_arg_range 0 0 "$#" 'xtmoe chroot list'

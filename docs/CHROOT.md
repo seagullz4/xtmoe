@@ -82,9 +82,9 @@ xtmoe chroot init --accept-host-network-changes ubuntu
 xtmoe chroot init --skip-docker --skip-bash-sh ubuntu
 ```
 
-在 `xtmoe on` → Chroot → 安装与初始化中，全新系统选择“一键安装”，已有系统选择“一键配置已有 Ubuntu”，后者按数字选择容器。`init` 默认启用 systemd、Bash 和严格 Docker 流程；`repair` 才是沿用历史选择的续跑入口。
+在 `xtmoe on` → Chroot → 容器管理中，全新系统选择“创建 Ubuntu 容器”，输入名称后自动初始化。已有系统可用上面的 `init` 命令补全；`init` 默认启用 systemd、Bash 和严格 Docker 流程；`repair` 是沿用历史选择的续跑入口。
 
-Chroot 首屏只有“安装与初始化”“容器运行管理”“备份、恢复与删除”“诊断与检查”“Docker 管理”五类。systemd 日常启停归运行管理，前置/状态诊断归检查；Docker 页面在选择容器后再区分 systemd 推荐模式与 direct 兼容模式，不再将两套启动命令混排。所有原直接命令保持不变。
+Chroot 首屏为“容器管理”“systemd 服务管理（systemctl）”“Docker 服务管理”“网络与 DNS”四类。容器页面提供依赖、创建、进入、删除、备份、恢复和状态；systemd 与 Docker 页面均提供前置检查、开启、停止、重启和状态，Docker 另有安装修复和日志。服务和网络页面先选一次目标容器，之后连续操作；所有原直接命令保留，direct 兼容模式只通过直接命令显式选择。
 
 目前不支持跨架构 Chroot。需要跨架构时请使用 PRoot 加 QEMU。
 
@@ -97,7 +97,7 @@ xtmoe chroot systemd-login ubuntu
 xtmoe chroot systemd-exec ubuntu -- uname -a
 ```
 
-`chroot login` 在 systemd 运行时会自动进入同一个嵌套 systemd 会话；只有 systemd 未运行时才使用普通 Chroot Shell。普通模式仍可用于修复或维护：
+`chroot login` 会为已配置 systemd 的容器自动启动并验证 systemd，再进入同一会话，使已启用的 Docker/1Panel 服务随之启动；启动失败会报告错误，不静默进入缺少服务的普通 Shell。显式跳过 systemd 的基础环境、未记录 systemd 偏好的旧备份仍使用普通 Chroot Shell；已运行的 direct 模式保持原模式。普通模式仍可用于修复或维护：
 
 ```sh
 xtmoe chroot login ubuntu
@@ -110,7 +110,26 @@ xtmoe chroot setup ubuntu
 
 ```sh
 xtmoe chroot network-check ubuntu
+xtmoe chroot network-repair ubuntu
 ```
+
+`network-check` 同时显示共享网络的 IPv4 地址、策略路由、TCP 监听端口、已安装的 Docker/1Panel 服务状态和 Docker 容器端口映射，便于区分 DNS、服务未启动与端口监听问题。`network-repair` 恢复普通 DNS 文件及 hosts/NSS；在 systemd 模式中，仅在 Docker 已运行时安装或刷新 XTMOE 默认 bridge 精确路由服务，然后运行网络检测。不安装软件、不启动已停止的 Docker，也不重启 1Panel；检测失败时仍返回失败。direct 模式只修复 DNS，不接管 systemd 路由服务。
+
+普通 systemd 启动会在前后恢复 DNS，并为已运行的 Docker 刷新默认 bridge 路由；Docker 软件包装完后、首次启动前也会再次恢复 DNS。Docker 开启和重启复用相同修复步骤，避免首次安装完成后仍需手工执行初始化修复。已有激活的路由 oneshot 服务使用 `restart` 重新探测当前网络/VPN，不能依靠 `enable --now` 刷新。
+
+### VPN 与显式代理
+
+Android VPN 继续由宿主管理，XTMOE 跟随当前宿主出口。若使用本机 HTTP 代理，在普通 Termux 中先设置代理，再安装或重启 Docker，例如：
+
+```sh
+export http_proxy=http://127.0.0.1:7890
+export https_proxy=http://127.0.0.1:7890
+xtmoe chroot docker-restart ubuntu
+```
+
+XTMOE 仅将 HTTP/HTTPS/ALL_PROXY 及对应大小写变量传入 Chroot 命令和交互 Shell，并补充本机 `NO_PROXY`；不会继承 Termux 的 `LD_PRELOAD` 或工具搜索路径。systemd 启动时同步 `/etc/systemd/system/docker.service.d/90-xtmoe-proxy.conf`，使 Docker daemon 拉镜像也能使用 HTTP/HTTPS 代理，文件权限为 0600；不覆盖其他来源的代理文件。变更代理后用 `docker-restart` 让 daemon 重新读取。取消当前代理时，先在 Termux `unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY`，再重启 Docker，只移除 XTMOE 自己生成的代理文件。`all_proxy=socks5h://127.0.0.1:7890` 可供支持 SOCKS 的 curl 等客户端使用；APT 和 Docker daemon 的代理能力仍以各自支持的协议为准。
+
+Chroot 与 Android 共用回环地址，所以这里的 `127.0.0.1:7890` 可以指向手机上的代理。Docker bridge 应用容器有自己的回环地址，不能直接照搬；XTMOE 不覆盖应用自己的代理或 DNS 配置。诊断只显示代理变量是否设置，不打印代理凭据。本地 DNS 失败但明确配置 HTTP/HTTPS 代理时，安装会继续实际验证 APT 源；代理访问失败仍中止，不能仅凭代理变量存在就判定网络可用。
 
 初始化会保留镜像中已有的其他主机映射，并确保 `localhost` 同时映射到 `127.0.0.1` 和 `::1`。每次 `login`、`exec` 或 `setup` 还会自动补齐已有容器缺失的本机名称配置，这可以避免 `sudo: unable to resolve host localhost` 一类的错误。
 
@@ -122,6 +141,7 @@ Chroot 不会成为 Android 的 PID 1，因此这里提供的是独立 PID names
 xtmoe chroot systemd-check ubuntu
 xtmoe chroot systemd-start ubuntu
 xtmoe chroot systemd-status ubuntu
+xtmoe chroot systemd-restart ubuntu
 xtmoe chroot systemd-login ubuntu
 ```
 
@@ -205,7 +225,7 @@ xtmoe chroot docker-logs ubuntu
 xtmoe chroot docker-stop ubuntu
 ```
 
-安装成功后 `docker.service` 与 `containerd.service` 会被 enable，每次 `xtmoe chroot systemd-start ubuntu` 后由嵌套 systemd 自动拉起。这不等于 Android 开机自启。
+安装成功后 `docker.service` 与 `containerd.service` 会被 enable，每次 `xtmoe chroot systemd-start ubuntu` 后由嵌套 systemd 自动拉起。这不等于 Android 开机自启。Docker 停止同时停止 `docker.socket`，防止随后的 Docker 客户端请求通过 socket activation 意外拉起 daemon；开启与重启会刷新默认 bridge 路由。
 
 Docker 有四种必须区分的结果：完全通过；systemd 可用但内核阻断；daemon 可用但 registry/`hello-world` 未验证；软件已安装但 daemon 启动失败。XTMOE 不会把后三者显示为完全可用，也不会自动安装 1Panel。
 

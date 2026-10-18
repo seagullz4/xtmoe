@@ -232,29 +232,25 @@ menu_entries() {
         proot:main)
             printf '%s\n' '安装 Ubuntu 24.04|install' '容器运行管理|runtime' '备份、恢复与删除|data' ;;
         chroot:main)
-            printf '%s\n' '安装与初始化|install' '容器运行管理|runtime' '备份、恢复与删除|data' '诊断与检查|diagnostics' 'Docker 管理|docker' ;;
+            printf '%s\n' '容器管理|containers' 'systemd 服务管理（systemctl）|systemd' 'Docker 服务管理|docker' '网络与 DNS|network' ;;
+        chroot:containers)
+            printf '%s\n' '安装依赖|prepare' '创建 Ubuntu 容器（一键初始化）|install' '进入容器|login' '删除容器|remove' '备份容器|backup' '从备份恢复容器|restore' '容器状态|status' ;;
+        chroot:systemd)
+            printf '%s\n' '前置检查|systemd-check' '开启 systemd|systemd-start' '停止 systemd|systemd-stop' '重启 systemd|systemd-restart' '状态检查|systemd-status' ;;
+        chroot:network)
+            printf '%s\n' '检测网络、DNS 与监听端口|network-check' '修复 DNS 与 Docker 默认网络|network-repair' ;;
         qemu:main)
             printf '%s\n' '安装与准备|install' '虚拟机运行管理|runtime' '备份、恢复与删除|data' '端口转发|ports' 'Docker 验收|docker' ;;
-        chroot:install)
-            printf '%s\n' '一键安装 Ubuntu 24.04|install' '一键配置已有 Ubuntu|init' '修复／继续上次初始化|repair' '单独准备 Termux 依赖|prepare' ;;
         qemu:install)
             printf '%s\n' '安装 Ubuntu 24.04 + Docker VM|install' '单独准备 QEMU 依赖|prepare' ;;
         proot:runtime)
             printf '%s\n' '进入容器|login' '停止活动会话|stop' '更新容器系统|update-system' '查看状态|status' ;;
-        chroot:runtime)
-            printf '%s\n' '进入容器|login' '启动 systemd|systemd-start' '停止容器|stop' '更新容器系统|update-system' '查看容器状态|status' ;;
         qemu:runtime)
             printf '%s\n' 'SSH 进入 VM|ssh' '启动 VM|start' '停止 VM|stop' '查看状态|status' '等待初始化就绪|wait-ready' '串口控制台|console' '更新 Ubuntu|update-system' ;;
-        proot:data|chroot:data|qemu:data)
+        proot:data|qemu:data)
             printf '%s\n' '备份|backup' '从备份恢复|restore' '重装（删除系统内数据）|reinstall' '卸载（永久删除系统和数据）|remove' ;;
-        chroot:diagnostics)
-            printf '%s\n' '网络与 DNS 诊断|network-check' 'cgroup 检查|cgroup-check' 'systemd 前置检查|systemd-check' 'systemd 运行状态|systemd-status' ;;
         chroot:docker)
-            printf '%s\n' 'systemd 模式（推荐）|docker-systemd' 'direct dockerd 兼容模式（不依赖 systemctl）|docker-direct' 'Docker／1Panel 能力检查（不安装 1Panel）|docker-check' ;;
-        chroot:docker-systemd)
-            printf '%s\n' '安装并验收 Docker Engine|docker-install' '启动 Docker|docker-start' '停止 Docker|docker-stop' '重启 Docker|docker-restart' '查看状态|docker-status' '查看日志|docker-logs' ;;
-        chroot:docker-direct)
-            printf '%s\n' '安装并启动 direct dockerd|docker-direct-install' '启动 dockerd|docker-direct-start' '停止 dockerd|docker-direct-stop' '查看状态（docker info）|docker-direct-status' '查看日志|docker-direct-logs' '运行 hello-world 验证容器|docker-direct-run-test' ;;
+            printf '%s\n' '前置检查|docker-check' '开启 Docker|docker-start' '停止 Docker|docker-stop' '重启 Docker|docker-restart' '状态检查|docker-status' '安装或修复 Docker|docker-install' '查看日志|docker-logs' ;;
         qemu:ports)
             printf '%s\n' '查看端口映射|ports' '添加端口映射|port-add' '删除端口映射|port-remove' ;;
         qemu:docker)
@@ -367,21 +363,6 @@ menu_category() {
     done
 }
 
-menu_chroot_docker() {
-    local name=${1:?缺少 Chroot 容器名称} group
-    local -a entries=()
-    require_name "$name"
-    mapfile -t entries < <(menu_entries chroot docker)
-    while true; do
-        group=$(menu_pick_entry "Docker 管理 — $name" "${entries[@]}") || return 0
-        case "$group" in
-            docker-systemd) menu_category chroot "$group" "Docker / systemd 模式 — $name" "$name" ;;
-            docker-direct) menu_category chroot "$group" "Docker / direct 兼容模式 — $name" "$name" ;;
-            docker-check) menu_dispatch_action chroot docker-check "$name" ;;
-        esac
-    done
-}
-
 menu_backend() {
     local mode=$1 label group title entry
     local -a entries=()
@@ -391,9 +372,13 @@ menu_backend() {
         group=$(menu_pick_entry "$label 管理" "${entries[@]}") || return 0
         if [[ $mode == proot && $group == install ]]; then
             menu_dispatch_action proot install
-        elif [[ $mode == chroot && $group == docker ]]; then
-            if menu_select_container chroot '选择要管理 Docker 的 Chroot 容器'; then
-                menu_chroot_docker "$MENU_SELECTED_NAME"
+        elif [[ $mode == chroot && $group != containers ]]; then
+            title=$group
+            for entry in "${entries[@]}"; do
+                [[ ${entry#*|} != "$group" ]] || { title=${entry%%|*}; break; }
+            done
+            if menu_select_container chroot "选择目标容器（$title）"; then
+                menu_category chroot "$group" "$title — $MENU_SELECTED_NAME" "$MENU_SELECTED_NAME"
             fi
         else
             title=$group

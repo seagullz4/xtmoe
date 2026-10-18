@@ -439,7 +439,7 @@ assert_contains 'Chroot login reuses running systemd session' 'systemd_login' "$
 assert_contains 'Unified Chroot stop stops nested systemd' 'systemd_stop' "$ROOT_HELPER"
 assert_contains 'Docker gate checks network namespace creation' 'namespace_check --net network' "$ROOT_HELPER"
 assert_contains 'Docker gate requires pids controller' 'pids cgroup controller' "$ROOT_HELPER"
-assert_contains 'Systemd stop orders Docker shutdown first' 'systemctl stop docker.service containerd.service' "$ROOT_HELPER"
+assert_contains 'Systemd stop orders Docker and socket shutdown first' 'systemctl stop docker.service docker.socket containerd.service' "$ROOT_HELPER"
 assert_contains 'Direct Docker launch uses explicit iptables mode' '--iptables=true --host=unix:///var/run/docker.sock' "$ROOT_HELPER"
 assert_contains 'Direct Docker bounds daemon API verification' 'direct_docker_exec /usr/bin/timeout 15 /usr/bin/docker info' "$ROOT_HELPER"
 assert_contains 'Direct Docker run test verifies a real container' 'docker run --rm hello-world' "$ROOT_HELPER"
@@ -597,7 +597,7 @@ pass 'Documented PRoot actions map to CLI'
 chroot_actions=$(grep -rhoE 'xtmoe[[:space:]]+chroot[[:space:]]+[a-z-]+' "$README_FILE" "$ROOT_DIR/docs" | awk '{print $3}' | sort -u)
 for action in $chroot_actions; do
     case "$action" in
-        prepare|install|login|exec|setup|init|repair|update-system|reinstall|network-check|cgroup-check|docker-check|docker-install|docker-start|docker-stop|docker-restart|docker-status|docker-logs|docker-direct-install|docker-direct-start|docker-direct-stop|docker-direct-status|docker-direct-logs|docker-direct-run-test|systemd-check|systemd-start|systemd-login|systemd-exec|systemd-status|systemd-stop|use-bash-sh|status|list|stop|bind|unbind|backup|restore|remove) ;;
+        prepare|install|login|exec|setup|init|repair|update-system|reinstall|network-check|network-repair|cgroup-check|docker-check|docker-install|docker-start|docker-stop|docker-restart|docker-status|docker-logs|docker-direct-install|docker-direct-start|docker-direct-stop|docker-direct-status|docker-direct-logs|docker-direct-run-test|systemd-check|systemd-start|systemd-login|systemd-exec|systemd-status|systemd-stop|systemd-restart|use-bash-sh|status|list|stop|bind|unbind|backup|restore|remove) ;;
         *) fail "Documentation references unknown Chroot action: $action" ;;
     esac
 done

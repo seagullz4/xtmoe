@@ -5,6 +5,8 @@ die() { printf '[Root 错误] %s\n' "$*" >&2; exit 1; }
 warn() { printf '[Root 警告] %s\n' "$*" >&2; }
 ok() { printf '[Root] %s\n' "$*"; }
 
+declare -a GUEST_PROXY_ENV=() PROXY_HELPER_ARGS=()
+
 # Resolve each link relative to the guest root, never the Android host root.
 # In particular, /etc/alternatives links commonly contain absolute targets.
 rootfs_resolve_path() {
@@ -64,6 +66,17 @@ rootfs_has_systemd_init() {
 [[ $# -gt 0 ]] || die '缺少 Termux PREFIX'
 TERMUX_PREFIX=$1
 shift
+while [[ ${1:-} == --proxy-env ]]; do
+    (($# >= 2)) || die '缺少代理环境值'
+    case "$2" in
+        http_proxy=*|HTTP_PROXY=*|https_proxy=*|HTTPS_PROXY=*|all_proxy=*|ALL_PROXY=*|no_proxy=*|NO_PROXY=*) ;;
+        *) die '不允许传入非代理环境变量' ;;
+    esac
+    [[ $2 != *$'\n'* && $2 != *$'\r'* ]] || die '代理环境不能包含换行'
+    GUEST_PROXY_ENV+=("$2")
+    PROXY_HELPER_ARGS+=(--proxy-env "$2")
+    shift 2
+done
 export PATH="$TERMUX_PREFIX/bin:/system/bin:/system/xbin:/vendor/bin:${PATH:-}"
 
 valid_name() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; }
@@ -760,7 +773,7 @@ systemd_start() {
     printf '\n[XTMOE %s] systemd start; container=xtmoe; namespaces=%s; host-selinux-enforce=%s\n' \
         "$(date -Iseconds)" "${namespace_args[*]}" "$(cat /sys/fs/selinux/enforce 2>/dev/null || printf unavailable)" >>"$SYSTEMD_LOG_FILE"
     nohup unshare "${namespace_args[@]}" --fork --kill-child \
-        "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" \
+        "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" "${PROXY_HELPER_ARGS[@]}" \
         _systemd-launch "$BASE" "$CONTAINER_NAME" "$config" \
         </dev/null >>"$SYSTEMD_LOG_FILE" 2>&1 &
     launcher_pid=$!
@@ -811,7 +824,7 @@ systemd_exec() {
         chroot "$ROOTFS" /usr/bin/env -i \
         HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-        LANG=C.UTF-8 "$@"
+        LANG=C.UTF-8 "${GUEST_PROXY_ENV[@]}" "$@"
 }
 
 systemd_login() {
@@ -830,13 +843,15 @@ systemd_stop() {
     if ! systemd_running; then
         systemd_pid_files
         rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
-        is_mounted "$ROOTFS" && unmount_all "$ROOTFS" || true
+        if is_mounted "$ROOTFS"; then
+            unmount_all "$ROOTFS" || { warn '部分挂载仍被占用，停止未完成'; return 1; }
+        fi
         ok '嵌套 systemd 未运行'
         return 0
     fi
     pid=$(systemd_target_pid)
     if rootfs_has_executable "$ROOTFS" /usr/bin/docker; then
-        systemd_exec /usr/bin/systemctl stop docker.service containerd.service >/dev/null 2>&1 || true
+        systemd_exec /usr/bin/systemctl stop docker.service docker.socket containerd.service >/dev/null 2>&1 || true
     fi
     systemd_exec /usr/bin/systemctl poweroff >/dev/null 2>&1 || kill -TERM "$pid" 2>/dev/null || true
     for ((attempt = 0; attempt < 100; attempt++)); do
@@ -849,7 +864,7 @@ systemd_stop() {
     fi
     systemd_pid_files
     rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
-    unmount_all "$ROOTFS" || warn 'systemd 已停止，但部分挂载未卸载'
+    unmount_all "$ROOTFS" || { warn 'systemd 已停止，但部分挂载未卸载'; return 1; }
     ok '嵌套 systemd 已停止'
 }
 
@@ -861,7 +876,7 @@ direct_docker_namespace_launch() {
     exec chroot "$ROOTFS" /usr/bin/env -i \
         HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-        LANG=C.UTF-8 /usr/bin/dockerd --iptables=true --host=unix:///var/run/docker.sock
+        LANG=C.UTF-8 "${GUEST_PROXY_ENV[@]}" /usr/bin/dockerd --iptables=true --host=unix:///var/run/docker.sock
 }
 
 direct_docker_start() {
@@ -881,7 +896,7 @@ direct_docker_start() {
     helper_path=$(realpath -m -- "${BASH_SOURCE[0]}")
     ok '正在启动 direct dockerd（等待进程，最长约 5 秒）'
     nohup unshare --mount --pid --fork --kill-child \
-        "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" \
+        "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" "${PROXY_HELPER_ARGS[@]}" \
         _docker-direct-launch "$BASE" "$CONTAINER_NAME" "$config" \
         >"$DIRECT_DOCKER_LOG_FILE" 2>&1 &
     launcher_pid=$!
@@ -922,7 +937,7 @@ direct_docker_exec() {
         chroot "$ROOTFS" /usr/bin/env -i \
         HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-        LANG=C.UTF-8 "$@"
+        LANG=C.UTF-8 "${GUEST_PROXY_ENV[@]}" "$@"
 }
 
 direct_docker_status() {
@@ -1003,7 +1018,7 @@ install_rootfs() {
     rootfs_has_shell "$partial_rootfs/rootfs" || { rm -rf --one-file-system -- "$partial_rootfs"; die '镜像解压后缺少可执行的 /bin/sh'; }
     mkdir -p "$partial_rootfs/rootfs"/{dev,proc,sys,run,tmp,root}
     chmod 1777 "$partial_rootfs/rootfs/tmp"
-    ln -snf /proc/mounts "$partial_rootfs/rootfs/etc/mtab"
+    ln -snf ../proc/mounts "$partial_rootfs/rootfs/etc/mtab"
     ensure_hosts_config "$partial_rootfs/rootfs"
     : >"$partial_rootfs/rootfs/etc/resolv.conf"
     for dns in "$@"; do
@@ -1028,7 +1043,7 @@ run_chroot() {
         chroot "$ROOTFS" /usr/bin/env -i \
             HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
             PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-            LANG=C.UTF-8 "$@"
+            LANG=C.UTF-8 "${GUEST_PROXY_ENV[@]}" "$@"
     else
         script_bin="$TERMUX_PREFIX/bin/script"
         if [[ -t 0 && -t 1 && -x $script_bin ]]; then
@@ -1036,13 +1051,13 @@ run_chroot() {
                 chroot "$ROOTFS" /usr/bin/env -i \
                 HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
                 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-                LANG=C.UTF-8 /bin/bash -l
+                LANG=C.UTF-8 "${GUEST_PROXY_ENV[@]}" /bin/bash -l
         else
             [[ -x $script_bin ]] || warn '缺少 util-linux script，交互式 Shell 可能没有作业控制；请执行 xtmoe chroot prepare'
             chroot "$ROOTFS" /usr/bin/env -i \
                 HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
                 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-                LANG=C.UTF-8 /bin/bash -l
+                LANG=C.UTF-8 "${GUEST_PROXY_ENV[@]}" /bin/bash -l
         fi
     fi
     command_status=$?

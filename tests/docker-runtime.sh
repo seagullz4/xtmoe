@@ -133,6 +133,7 @@ docker_acceptance_fixture() (
     docker_test_scenario=$1
     chroot_docker_kernel_check() { :; }; chroot_docker_dependencies() { :; }; chroot_docker_compat_prepare() { :; }
     chroot_systemd_start() { :; }; chroot_systemd_verify() { :; }; chroot_docker_check() { :; }
+    chroot_apply_dns() { :; }
     chroot_docker_status() { :; }; chroot_docker_routing_setup() { :; }
     chroot_systemd_exec() {
         case "$*" in

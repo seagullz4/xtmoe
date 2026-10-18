@@ -1,5 +1,21 @@
 # Android 真机验收记录
 
+## 2026-10-18：四类精简菜单、首次安装与代理兼容
+
+本轮在同一台 Android 13 / ARM64 / KernelSU / `4.14.336-GinHalion` 设备通过 ADB 验收；保留用户现有 `ubuntu`，另建 `xtmoe-first-20261018-04`。宿主 VPN 正在使用，SELinux 为 Enforcing，未切换宿主安全模式。
+
+- 以 Termux 应用 UID/GID 及实际附加组运行，执行 `install ubuntu 24.04 xtmoe-first-20261018-04 </dev/null`。新 rootfs 使用官方校验的缓存 Ubuntu Base，Ubuntu 基础组件与 Docker 软件包正常下载；退出 0，无手工 y、无手工 rootfs 配置、无 `repair` 或 `network-repair` 补救。
+- 安装完成即验证普通 DNS 文件、固定 nameserver、NSS 和 localhost；systemd、containerd、Docker 和精确路由服务正常，hello-world 成功。
+- BusyBox 默认 bridge 容器 DNS 和 HTTP 通过；手机访问 `127.0.0.1:18082` 返回测试网页正文。
+- 重启测试发现旧的 Docker 重启同时重启 containerd，日志出现 `Force shutdown daemon`，应用没有正常恢复。日常重启改为保留运行中的 containerd，仅重启 Docker；安装更新运行时时先停 Docker。复测 Docker 停止/开启/重启、systemd 重启、完整停止后通过 login 自动启动，配置 unless-stopped 的测试网页均恢复可访问。
+- 用仅监听回环的临时 HTTP/CONNECT 代理实测：Ubuntu curl 返回 HTTP 200，Docker 拉取 BusyBox 成功；代理日志实际记录 Docker registry/auth CONNECT。随后清除 XTMOE 测试代理配置并停止临时代理服务。
+- 回到用户原有 `ubuntu`，经正常启动命令使 Docker 和已安装的 1Panel Core/Agent active；1Panel 在实际监听端口返回 HTTP 200。进一步仅在内存中读取现有安全入口并验证其 HTML/脚本页面，确认可打开应用登录页；直接访问根路径显示安全入口提示不算网络失败。没有重装用户容器、自动安装新的 1Panel、修改登录凭据或安全入口，也没有输出账号、密码或入口 URL。
+- 更新手机源码与安装命令，`xtmoe doctor` 通过。精简菜单为容器、systemd、Docker、网络/DNS 四组，服务/网络分组一次选择目标后连续操作。
+
+本轮最终模拟回归为 `244 passed, 0 failed`，16 个 Bash 文件语法检查、ShellCheck warning 级别和 `git diff --check` 通过。Git Bash 使用 `MSYS=winsymlinks:nativestrict` 支持链接夹具；直接在 Android Termux 运行全量模拟套件的尝试因 Linux `/usr/bin/env` 夹具及架构假设不适用而失败，不作为通过证据。真实设备的安装、代理、生命周期、HTTP 与备份恢复由独立脚本验收。
+
+真机原始日志与备份仅保存在设备 `~/xtmoe-optimized-evidence-20261018-04/`，本地验收副本位于项目 `dist/validation/`，均不发布。新一轮验证不扩大到自定义 Compose 网络、IPv6、其他 Root/内核或所有 1Panel 功能；上述旧章节仍是各自历史轮次的证据。
+
 ## 2026-10-18：Android 13 / ARM64 / KernelSU
 
 在用户授权的 Redmi Note 9 5G（M2007J22C，cannon）通过 USB ADB 实测。ZeroTermux 实际包名为 `com.termux`，使用标准 Termux 路径。内核 `4.14.336-GinHalion`，Root 为 KernelSU。以下结果只适用于该设备/内核/网络状态，不代表全部 Android 4.14 设备。
