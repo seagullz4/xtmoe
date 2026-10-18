@@ -106,6 +106,16 @@ xtmoe chroot setup ubuntu
 
 `setup` 仅负责基础包，不等于完整初始化；一键操作请使用 `init`。基础包包括 `ubuntu-standard`、CA 证书、curl、locale、OpenSSH Server、sudo、systemd、D-Bus、Bash、procps、util-linux、kmod、mount、iproute2、iptables 和 iputils-ping。安装时先配置未完成的 dpkg，再执行严格 APT update。临时 `policy-rc.d` 阻止包脚本自动启动服务，成功或失败时恢复原策略（包含原符号链接），之后由嵌套 systemd 管理服务。不会自动安装或启动 1Panel，也不会设置 SSH 密码；Ubuntu 服务启用情况会影响宿主共享网络上的监听端口，需按 [日常操作](OPERATIONS.md#ssh) 检查 SSH 配置与访问范围。
 
+### 用户空间完整性
+
+初始化和 `setup` 会补齐 man-db/manpages、less/nano、bash-completion、apt-utils 与 tzdata。Ubuntu Base 默认裁剪手册、文档和部分翻译，即使安装软件包也可能继续被 dpkg 过滤；XTMOE 仅识别并备份已知官方 Base 的精简规则，移除该规则后，对缺少相关包文件的已安装软件执行官方 APT 重装。中断时保留恢复标记，下一次 setup/repair 可续跑；不会清空自定义 dpkg 策略，遇到改写过的规则会停止并提示人工检查。备份位于容器 `/var/lib/xtmoe/userland/`。
+
+精简镜像还可能将 `/usr/bin/man` 转移到 `man.REAL` 并放置返回成功的提示脚本。XTMOE 只针对精确匹配的官方脚本和 LOCAL diversion 恢复真正的 man-db，保留原脚本备份；验收要求查到真实 `/usr/share/man/` 路径，而非只检查命令退出码。已有系统更新 XTMOE 后可执行 `xtmoe chroot setup ubuntu` 补齐用户空间，无需重建系统。
+
+新系统默认 hostname 为 localhost；后续修复保留用户有效的 hostname 和已有 hosts 映射，仅补齐缺失的本机解析。语言环境默认 C.UTF-8，可正常处理 Unicode；既有语言和时区设置不覆盖。APT 默认保留既有配置，避免包升级停在配置文件确认。
+
+“Ubuntu 用户空间可正常工作”不等于与原生物理机完全一致。Chroot 的启动、设备、共享网络、资源控制和安全边界不同；默认 `/bin/sh` 使用 Bash 是本项目为第三方脚本保留的兼容选择，原生 Ubuntu 默认 dash，创建时可用 `--skip-bash-sh` 保留原默认。SSH 若用 socket 激活，`/run/sshd` 由 ssh.service 启动时创建；在服务未启动时直接执行 sshd -t 提示该目录缺失，不能直接判为安装损坏。
+
 完整网络诊断会打印 DNS、域名解析、数字 IP Ping、Ubuntu 源 HTTP 访问和代理变量是否设置：
 
 ```sh

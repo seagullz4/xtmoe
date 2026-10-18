@@ -1,5 +1,19 @@
 # Android 真机验收记录
 
+## 2026-10-18：Ubuntu 用户空间完整性复查
+
+在现有 Ubuntu 24.04.5 ARM64 上复查，没有重建 rootfs。初筛确认 APT 依赖、systemd/D-Bus、DNS/hosts 与 Docker 正常，但 Ubuntu Base 遗留文件过滤器使多个已安装包缺少 man/doc/翻译；抽查十个核心包发现 626 个缺少的 doc/man 文件，没有发现其他类别文件损坏。
+
+已补充基础工具与安全的用户空间恢复：识别并备份精确匹配的官方 Base 过滤器，恢复缺少文件的已安装包，不改第三方过滤策略；保留 APT 服务策略和配置文件，支持中断续跑。发现官方 man 占位脚本返回 0 后，进一步按精确内容与 LOCAL diversion 恢复真正 man-db，并验证手册路径与正文。新系统默认 hostname 保持 localhost，已配置主机名在后续修复中保留并补齐 hosts。
+
+修复后真机 17 类功能检查退出 0：包审计与依赖、基础命令、UTF-8、目录/设备与挂载、名称解析、systemd/D-Bus、时间设置、SSH 配置和 socket 激活、手册路径/正文、sudo 权限切换、APT 官方源、Docker/Compose/Buildx 与 hello-world。全体已安装包 `dpkg --verify` 没有报告缺失或差异；systemd running，failed units 为 0，Docker active。重复 setup 无重复重装，现有配置保留。真实 PTY 的 sudo -i、前台进程组和 Ctrl+C 再次通过。
+
+SSH 的 /run/sshd 由其 RuntimeDirectory 在 ssh.service 激活时创建，初筛直接执行 sshd -t 的报错不能判为损坏；回环连接触发既有 ssh.socket 后获得 OpenSSH banner，sshd -t 正常。ubuntu-minimal 是元包，本环境使用 ubuntu-standard 与已列出的真实基础工具；没有为了元包名称强行安装网络/硬件管理栈。
+
+保留并报告内核/环境差异：cgroup BPF 防火墙加载失败、F2FS journal 属性不支持、部分 LLMNR/mDNS 主机名探测警告。服务 running 不代表未支持的加固功能已经生效。没有关闭 SELinux、清空日志、屏蔽安全配置或伪造内核能力。共享网络/设备、嵌套启动、VFS 和默认 Bash-as-sh 仍与原生物理 Ubuntu 不同，不能承诺所有应用与日志“毫无差别”。
+
+本地回归 261 passed, 0 failed；18 个 Bash 文件语法、ShellCheck warning 和空白检查通过。原始证据设备 ~/xtmoe-userland-evidence-20261018/，本地 dist/validation/userland/，均不发布。此次检查对象为当前设备/现有系统，不扩展为所有内核或完整新装矩阵。
+
 ## 2026-10-18：xtmoe proxy 持久代理命令
 
 同一 Android 13 / ARM64 / KernelSU 设备，使用手机代理软件实际提供的 HTTP/混合端口验证；保留命令 on/set/off/status/test/apply/reset/exec 的配置与进程边界。

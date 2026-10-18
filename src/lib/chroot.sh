@@ -737,13 +737,117 @@ chroot_setup() {
     require_arg_range 0 1 "$#" 'xtmoe chroot setup [名称]'
     local name=${1:-ubuntu}
     chroot_exec "$name" -- /bin/bash -lc "$(chroot_apt_guard_script)
+$(chroot_userland_prepare_script)
 dpkg --configure -a
 apt-get -o APT::Update::Error-Mode=any update
-apt-get install -y ubuntu-standard coreutils ca-certificates curl locales openssh-server sudo systemd-sysv dbus bash procps util-linux kmod mount iproute2 iptables iputils-ping
+apt-get install -y ubuntu-standard coreutils ca-certificates curl locales tzdata man-db manpages less nano bash-completion apt-utils openssh-server sudo systemd-sysv dbus bash procps util-linux kmod mount iproute2 iptables iputils-ping
+$(chroot_userland_restore_script)
 for tool in install timeout mktemp flock ip getent; do command -v \"\$tool\" || exit 1; done
 command -v systemctl
 /usr/sbin/iptables --version
 "
+}
+
+chroot_userland_prepare_script() {
+    cat <<'USERLAND_PREPARE'
+# Ubuntu Base ships a dpkg filter that discards manuals/docs/translations even
+# for later apt installs. Only recognize the exact official Base filter; never
+# rewrite user filtering policy or move files outside the guest.
+xtmoe_base_filter=/etc/dpkg/dpkg.cfg.d/excludes
+xtmoe_userland_state=/var/lib/xtmoe/userland
+[ ! -L /var/lib/xtmoe ] && [ ! -L "$xtmoe_userland_state" ] && [ ! -L "$xtmoe_userland_state/restore.pending" ] || { printf 'Unsafe userland state path; refusing to change files.\n' >&2; exit 1; }
+if [ -e "$xtmoe_base_filter" ] || [ -L "$xtmoe_base_filter" ]; then
+    [ -f "$xtmoe_base_filter" ] && [ ! -L "$xtmoe_base_filter" ] || { printf 'Ubuntu Base filter is not a regular file; refusing to change it.\n' >&2; exit 1; }
+    xtmoe_filter_rules=$(sed 's/[[:space:]]*#.*$//; /^[[:space:]]*$/d' "$xtmoe_base_filter" | LC_ALL=C sort)
+    xtmoe_expected_rules=$(printf '%s\n' \
+        'path-exclude=/usr/share/man/*' \
+        'path-exclude=/usr/share/locale/*/LC_MESSAGES/*.mo' \
+        'path-exclude=/usr/share/doc/*' \
+        'path-include=/usr/share/doc/*/copyright' \
+        'path-include=/usr/share/doc/*/changelog.*' | LC_ALL=C sort)
+    if [ "$xtmoe_filter_rules" != "$xtmoe_expected_rules" ]; then
+        printf 'Custom dpkg excludes detected; preserving it. Full userland restoration needs manual policy review.\n' >&2
+        exit 1
+    fi
+    install -d -m 0700 "$xtmoe_userland_state"
+    xtmoe_filter_backup=$(mktemp "$xtmoe_userland_state/base-excludes.XXXXXX")
+    cp -p -- "$xtmoe_base_filter" "$xtmoe_filter_backup"
+    # Keep a pending marker before removing the filter so interrupted APT can resume.
+    printf 'ubuntu-base-userland-v1\n' >"$xtmoe_userland_state/restore.pending"
+    rm -- "$xtmoe_base_filter"
+    printf 'Ubuntu Base minimization filter backed up; manuals/docs/translations enabled.\n'
+fi
+USERLAND_PREPARE
+}
+
+chroot_userland_restore_script() {
+    cat <<'USERLAND_RESTORE'
+xtmoe_userland_state=/var/lib/xtmoe/userland
+# Ubuntu Base also diverts man to an informational stub which exits 0. Restore
+# only the exact known stub and local diversion, retaining a recoverable copy.
+xtmoe_minimized_man=$(cat <<'XTMOE_MINIMIZED_MAN'
+#!/bin/sh
+echo "This system has been minimized by removing packages and content that are"
+echo "not required on a system that users do not log into."
+echo ""
+echo "To restore this content, including manpages, you can run the 'unminimize'"
+echo "command. You will still need to ensure the 'man-db' package is installed."
+XTMOE_MINIMIZED_MAN
+)
+if [ -f /usr/bin/man ] && [ ! -L /usr/bin/man ] && grep -q '^#!/bin/sh$' /usr/bin/man && [ "$(cat /usr/bin/man)" = "$xtmoe_minimized_man" ]; then
+    [ "$(dpkg-divert --truename /usr/bin/man)" = /usr/bin/man.REAL ] && [ "$(dpkg-divert --listpackage /usr/bin/man)" = LOCAL ] || { printf 'Unknown man diversion; preserving it.\n' >&2; exit 1; }
+    [ -x /usr/bin/man.REAL ] && [ ! -L /usr/bin/man.REAL ] || { printf 'Real man executable is missing; restore man-db first.\n' >&2; exit 1; }
+    install -d -m 0700 "$xtmoe_userland_state"
+    xtmoe_man_backup=$(mktemp "$xtmoe_userland_state/man-stub.XXXXXX")
+    cp -p -- /usr/bin/man "$xtmoe_man_backup"
+    rm -- /usr/bin/man
+    if ! dpkg-divert --local --rename --remove /usr/bin/man; then
+        [ -e /usr/bin/man ] || cp -p -- "$xtmoe_man_backup" /usr/bin/man
+        exit 1
+    fi
+    printf 'Restored man-db executable from the official minimized-image diversion.\n'
+fi
+if [ -f "$xtmoe_userland_state/restore.pending" ]; then
+    [ ! -L "$xtmoe_userland_state/restore.pending" ] && grep -qx ubuntu-base-userland-v1 "$xtmoe_userland_state/restore.pending" || { printf 'Unknown userland restore marker; preserving it.\n' >&2; exit 1; }
+    xtmoe_restore_packages=()
+    xtmoe_find_missing_userland() {
+      xtmoe_restore_packages=()
+      for xtmoe_sums in /var/lib/dpkg/info/*.md5sums; do
+        [ -f "$xtmoe_sums" ] || continue
+        xtmoe_package=${xtmoe_sums##*/}; xtmoe_package=${xtmoe_package%.md5sums}
+        [[ $xtmoe_package =~ ^[a-z0-9][a-z0-9+.-]*(:[a-z0-9]+)?$ ]] || continue
+        [ "$(dpkg-query -W -f='${db:Status-Status}' "$xtmoe_package" 2>/dev/null)" = installed ] || continue
+        while read -r xtmoe_checksum xtmoe_relative; do
+            case "$xtmoe_relative" in
+                usr/share/doc/*|usr/share/man/*|usr/share/locale/*/LC_MESSAGES/*.mo)
+                    [[ $xtmoe_relative != *'/../'* ]] || continue
+                    if [ ! -e "/$xtmoe_relative" ] && [ ! -L "/$xtmoe_relative" ]; then
+                        xtmoe_restore_packages+=("$xtmoe_package")
+                        break
+                    fi
+                    ;;
+            esac
+        done <"$xtmoe_sums"
+      done
+    }
+    xtmoe_find_missing_userland
+    if ((${#xtmoe_restore_packages[@]})); then
+        printf 'Restoring official documentation/translation files for %s installed packages.\n' "${#xtmoe_restore_packages[@]}"
+        apt-get install -y --reinstall "${xtmoe_restore_packages[@]}"
+    fi
+    xtmoe_find_missing_userland
+    ((${#xtmoe_restore_packages[@]} == 0)) || { printf 'Official userland files are still missing; keeping restore.pending for retry.\n' >&2; exit 1; }
+    for xtmoe_manual in bash systemctl sudo; do
+        xtmoe_manpath=$(man -w "$xtmoe_manual")
+        [[ $xtmoe_manpath == /usr/share/man/* ]] || { printf 'Manual lookup returned a placeholder instead of a real page.\n' >&2; exit 1; }
+    done
+    rm -- "$xtmoe_userland_state/restore.pending"
+    printf 'Ubuntu userland documentation restored.\n'
+fi
+# C.UTF-8 is provided by glibc, does not require a generated locale archive,
+# and remains available without overriding an administrator locale preference.
+if [ ! -e /etc/default/locale ]; then printf 'LANG=C.UTF-8\n' >/etc/default/locale; fi
+USERLAND_RESTORE
 }
 
 chroot_apt_guard_script() {
@@ -752,7 +856,7 @@ set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 apt-get() {
-    command apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o DPkg::Lock::Timeout=30 "$@"
+    command apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o DPkg::Lock::Timeout=30 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"
 }
 # Serialize package/service-policy changes, including an already running guest.
 exec 9>/run/xtmoe-apt.lock

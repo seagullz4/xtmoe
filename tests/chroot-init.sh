@@ -565,6 +565,99 @@ assert_ok 'Chroot hosts repair corrects existing NSS stub config without droppin
     grep -qx "hosts: files dns" "$fixture/etc/nsswitch.conf" && grep -qx "passwd: files" "$fixture/etc/nsswitch.conf" && grep -q custom-host "$fixture/etc/hosts" && [[ $(grep -c "^hosts:" "$fixture/etc/nsswitch.conf") == 1 ]]
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
+assert_ok 'Chroot repair preserves a configured hostname and adds one resolvable mapping' bash -c '
+    source <(awk "/^\\[\\[ .*id -u/ {skip=1} /^valid_name\\(\\)/ {skip=0} /^ACTION=/ {exit} !skip {print}" "$1/src/lib/xtmoe-root")
+    fixture="$2/hostname-preservation"; mkdir -p "$fixture/etc"
+    printf "my-ubuntu.example\n" >"$fixture/etc/hostname"
+    printf "10.0.0.1 custom-host\n" >"$fixture/etc/hosts"
+    ensure_hosts_config "$fixture"; ensure_hosts_config "$fixture"
+    [[ $(<"$fixture/etc/hostname") == my-ubuntu.example ]] || exit 1
+    [[ $(grep -c "127.0.1.1.*my-ubuntu.example" "$fixture/etc/hosts") == 1 ]] || exit 1
+    grep -qx "10.0.0.1 custom-host" "$fixture/etc/hosts"
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Ubuntu Base filters are backed up once and pending restoration survives repeated setup' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    fixture="$2/userland-filter"; mkdir -p "$fixture/dpkg"
+    printf "%s\n" "# Ubuntu Base defaults" "path-exclude=/usr/share/man/*" "path-exclude=/usr/share/locale/*/LC_MESSAGES/*.mo" "path-exclude=/usr/share/doc/*" "path-include=/usr/share/doc/*/copyright" "path-include=/usr/share/doc/*/changelog.*" >"$fixture/dpkg/excludes"
+    cp "$fixture/dpkg/excludes" "$fixture/original"
+    # Git Bash cannot represent a Linux 0700 directory ACL; the real device
+    # verifies permissions. Keep the policy/backup fixture filesystem-portable.
+    install() { shift 3; mkdir -p -- "$@"; }; export -f install
+    script=$(chroot_userland_prepare_script)
+    script=${script//\/etc\/dpkg\/dpkg.cfg.d/$fixture/dpkg}
+    script=${script//\/var\/lib\/xtmoe\/userland/$fixture/state}
+    bash -e -c "$script" && bash -e -c "$script" || exit 1
+    [[ ! -e $fixture/dpkg/excludes && -f $fixture/state/restore.pending ]] || exit 1
+    backups=("$fixture/state"/base-excludes.*)
+    [[ ${#backups[@]} == 1 ]] && cmp -s "${backups[0]}" "$fixture/original"
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Userland restoration replaces only the known local man placeholder and preserves a backup' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    fixture="$2/userland-man-stub"; mkdir -p "$fixture"
+    script=$(chroot_userland_restore_script)
+    sed -n "/^#!\/bin\/sh$/,/^XTMOE_MINIMIZED_MAN$/p" <<<"$script" | sed '\''$d'\'' >"$fixture/man"
+    printf "#!/bin/sh\nexit 0\n" >"$fixture/man.REAL"; chmod +x "$fixture/man.REAL"
+    script=${script//\/usr\/bin\/man/$fixture/man}
+    script=${script//\/var\/lib\/xtmoe\/userland/$fixture/state}
+    script=${script//\/etc\/default\/locale/$fixture/locale}
+    USERLAND_MAN_FIXTURE=$fixture; export USERLAND_MAN_FIXTURE
+    dpkg-divert() {
+        case "$1" in
+            --truename) printf "%s/man.REAL\n" "$USERLAND_MAN_FIXTURE";;
+            --listpackage) printf LOCAL;;
+            --local) mv "$USERLAND_MAN_FIXTURE/man.REAL" "$USERLAND_MAN_FIXTURE/man";;
+            *) return 9;;
+        esac
+    }
+    install() { shift 3; mkdir -p -- "$@"; }; export -f install dpkg-divert
+    bash -e -c "$script" || exit 1
+    [[ -x $fixture/man && ! -e $fixture/man.REAL ]] || exit 1
+    grep -q "exit 0" "$fixture/man" || exit 1
+    backups=("$fixture/state"/man-stub.*)
+    [[ ${#backups[@]} == 1 ]] && grep -q "This system has been minimized" "${backups[0]}"
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Userland preparation refuses custom filters and symlinks without changing policy' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    fixture="$2/userland-custom-filter"; mkdir -p "$fixture/dpkg"
+    printf "path-exclude=/usr/share/doc/custom/*\n" >"$fixture/dpkg/excludes"
+    script=$(chroot_userland_prepare_script)
+    script=${script//\/etc\/dpkg\/dpkg.cfg.d/$fixture/dpkg}
+    script=${script//\/var\/lib\/xtmoe\/userland/$fixture/state}
+    if bash -e -c "$script"; then exit 1; fi
+    [[ ! -e $fixture/state && $(<"$fixture/dpkg/excludes") == "path-exclude=/usr/share/doc/custom/*" ]] || exit 1
+    mv "$fixture/dpkg/excludes" "$fixture/custom"
+    ln -s "$fixture/custom" "$fixture/dpkg/excludes"
+    if bash -e -c "$script"; then exit 1; fi
+    [[ -L $fixture/dpkg/excludes && -f $fixture/custom && ! -e $fixture/state ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Userland restoration reinstalls only missing installed package files and retries APT failure' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    fixture="$2/userland-restore"; mkdir -p "$fixture/info" "$fixture/state"
+    printf "ubuntu-base-userland-v1\n" >"$fixture/state/restore.pending"
+    printf "abc usr/share/man/man1/fixture.1.gz\n" >"$fixture/info/fixture.md5sums"
+    printf "abc usr/share/man/man1/removed.1.gz\n" >"$fixture/info/removed.md5sums"
+    script=$(chroot_userland_restore_script)
+    script=${script//\/var\/lib\/xtmoe\/userland/$fixture/state}
+    script=${script//\/var\/lib\/dpkg\/info/$fixture/info}
+    script=${script//\/etc\/default\/locale/$fixture/locale}
+    script=${script//\"\/\$xtmoe_relative\"/\"$fixture/\$xtmoe_relative\"}
+    USERLAND_FIXTURE=$fixture; export USERLAND_FIXTURE
+    dpkg-query() { [[ ${!#} != removed ]] && printf installed || printf config-files; }
+    man() { printf "/usr/share/man/man1/%s.1.gz\n" "${!#}"; }
+    apt-get() { [[ $* == "install -y --reinstall fixture" ]] || return 9; return 1; }
+    export -f dpkg-query apt-get man
+    if bash -e -c "$script"; then exit 1; fi
+    [[ -f $fixture/state/restore.pending ]] || exit 1
+    apt-get() { [[ $* == "install -y --reinstall fixture" ]] || return 9; mkdir -p "$USERLAND_FIXTURE/usr/share/man/man1"; printf restored >"$USERLAND_FIXTURE/usr/share/man/man1/fixture.1.gz"; }
+    export -f apt-get
+    bash -e -c "$script" || exit 1
+    [[ ! -e $fixture/state/restore.pending && $(<"$fixture/locale") == LANG=C.UTF-8 ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
 assert_ok 'Chroot gate classifies software failure separately and probes NAT only in fresh netns' bash -c '
     source <(awk "/^\\[\\[ .*id -u/ {skip=1} /^valid_name\\(\\)/ {skip=0} /^ACTION=/ {exit} !skip {print}" "$1/src/lib/xtmoe-root")
     ROOTFS=/fixture

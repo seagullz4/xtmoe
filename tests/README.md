@@ -17,6 +17,7 @@ bash tests/run.sh
 - Chroot 阶段元数据、默认安装与网络范围提示、严格能力门控、绑定配置和路径校验；
 - `tests/docker-runtime.sh` 覆盖 nft 规则失败而 legacy 实测通过、两种后端失败、实际 OverlayFS 探测与经典 VFS 完整配置、保留已有配置/数据，以及精确策略路由的 native/no-op、VPN 出口、优先级冲突、回滚和重复停止；
 - `tests/chroot-init.sh` 覆盖新安装预检、init/repair 阶段顺序与幂等续跑、偏好保留、失败阻断、锁冲突、重装预检保留数据、Docker 依赖顺序/错误分类、APT 服务策略恢复、NSS 修复和 alternatives 链接；不执行真实包安装或挂载；
+- 用户空间恢复回归覆盖精确识别官方 Base 过滤器、备份与中断标记、保留自定义规则/符号链接、只恢复缺失的已安装包文件、APT 失败续跑、识别并还原官方 man 占位脚本，以及保留自定义 hostname 并幂等补齐 hosts；
 - 启动/修复回归执行实际生成的服务探测与路由安装脚本，覆盖 Docker 最终包安装后恢复 DNS、已激活 oneshot 再次刷新、停止 Docker socket、重启前停止失败阻断、保留已停止服务、总线/网络检测错误传播和非托管文件保护；
 - 代理回归覆盖大小写环境归一化、NO_PROXY 本机访问、注入换行拒绝、systemd `%` 转义、仅清理托管配置，以及代理远程解析场景仍必须通过实际 APT 验证；
 - systemd 验证使用生产生成脚本与模拟时钟，覆盖 starting 转 running、探测超时重试、没有 failed 单元但存在待完成任务、D-Bus 权限错误、空输出、总等待超时和命令执行失败；不再用始终直接返回 running 的夹具代替启动阶段验证；

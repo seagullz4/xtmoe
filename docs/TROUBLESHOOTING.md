@@ -1,5 +1,13 @@
 # 故障排查
 
+## 已安装 man，却只显示 system has been minimized
+
+Ubuntu Base 的 dpkg 文件过滤规则与 man 占位脚本会让“软件包已安装”和“命令退出 0”看起来正常，但手册正文仍不可用。更新 XTMOE 后执行 `xtmoe chroot setup ubuntu`，会备份并处理已知官方裁剪规则、恢复缺少的官方包文档、恢复真实 man-db；已有配置文件保留。成功后 `man -w bash` 应返回真实手册路径，`MANPAGER=cat man bash` 应输出 Bash 手册正文。自定义过滤器或非官方 man diversion 不自动覆盖。
+
+## systemd running，但日志仍有 BPF 或 journal 文件属性警告
+
+Android 旧内核可能拒绝 systemd 的 cgroup BPF 防火墙程序，存储文件系统也可能不支持 journal 所请求的文件属性。服务可运行不代表这些加固/文件属性能力已经生效；保留告警，不通过清空日志、禁用 SELinux、伪造内核能力或移除安全配置制造“无报错”。确认 systemctl 的失败单元、实际服务和应用测试后，分别记录运行结果与未具备的能力。当前手机上的已知告警不作为所有 Android 设备的通用结论。
+
 ## sudo -i 提示 no job control
 
 如果出现 `cannot set terminal process group (-1): Inappropriate ioctl for device` 和 `no job control in this shell`，但已经进入 `root@localhost:~#`，说明登录 Shell 已启动，控制终端/前台进程组没有正确关联。systemd 登录旧通道只进入 PID/mount namespace，未在新 PID 视图中重新取得控制终端，sudo 登录 Shell 因而无法建立作业控制。
