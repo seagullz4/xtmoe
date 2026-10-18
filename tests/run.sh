@@ -46,6 +46,7 @@ export XTMOE_CONFIG_DIR="$HOME/.config/xtmoe"
 export XTMOE_DATA_DIR="$HOME/.local/share/xtmoe"
 export XTMOE_CACHE_DIR="$HOME/.cache/xtmoe"
 export NO_COLOR=1
+unset http_proxy HTTP_PROXY https_proxy HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
 mkdir -p "$HOME" "$PREFIX/bin" "$TEST_TMP/mock-bin"
 
 # Git Bash has no flock. Keep offline command dispatch testable there; Linux
@@ -410,6 +411,7 @@ source "$ROOT_DIR/tests/audit.sh"
 source "$ROOT_DIR/tests/chroot-init.sh"
 source "$ROOT_DIR/tests/docker-runtime.sh"
 source "$ROOT_DIR/tests/menus.sh"
+source "$ROOT_DIR/tests/proxy.sh"
 
 cat >"$TEST_TMP/mock-bin/id" <<'MOCK'
 #!/usr/bin/env bash
@@ -620,7 +622,7 @@ pass 'README documentation targets exist'
 top_actions=$(grep -rhoE 'xtmoe[[:space:]]+[a-z][a-z-]*' "$README_FILE" "$ROOT_DIR/docs" "$ROOT_DIR/tests/README.md" | awk '{print $2}' | sort -u)
 for action in $top_actions; do
     case "$action" in
-        doctor|on|list|enter|proot|chroot|qemu|uninstall|update|uninstall-app|version|help) ;;
+        doctor|on|list|enter|proot|chroot|qemu|proxy|uninstall|update|uninstall-app|version|help) ;;
         *) fail "Documentation references unknown top-level action: $action" ;;
     esac
 done

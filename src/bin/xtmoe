@@ -11,6 +11,7 @@ else
 fi
 
 source "$XTMOE_LIB_DIR/common.sh"
+source "$XTMOE_LIB_DIR/proxy.sh"
 source "$XTMOE_LIB_DIR/proot.sh"
 source "$XTMOE_LIB_DIR/chroot.sh"
 source "$XTMOE_LIB_DIR/qemu.sh"
@@ -27,6 +28,7 @@ show_help() {
   xtmoe proot  <操作> [参数]
   xtmoe chroot <操作> [参数]
   xtmoe qemu   <操作> [参数]
+  xtmoe proxy [on|off|status|test|apply|reset|exec] [参数]
   xtmoe uninstall [--yes] <proot|chroot|qemu> <名称>
   xtmoe update
   xtmoe uninstall-app [--yes]
@@ -247,6 +249,10 @@ main() {
     local command=${1:-help}
     shift || true
     case "$command" in
+        proxy|help|-h|--help|version|-V|--version) ;;
+        *) proxy_load || return 1 ;;
+    esac
+    case "$command" in
         doctor) doctor "$@" ;;
         on) on_main "$@" ;;
         list) list_main "$@" ;;
@@ -254,6 +260,7 @@ main() {
         proot) proot_main "$@" ;;
         chroot) chroot_main "$@" ;;
         qemu) qemu_main "$@" ;;
+        proxy) proxy_main "$@" ;;
         uninstall) uninstall_main "$@" ;;
         update) update_main "$@" ;;
         uninstall-app) uninstall_app_main "$@" ;;

@@ -1,5 +1,19 @@
 # Android 真机验收记录
 
+## 2026-10-18：xtmoe proxy 持久代理命令
+
+同一 Android 13 / ARM64 / KernelSU 设备，使用手机代理软件实际提供的 HTTP/混合端口验证；保留命令 on/set/off/status/test/apply/reset/exec 的配置与进程边界。
+
+- 配置保存后在新的 XTMOE 进程中自动加载；proxy test 实际 HTTPS 请求成功，配置权限 0600。父 Termux Shell 不被修改，普通宿主命令可用 proxy exec 包装。
+- PRoot Alpine 3.22 的下载、--env 显式传递及容器 HTTP 请求成功，临时系统已删除。
+- 在持久代理开启状态下，新建 Ubuntu 24.04 Chroot，Base 校验、APT、systemd、Docker 官方包、registry 与 hello-world 验收成功，无手工 y。
+- Chroot curl 和 Docker daemon HTTP/HTTPS proxy 字段与保存配置一致，BusyBox 拉取成功。
+- 再次 on 相同地址，Docker MainPID 保持不变；off 清除托管 drop-in，daemon proxy 字段为空；随后 on 恢复设置。停止 Chroot 后再次 on，容器仍保持 stopped。
+- 安装、环境修复、PRoot、Chroot 安装、Chroot 代理切换与清理六阶段退出码均为 0。两个临时容器已清理，用户保存的实际代理配置保留。
+- 新 Termux 环境曾遇到 Bash conffile 无交互失败，以及 curl/ngtcp2 配套库缺符号。前者通过安装选项保留旧配置处理，后者完整升级配套包修复；proxy test 会单独识别 curl 无法运行，避免误报代理网络故障。
+
+本地回归为 `253 passed, 0 failed`；18 个 Bash 文件语法、ShellCheck warning 级别和空白检查通过。原始日志保存在设备 `~/xtmoe-proxy-evidence-20261018/` 与本地 `dist/validation/proxy/`，不发布运行配置、凭据和日志。本轮没有验证任意 systemd 服务、Docker 应用内部或 QEMU 客体的透明代理；这些不在命令自动接管范围。
+
 ## 2026-10-18：四类精简菜单、首次安装与代理兼容
 
 本轮在同一台 Android 13 / ARM64 / KernelSU / `4.14.336-GinHalion` 设备通过 ADB 验收；保留用户现有 `ubuntu`，另建 `xtmoe-first-20261018-04`。宿主 VPN 正在使用，SELinux 为 Enforcing，未切换宿主安全模式。

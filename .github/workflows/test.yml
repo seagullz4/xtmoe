@@ -26,6 +26,7 @@ jobs:
             termux.sh \
             src/bin/xtmoe \
             src/lib/common.sh \
+            src/lib/proxy.sh \
             src/lib/proot.sh \
             src/lib/chroot.sh \
             src/lib/qemu.sh \
@@ -37,6 +38,7 @@ jobs:
             tests/chroot-init.sh \
             tests/docker-runtime.sh \
             tests/menus.sh \
+            tests/proxy.sh \
             tests/android-smoke.sh \
             tests/rootfs-lifecycle.sh; do
             bash -n "$file"
@@ -49,6 +51,7 @@ jobs:
             termux.sh \
             src/bin/xtmoe \
             src/lib/common.sh \
+            src/lib/proxy.sh \
             src/lib/proot.sh \
             src/lib/chroot.sh \
             src/lib/qemu.sh \
@@ -60,6 +63,7 @@ jobs:
             tests/chroot-init.sh \
             tests/docker-runtime.sh \
             tests/menus.sh \
+            tests/proxy.sh \
             tests/android-smoke.sh \
             tests/rootfs-lifecycle.sh
 

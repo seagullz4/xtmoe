@@ -1,5 +1,7 @@
 # PRoot 模式
 
+需要代理时，先在普通 Termux 执行 `xtmoe proxy on 10808`（实际 HTTP/混合端口），再 login/exec。XTMOE 会用 `proot-distro login --env` 显式传入代理，不依赖 PRoot 保留宿主环境。已打开的会话需重新进入；详情见 [统一代理](PROXY.md)。
+
 PRoot 不需要手机 Root。XTMOE 将容器生命周期委托给 Termux 官方维护的 `proot-distro`，并负责统一入口、环境诊断和危险操作确认。
 
 本文所有命令都以前置安装完成为条件：先在源码目录执行 `sh termux.sh`，再执行 `xtmoe doctor` 并处理其报告的基础环境问题。

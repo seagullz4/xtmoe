@@ -118,23 +118,7 @@ chroot_root() (
 )
 
 # Only network proxy settings cross the Root boundary, never Termux PATH or LD_PRELOAD.
-chroot_proxy_environment() {
-    local lower upper value any=0
-    for lower in http_proxy https_proxy all_proxy; do
-        upper=${lower^^}; value=${!lower:-${!upper:-}}
-        [[ -n $value ]] || continue
-        [[ $value != *$'\n'* && $value != *$'\r'* ]] || { warn '代理设置不能包含换行。'; return 1; }
-        printf '%s=%s\n%s=%s\n' "$lower" "$value" "$upper" "$value"
-        any=1
-    done
-    if ((any)); then
-        value=${no_proxy:-${NO_PROXY:-}}
-        [[ $value != *$'\n'* && $value != *$'\r'* ]] || { warn 'NO_PROXY 不能包含换行。'; return 1; }
-        value="${value:+$value,}localhost,127.0.0.1,::1"
-        printf 'no_proxy=%s\nNO_PROXY=%s\n' "$value" "$value"
-    fi
-    return 0
-}
+chroot_proxy_environment() { proxy_environment; }
 
 require_chroot() {
     require_termux
@@ -146,7 +130,9 @@ chroot_prepare() {
     require_termux
     require_command pkg '请使用官方 Termux 客户端'
     info '安装 Chroot 所需的 Termux 软件包……'
-    pkg install -y tsu mount-utils util-linux coreutils curl tar || return 1
+    DEBIAN_FRONTEND=noninteractive pkg install -y \
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+        tsu mount-utils util-linux coreutils curl tar || return 1
     if root_available; then
         ok 'Chroot 依赖与 Root 授权可用'
     else
@@ -566,6 +552,14 @@ chroot_docker_proxy_script() {
 set -Eeuo pipefail
 directory=/etc/systemd/system/docker.service.d
 file=$directory/90-xtmoe-proxy.conf
+apply_mode=${1:-configure}
+changed=0
+apply_if_changed() {
+    if [ "$apply_mode" = apply ] && [ "$changed" = 1 ]; then
+        systemctl daemon-reload
+        if systemctl is-active --quiet docker.service; then systemctl restart docker.service; fi
+    fi
+}
 [ ! -L "$directory" ] || { printf "拒绝符号链接形式的 Docker 代理目录。\n" >&2; exit 1; }
 if [ -e "$file" ] || [ -L "$file" ]; then
     [ ! -L "$file" ] && grep -q "^# XTMOE managed:" "$file" || { printf "拒绝覆盖非 XTMOE 代理配置。\n" >&2; exit 1; }
@@ -582,7 +576,9 @@ for key in http_proxy HTTP_PROXY https_proxy HTTPS_PROXY all_proxy ALL_PROXY no_
     entries+=("Environment=\"$assignment\"")
 done
 if ((${#entries[@]} == 0)); then
+    if [ -e "$file" ]; then changed=1; fi
     rm -f -- "$file"
+    apply_if_changed
     exit 0
 fi
 install -d -m 0755 "$directory"
@@ -590,7 +586,13 @@ temporary=$(mktemp "$directory/.xtmoe-proxy.XXXXXX")
 trap 'rm -f -- "$temporary"' EXIT
 chmod 0600 "$temporary"
 printf '%s\n' '# XTMOE managed: proxy settings from the current Termux session.' '[Service]' "${entries[@]}" >"$temporary"
-mv -T -- "$temporary" "$file"
+if ! cmp -s -- "$temporary" "$file"; then
+    mv -T -- "$temporary" "$file"
+    changed=1
+else
+    chmod 0600 "$file"
+fi
+apply_if_changed
 PROXY_CONFIG
 }
 

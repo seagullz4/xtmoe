@@ -37,7 +37,7 @@ esac
 SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
 SOURCE_DIR="$SCRIPT_DIR/src"
 [ -r "$SOURCE_DIR/bin/xtmoe" ] || die "源文件不完整：$SOURCE_DIR/bin/xtmoe"
-for module in common.sh proot.sh chroot.sh qemu.sh manager.sh xtmoe-root xtmoe-docker-routing xtmoe-docker-routing.service; do
+for module in common.sh proxy.sh proot.sh chroot.sh qemu.sh manager.sh xtmoe-root xtmoe-docker-routing xtmoe-docker-routing.service; do
     [ -r "$SOURCE_DIR/lib/$module" ] || die "源文件不完整：$SOURCE_DIR/lib/$module"
 done
 
@@ -47,7 +47,9 @@ LIB_DIR="$XTMOE_PREFIX/libexec/xtmoe"
 
 if command -v pkg >/dev/null 2>&1 && [ "${XTMOE_SKIP_PACKAGES:-0}" != 1 ]; then
     say '安装基础依赖（bash、coreutils、curl、tar、util-linux、proot-distro）……'
-    pkg install -y bash coreutils curl tar util-linux proot-distro
+    DEBIAN_FRONTEND=noninteractive pkg install -y \
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+        bash coreutils curl tar util-linux proot-distro
 fi
 
 mkdir -p "$BIN_DIR" "$LIB_DIR/lib"
@@ -55,6 +57,7 @@ mkdir -p "$BIN_DIR" "$LIB_DIR/lib"
 # Libraries are replaced before the command entrypoint, so an interrupted
 # update cannot leave a new command that imports missing old modules.
 atomic_install "$SOURCE_DIR/lib/common.sh" "$LIB_DIR/lib/common.sh" 0644
+atomic_install "$SOURCE_DIR/lib/proxy.sh" "$LIB_DIR/lib/proxy.sh" 0644
 atomic_install "$SOURCE_DIR/lib/proot.sh" "$LIB_DIR/lib/proot.sh" 0644
 atomic_install "$SOURCE_DIR/lib/chroot.sh" "$LIB_DIR/lib/chroot.sh" 0644
 atomic_install "$SOURCE_DIR/lib/qemu.sh" "$LIB_DIR/lib/qemu.sh" 0644

@@ -68,6 +68,17 @@ Chroot
 
 当操作需要已存在的容器时，向导会列出该模式全部容器，例如 `1) ubuntu`、`2) debian`；输入数字选择，无需手工输入名称。`0`、直接回车或输入结束均可取消，不会沿用旧目标。新装与 Chroot/QEMU 恢复要求输入新名称；PRoot 恢复沿用备份内的名称。
 
+统一代理可以保存一次供后续 XTMOE 命令、PRoot/Chroot 会话和 Chroot Docker 拉镜像使用：
+
+```sh
+xtmoe proxy on 10808       # 换成手机代理软件实际的 HTTP/混合端口
+xtmoe proxy status
+xtmoe proxy test
+xtmoe proxy off
+```
+
+运行中的 systemd Docker 仅在代理配置变化时重启，停止的容器保持停止；这不是所有应用的透明代理。完整用法与范围见 [统一代理](docs/PROXY.md)。
+
 查看当前正在运行的系统并选择进入：
 
 ```sh

@@ -98,3 +98,22 @@ ensure_dirs() {
     mkdir -p "$XTMOE_CONFIG_DIR" "$XTMOE_DATA_DIR" "$XTMOE_CACHE_DIR"
 }
 
+# Only proxy variables cross guest boundaries; do not inherit Termux PATH/LD_PRELOAD.
+proxy_environment() {
+    local lower upper value any=0
+    for lower in http_proxy https_proxy all_proxy; do
+        upper=${lower^^}; value=${!lower:-${!upper:-}}
+        [[ -n $value ]] || continue
+        [[ $value != *$'\n'* && $value != *$'\r'* ]] || { warn '代理设置不能包含换行。'; return 1; }
+        printf '%s=%s\n%s=%s\n' "$lower" "$value" "$upper" "$value"
+        any=1
+    done
+    if ((any)); then
+        value=${no_proxy:-${NO_PROXY:-}}
+        [[ $value != *$'\n'* && $value != *$'\r'* ]] || { warn 'NO_PROXY 不能包含换行。'; return 1; }
+        value="${value:+$value,}localhost,127.0.0.1,::1"
+        printf 'no_proxy=%s\nNO_PROXY=%s\n' "$value" "$value"
+    fi
+    return 0
+}
+

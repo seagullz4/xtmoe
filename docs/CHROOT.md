@@ -119,6 +119,8 @@ xtmoe chroot network-repair ubuntu
 
 ### VPN 与显式代理
 
+推荐先在普通 Termux 使用 `xtmoe proxy on 10808`（换成实际 HTTP/混合端口）保存代理。后续进入、安装依赖和 Docker 拉镜像自动采用；`xtmoe proxy off` 关闭，`xtmoe proxy test` 验证连通性。命令会同步运行中的 systemd Chroot，配置变化时重启运行中的 Docker，不启动已停止容器。详细范围见 [统一代理](PROXY.md)。下面的临时环境变量方式仍兼容。
+
 Android VPN 继续由宿主管理，XTMOE 跟随当前宿主出口。若使用本机 HTTP 代理，在普通 Termux 中先设置代理，再安装或重启 Docker，例如：
 
 ```sh

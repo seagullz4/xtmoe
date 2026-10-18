@@ -60,6 +60,17 @@ proot_install() {
     fi
 }
 
+proot_login() {
+    local name=$1 assignment values=''
+    local -a arguments=(login "$name")
+    shift
+    values=$(proxy_environment) || return 1
+    if [[ -n $values ]]; then
+        while IFS= read -r assignment; do arguments+=(--env "$assignment"); done <<<"$values"
+    fi
+    proot-distro "${arguments[@]}" "$@"
+}
+
 proot_backup() {
     require_arg_range 1 2 "$#" 'xtmoe proot backup <名称> [文件]'
     local name=${1:?缺少容器名称} output=${2:-"$PWD/${1}-$(date +%Y%m%d-%H%M%S).tar.gz"}
@@ -96,7 +107,7 @@ proot_update_system() {
     local name=${1:-ubuntu}
     require_name "$name"
     proot_exists "$name" || die "PRoot 容器不存在：$name"
-    proot-distro login "$name" -- /bin/sh -lc '
+    proot_login "$name" -- /bin/sh -lc '
 set -eu
 if command -v apt-get >/dev/null 2>&1; then
     apt-get update
@@ -164,14 +175,14 @@ proot_main() {
             local name=${1:-ubuntu}
             require_name "$name"
             (($# == 0)) || shift
-            proot-distro login "$name" "$@"
+            proot_login "$name" "$@"
             ;;
         exec)
             local name=${1:?缺少容器名称}; shift
             require_name "$name"
             [[ ${1:-} == -- ]] && shift
             (($#)) || die '缺少要执行的命令'
-            proot-distro login "$name" -- "$@"
+            proot_login "$name" -- "$@"
             ;;
         list|ls) proot-distro list "$@" ;;
         ps) proot-distro ps "$@" ;;
