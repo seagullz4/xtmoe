@@ -33,11 +33,16 @@ case "${PREFIX:-}" in
 esac
 
 [ "$(id -u)" -ne 0 ] || die '不要使用 su/tsu 运行安装器；需要 Root 的操作会单独提权。'
+if [ "${XTMOE_ALLOW_NON_TERMUX:-0}" != 1 ]; then
+    android_api=$(getprop ro.build.version.sdk 2>/dev/null) || die '无法检测 Android API'
+    case "$android_api" in ''|*[!0-9]*) die 'Android API 无效';; esac
+    [ "$android_api" -ge 24 ] || die 'XTMOE v1.0.0 要求 Android 7.0 / API 24 或更新系统'
+fi
 
 SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
 SOURCE_DIR="$SCRIPT_DIR/src"
 [ -r "$SOURCE_DIR/bin/xtmoe" ] || die "源文件不完整：$SOURCE_DIR/bin/xtmoe"
-for module in common.sh proxy.sh proot.sh chroot.sh qemu.sh manager.sh xtmoe-root xtmoe-docker-routing xtmoe-docker-routing.service; do
+for module in common.sh capabilities.sh proxy.sh proot.sh chroot.sh manager.sh xtmoe-root xtmoe-network xtmoe-docker-routing xtmoe-docker-routing.service; do
     [ -r "$SOURCE_DIR/lib/$module" ] || die "源文件不完整：$SOURCE_DIR/lib/$module"
 done
 
@@ -49,21 +54,22 @@ if command -v pkg >/dev/null 2>&1 && [ "${XTMOE_SKIP_PACKAGES:-0}" != 1 ]; then
     say '安装基础依赖（bash、coreutils、curl、tar、util-linux、proot-distro）……'
     DEBIAN_FRONTEND=noninteractive pkg install -y \
         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-        bash coreutils curl tar util-linux proot-distro
+        bash coreutils curl tar util-linux proot-distro socat
 fi
 
 mkdir -p "$BIN_DIR" "$LIB_DIR/lib"
 
 # Libraries are replaced before the command entrypoint, so an interrupted
 # update cannot leave a new command that imports missing old modules.
+atomic_install "$SOURCE_DIR/lib/capabilities.sh" "$LIB_DIR/lib/capabilities.sh" 0644
 atomic_install "$SOURCE_DIR/lib/common.sh" "$LIB_DIR/lib/common.sh" 0644
 atomic_install "$SOURCE_DIR/lib/proxy.sh" "$LIB_DIR/lib/proxy.sh" 0644
 atomic_install "$SOURCE_DIR/lib/proot.sh" "$LIB_DIR/lib/proot.sh" 0644
 atomic_install "$SOURCE_DIR/lib/chroot.sh" "$LIB_DIR/lib/chroot.sh" 0644
-atomic_install "$SOURCE_DIR/lib/qemu.sh" "$LIB_DIR/lib/qemu.sh" 0644
 atomic_install "$SOURCE_DIR/lib/manager.sh" "$LIB_DIR/lib/manager.sh" 0644
 atomic_install "$SOURCE_DIR/lib/xtmoe-docker-routing" "$LIB_DIR/lib/xtmoe-docker-routing" 0644
 atomic_install "$SOURCE_DIR/lib/xtmoe-docker-routing.service" "$LIB_DIR/lib/xtmoe-docker-routing.service" 0644
+atomic_install "$SOURCE_DIR/lib/xtmoe-network" "$LIB_DIR/lib/xtmoe-network" 0644
 atomic_install "$SOURCE_DIR/lib/xtmoe-root" "$LIB_DIR/xtmoe-root" 0755
 
 SOURCE_ROOT_FILE="$LIB_DIR/source-root"

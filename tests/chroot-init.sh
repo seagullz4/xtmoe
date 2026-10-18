@@ -417,6 +417,7 @@ assert_ok 'Login boots a configured systemd environment and never silently falls
 assert_ok 'Live network refresh fixes DNS, refreshes active Docker only, and preserves bus errors' bash -c '
     source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
     lifecycle_log="$2/live-network"; service_state=active; export service_state
+    chroot_root() { [[ $1 == network-refresh ]] || return 1; printf "network\n" >>"$lifecycle_log"; }
     dockerd() { :; }
     systemctl() { [[ $service_state != bus-error ]] || return 1; printf "%s\n" "$service_state"; }
     export -f dockerd systemctl
@@ -424,11 +425,11 @@ assert_ok 'Live network refresh fixes DNS, refreshes active Docker only, and pre
     chroot_docker_routing_setup() { printf "route\n" >>"$lifecycle_log"; }
     chroot_systemd_exec() { bash -c "$5"; }
     chroot_systemd_network_refresh fixture || exit 1
-    [[ $(tr "\n" " " <"$lifecycle_log") == "dns route " ]] || exit 1
+    [[ $(tr "\n" " " <"$lifecycle_log") == "network dns route " ]] || exit 1
     for service_state in inactive failed activating; do
         : >"$lifecycle_log"
         chroot_systemd_network_refresh fixture || exit 1
-        [[ $(<"$lifecycle_log") == dns ]] || exit 1
+        [[ $(tr "\n" " " <"$lifecycle_log") == "network dns " ]] || exit 1
     done
     service_state=bus-error
     if chroot_systemd_network_refresh fixture; then exit 1; fi
@@ -437,7 +438,7 @@ assert_ok 'Live network refresh fixes DNS, refreshes active Docker only, and pre
 assert_ok 'Network repair leaves stopped services stopped, avoids APT, and propagates network failure' bash -c '
     source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
     lifecycle_log="$2/network-repair"; runtime_mode=stopped
-    chroot_root() { [[ $1 == status ]] || exit 9; printf "%s\n" "$runtime_mode"; }
+    chroot_root() { if [[ $1 == status ]]; then printf "%s\n" "$runtime_mode"; elif [[ $1 == network-refresh ]]; then :; else exit 9; fi; }
     chroot_apply_dns() { printf "dns\n" >>"$lifecycle_log"; }
     chroot_systemd_network_refresh() { printf "refresh\n" >>"$lifecycle_log"; }
     chroot_network_check() { printf "check\n" >>"$lifecycle_log"; }
@@ -709,6 +710,7 @@ MOCK_CHROOT
     mount_all() { [[ $2 == 0 ]] || exit 9; printf "mounts\n" >>"$SYSTEMD_LAUNCH_FIXTURE_LOG"; }
     ensure_cgroup_mount() { printf "cgroup\n" >>"$SYSTEMD_LAUNCH_FIXTURE_LOG"; }
     systemd_protect_kernel_views() { printf "protect\n" >>"$SYSTEMD_LAUNCH_FIXTURE_LOG"; }
+    net_proxy_environment() { :; }
     (systemd_namespace_launch fixture.binds) || exit 1
     [[ $(tr "\n" " " <"$SYSTEMD_LAUNCH_FIXTURE_LOG") == "isolate mounts cgroup protect exec " ]] || exit 1
     grep -qx container=xtmoe "$SYSTEMD_LAUNCH_FIXTURE_ARGS" && grep -qx /usr/bin/env "$SYSTEMD_LAUNCH_FIXTURE_ARGS" && grep -qx -- -i "$SYSTEMD_LAUNCH_FIXTURE_ARGS" && grep -q /run/host/container-manager "$SYSTEMD_LAUNCH_FIXTURE_ARGS"

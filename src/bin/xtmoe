@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
 
-XTMOE_VERSION='0.4.0-dev'
+XTMOE_VERSION='v1.0.0'
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 if [[ -r "$SCRIPT_DIR/../lib/common.sh" ]]; then
@@ -14,43 +14,31 @@ source "$XTMOE_LIB_DIR/common.sh"
 source "$XTMOE_LIB_DIR/proxy.sh"
 source "$XTMOE_LIB_DIR/proot.sh"
 source "$XTMOE_LIB_DIR/chroot.sh"
-source "$XTMOE_LIB_DIR/qemu.sh"
 source "$XTMOE_LIB_DIR/manager.sh"
 
 show_help() {
     printf 'XTMOE %s\n\n' "$XTMOE_VERSION"
     cat <<'EOF'
 用法：
-  xtmoe doctor
-  xtmoe on
+  xtmoe on                          管理向导（安装、服务、网络、代理、数据和维护）
+  xtmoe doctor                      环境与能力检查
   xtmoe list [--all|--running] [--no-prompt]
-  xtmoe enter <proot|chroot|qemu> <名称>
-  xtmoe proot  <操作> [参数]
-  xtmoe chroot <操作> [参数]
-  xtmoe qemu   <操作> [参数]
-  xtmoe proxy [on|off|status|test|apply|reset|exec] [参数]
-  xtmoe uninstall [--yes] <proot|chroot|qemu> <名称>
-  xtmoe update
-  xtmoe uninstall-app [--yes]
+  xtmoe proot install [镜像] [名称]  默认 ubuntu:24.04 / ubuntu
+  xtmoe proot login [名称]
+  xtmoe proot exec <名称> -- <命令>
+  xtmoe proot list|ps
+  xtmoe proot stop <名称>
+  xtmoe proot backup <名称> [文件]
+  xtmoe proot update-system|status [名称]
+  xtmoe chroot prepare
+  xtmoe chroot install [ubuntu] [24.04] [名称]
+  xtmoe chroot systemd-login [名称]   按容器实际运行方式进入
+  xtmoe chroot stop|status [名称]
+  xtmoe uninstall [--yes] <proot|chroot> <名称>
   xtmoe version
   xtmoe help
 
-常用示例：
-  xtmoe on
-  xtmoe list
-  xtmoe list --all --no-prompt
-  xtmoe enter chroot ubuntu
-  xtmoe proot install ubuntu:24.04 ubuntu
-  xtmoe proot login ubuntu
-  xtmoe proot exec ubuntu -- uname -a
-  xtmoe chroot install ubuntu 24.04 ubuntu
-  xtmoe chroot login ubuntu
-  xtmoe chroot stop ubuntu
-  xtmoe qemu install ubuntu-qemu
-  xtmoe qemu ssh ubuntu-qemu
-  xtmoe uninstall chroot ubuntu
-
-运行 `xtmoe proot help`、`xtmoe chroot help` 或 `xtmoe qemu help` 查看模式专用帮助。
+更多功能通过 xtmoe on 操作；模式帮助：xtmoe proot help / xtmoe chroot help。
 EOF
 }
 
@@ -64,7 +52,7 @@ source_root() {
 }
 
 update_main() {
-    (($# == 0)) || die 'xtmoe update 不接受额外参数'
+    (($# == 0)) || die 'xtmoe on → 程序维护 → 更新程序 不接受额外参数'
     require_termux
     require_command git '执行 pkg install git'
     local root status new_version
@@ -108,10 +96,10 @@ uninstall_main() {
             *) positional+=("$argument") ;;
         esac
     done
-    ((${#positional[@]} == 2)) || die '用法：xtmoe uninstall [--yes] <proot|chroot|qemu> <名称>'
+    ((${#positional[@]} == 2)) || die '用法：xtmoe uninstall [--yes] <proot|chroot> <名称>'
     mode=${positional[0]}
     name=${positional[1]}
-    [[ $mode == proot || $mode == chroot || $mode == qemu ]] || die "未知模式：$mode（只能是 proot、chroot 或 qemu）"
+    [[ $mode == proot || $mode == chroot ]] || die "未知模式：$mode（只能是 proot 或 chroot）"
     require_name "$name"
 
     local -a remove_args=(remove "$name")
@@ -119,156 +107,30 @@ uninstall_main() {
     case "$mode" in
         proot) proot_main "${remove_args[@]}" ;;
         chroot) chroot_main "${remove_args[@]}" ;;
-        qemu) qemu_main "${remove_args[@]}" ;;
     esac
 }
 
-doctor() {
-    local failures=0 android_release='未知' root_state='不可用' architecture available_kb apk_release
-    local installed_path runtime_path installed_version='' recorded_source='' source_version=''
-
-    info "XTMOE $XTMOE_VERSION 环境检查"
-    runtime_path=$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
-    installed_path=$(command -v xtmoe 2>/dev/null || true)
-    info "当前程序：$runtime_path"
-    if [[ -n $installed_path ]]; then
-        installed_version=$(bash "$installed_path" version 2>/dev/null || true)
-        info "已安装命令：$installed_path（${installed_version:-版本读取失败}）"
-    else
-        warn 'PATH 中没有已安装的 xtmoe；请执行 sh termux.sh'
-        ((failures += 1))
-    fi
-    if [[ -r ${PREFIX:-}/libexec/xtmoe/source-root ]]; then
-        IFS= read -r recorded_source <"$PREFIX/libexec/xtmoe/source-root"
-        info "源码目录：$recorded_source"
-        if [[ -r $recorded_source/src/bin/xtmoe ]]; then
-            source_version=$(bash "$recorded_source/src/bin/xtmoe" version 2>/dev/null || true)
-            if [[ -n $installed_version && $source_version != "$installed_version" ]]; then
-                warn "源码与已安装命令版本不一致：源码=$source_version，安装=$installed_version；执行 xtmoe update"
-                ((failures += 1))
-            fi
-        else
-            warn '记录的源码目录不可用；请重新克隆并安装'
-            ((failures += 1))
-        fi
-    else
-        warn '缺少源码位置记录；请在源码目录重新执行 sh termux.sh'
-        ((failures += 1))
-    fi
-    if is_termux; then
-        ok "Termux 环境：${PREFIX:-未知}"
-    else
-        warn '当前不是可识别的 Termux 环境'
-        ((failures += 1))
-    fi
-
-    if command_exists getprop; then
-        android_release=$(getprop ro.build.version.release 2>/dev/null || true)
-    fi
-    architecture=$(uname -m)
-    info "Android：${android_release:-未知}；架构：$architecture"
-    case "$architecture" in
-        aarch64|arm64|armv7l|armv8l|arm|x86_64|amd64) ;;
-        *) warn "当前架构尚未列入 Chroot 支持矩阵：$architecture" ;;
-    esac
-
-    apk_release=${TERMUX_APK_RELEASE:-${TERMUX_APP__APK_RELEASE:-未知}}
-    info "Termux APK 来源：$apk_release"
-    case "${apk_release^^}" in
-        *GOOGLE*PLAY*|*PLAY*STORE*)
-            warn '检测到已停止维护的 Google Play Termux；请改用 F-Droid 或官方 GitHub 版本'
-            ((failures += 1))
-            ;;
-    esac
-
-    if [[ $(id -u) -eq 0 ]]; then
-        warn '当前会话是 Root；请退出 su/tsu 后再运行 xtmoe'
-        ((failures += 1))
-    else
-        ok '当前为 Termux 普通用户'
-    fi
-
-    for cmd in bash curl tar sha256sum; do
-        if command_exists "$cmd"; then
-            ok "命令：$cmd"
-        else
-            warn "缺少命令：$cmd"
-            ((failures += 1))
-        fi
-    done
-
-    if command_exists proot-distro; then
-        ok "PRoot：$(proot-distro --version 2>/dev/null | head -n 1 || printf '已安装')"
-    else
-        warn 'PRoot：缺少 proot-distro（执行 pkg install proot-distro）'
-    fi
-
-    if command_exists qemu-system-aarch64 || command_exists qemu-system-x86_64; then
-        ok 'QEMU System：已安装'
-        if [[ -r /dev/kvm && -w /dev/kvm ]]; then ok 'KVM：可访问'; else info 'KVM：不可访问，将使用较慢的 TCG'; fi
-    else
-        info 'QEMU System：未安装（按需执行 xtmoe qemu prepare）'
-    fi
-
-    if root_available; then
-        root_state='可用'
-        ok "Root：$root_state"
-        for cmd in mount umount chroot script; do
-            if command_exists "$cmd"; then
-                ok "Chroot 命令：$cmd"
-            else
-                warn "Root 可用但缺少 Chroot 命令：$cmd（执行 xtmoe chroot prepare）"
-            fi
-        done
-    else
-        info 'Root：不可用；PRoot 不受影响，Chroot 不可用'
-    fi
-
-    if [[ -d /sdcard || -d /storage/emulated/0 ]]; then
-        ok 'Android 共享存储目录存在'
-    else
-        info '未发现共享存储；如需访问，请执行 termux-setup-storage'
-    fi
-
-    available_kb=$(df -Pk "$XTMOE_HOME" 2>/dev/null | awk 'NR == 2 { print $4 }' || true)
-    if [[ $available_kb =~ ^[0-9]+$ ]]; then
-        info "可用空间：$((available_kb / 1024)) MiB"
-        if ((available_kb < 1048576)); then
-            warn '可用空间低于 1 GiB，安装 Linux 容器可能失败'
-        fi
-    fi
-
-    if ((failures > 0)); then
-        warn "检查完成：发现 $failures 个基础问题"
-        return 1
-    fi
-    ok '检查完成：基础环境可用'
-}
+doctor() { capability_report "$@"; }
 
 main() {
     local command=${1:-help}
     shift || true
     case "$command" in
-        proxy|on|help|-h|--help|version|-V|--version) ;;
+        on|help|-h|--help|version|-V|--version) ;;
         *) proxy_load || return 1 ;;
     esac
     case "$command" in
         doctor) doctor "$@" ;;
         on) on_main "$@" ;;
         list) list_main "$@" ;;
-        enter) enter_main "$@" ;;
-        proot) proot_main "$@" ;;
-        chroot) chroot_main "$@" ;;
-        qemu) qemu_main "$@" ;;
-        proxy) proxy_main "$@" ;;
+        proot) public_proot "$@" ;;
+        chroot) public_chroot "$@" ;;
         uninstall) uninstall_main "$@" ;;
-        update) update_main "$@" ;;
-        uninstall-app) uninstall_app_main "$@" ;;
         version|-V|--version) printf 'xtmoe %s\n' "$XTMOE_VERSION" ;;
         help|-h|--help) show_help ;;
-        *) die "未知命令：$command（执行 xtmoe help 查看帮助）" ;;
+        *) die "未知或未公开的命令：$command；请运行 xtmoe on 或 xtmoe help" ;;
     esac
 }
 
-main "$@"
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
 

@@ -31,6 +31,10 @@ routing_stop() {
 routing_start() {
     local config subnet gateway bridge route table=main candidate last tmp word
     routing_stop || return 1
+    if [[ -f /run/xtmoe-network-mode && $(</run/xtmoe-network-mode) == isolated ]]; then
+        printf 'Private Chroot network: Android bridge policy routing is not needed.\n'
+        return 0
+    fi
     config=$(timeout 10 docker network inspect bridge --format '{{(index .IPAM.Config 0).Subnet}} {{(index .IPAM.Config 0).Gateway}}') || return 1
     read -r subnet gateway <<<"$config"
     bridge=$(timeout 10 docker network inspect bridge --format '{{index .Options "com.docker.network.bridge.name"}}') || return 1

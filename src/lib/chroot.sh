@@ -2,47 +2,17 @@
 
 chroot_help() {
     cat <<'EOF'
-Chroot 模式（需要设备 Root；当前支持原生架构 Ubuntu Base 24.04）
-
-  xtmoe chroot install [--yes] [--skip-systemd] [--skip-bash-sh] [--skip-docker]
-                       [--accept-host-network-changes] [ubuntu] [24.04] [名称]
-  xtmoe chroot prepare                    安装 tsu、mount-utils 等依赖
-  xtmoe chroot login [名称]
-  xtmoe chroot exec <名称> -- <命令>
-  xtmoe chroot setup [名称]             更新 apt 并安装常用基础包
-  xtmoe chroot init [--skip-docker] [--skip-bash-sh] [--accept-host-network-changes] [名称]
-                                        一键配置已有 Ubuntu 的网络、基础包、systemd 和 Docker
-  xtmoe chroot repair [--accept-host-network-changes] [名称]
-  xtmoe chroot update-system [名称]
-  xtmoe chroot reinstall [--yes] [--skip-docker] [--accept-host-network-changes] [名称]
-  xtmoe chroot network-check [名称]
-  xtmoe chroot network-repair [名称]    修复 DNS，刷新运行中 Docker 的默认 bridge 路由并检测
-  xtmoe chroot cgroup-check [名称]
-  xtmoe chroot docker-check [名称]      只读检查 Docker/1Panel 内核条件
-  xtmoe chroot docker-install [--accept-host-network-changes] [名称]
-  xtmoe chroot docker-start|docker-stop|docker-restart [名称]
-  xtmoe chroot docker-status|docker-logs [名称]
-  xtmoe chroot docker-direct-install [--accept-host-network-changes] [名称]
-  xtmoe chroot docker-direct-start|docker-direct-stop [名称]
-  xtmoe chroot docker-direct-status|docker-direct-logs|docker-direct-run-test [名称]
-  xtmoe chroot systemd-check [名称]     检查嵌套 systemd 启动条件
-  xtmoe chroot systemd-start [名称]     在 PID namespace 中启动 systemd
-  xtmoe chroot systemd-login [名称]     进入 systemd 会话 Shell
-  xtmoe chroot systemd-exec <名称> -- <命令>
-  xtmoe chroot systemd-status [名称]
-  xtmoe chroot systemd-stop [名称]      停止嵌套 systemd 并卸载
-  xtmoe chroot systemd-restart [名称]   停止后重新启动并验证 systemd
-  xtmoe chroot use-bash-sh [名称]       将 /bin/sh 切换为 Bash
+Chroot 快捷命令（Android 7+、有效 Root、原生 Ubuntu 24.04）
+  xtmoe chroot prepare
+  xtmoe chroot install [ubuntu] [24.04] [名称]
+  xtmoe chroot systemd-login [名称]
+  xtmoe chroot stop [名称]
   xtmoe chroot status [名称]
-  xtmoe chroot list
-  xtmoe chroot stop [名称]              卸载全部绑定挂载
-  xtmoe chroot bind <名称> <宿主目录> <容器目录> [ro|rw]
-  xtmoe chroot unbind <名称> <容器目录>
-  xtmoe chroot backup <名称> [文件]
-  xtmoe chroot restore <文件> [名称]
-  xtmoe chroot remove [--yes] <名称>
 
-Chroot 与 Android 共用内核，不是安全沙箱。删除前必须先 stop。
+安装自动检测基础挂载、systemd、Docker 和独立网络；显示实际选择。
+systemd-login 按保存的实际方案进入，无 systemd 时进入基础 Shell。
+备份、恢复、修复、服务、网络和端口映射请使用 xtmoe on。
+
 EOF
 }
 
@@ -132,7 +102,7 @@ chroot_prepare() {
     info '安装 Chroot 所需的 Termux 软件包……'
     DEBIAN_FRONTEND=noninteractive pkg install -y \
         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-        tsu mount-utils util-linux coreutils curl tar || return 1
+        tsu mount-utils util-linux coreutils curl tar socat || return 1
     if root_available; then
         ok 'Chroot 依赖与 Root 授权可用'
     else
@@ -144,7 +114,7 @@ chroot_prepare() {
 chroot_install_preflight() {
     local available_kb command missing=0
     require_termux
-    for command in tsu mount umount unshare nsenter chroot flock curl tar sha256sum realpath df install timeout; do
+    for command in mount umount unshare nsenter chroot flock curl tar sha256sum realpath df install timeout; do
         command_exists "$command" || missing=1
     done
     if ((missing)); then
@@ -165,11 +135,9 @@ chroot_install_preflight() {
 }
 
 ubuntu_arch() {
-    case "$(uname -m)" in
-        aarch64|arm64) printf 'arm64' ;;
-        armv7l|armv8l|arm) printf 'armhf' ;;
-        x86_64|amd64) printf 'amd64' ;;
-        *) die "Ubuntu Base 不支持当前架构：$(uname -m)" ;;
+    case "$(native_arch)" in
+        arm64) printf arm64 ;; armhf) printf armhf ;; amd64) printf amd64 ;;
+        *) die '当前用户空间架构没有受支持的 Ubuntu 24.04 Base 原生镜像' ;;
     esac
 }
 
@@ -242,6 +210,7 @@ chroot_install() (
         skip_docker=1
         info '已选择跳过 systemd，因此同时跳过 Docker。'
     fi
+
     ((skip_docker)) && docker_requested=no
     ((yes)) && export XTMOE_YES=1
     if ((skip_docker == 0 && accept_network == 0)); then
@@ -267,6 +236,7 @@ chroot_install() (
         return 1
     fi
     chroot_meta_set "$name" state base-ready
+    chroot_select_capabilities "$name" || return 1
 
     if ((skip_systemd)); then
         chroot_basic_repair "$name"
@@ -297,12 +267,36 @@ chroot_stage() {
         result=$?
     fi
     chroot_mark_partial "$name" "$stage"
-    warn "阶段 $stage 未完成；保留 rootfs，可执行：xtmoe chroot repair $name"
+    warn "阶段 $stage 未完成；保留 rootfs，可执行：xtmoe on → Chroot $name"
     return "$result"
 }
 
+chroot_select_capabilities() {
+    local name=$1 report feature value
+    report=$(chroot_root capabilities "$(chroot_base)" "$name") || return 1
+    printf '%s\n' "$report"
+    grep -qx base=supported <<<"$report" || { chroot_mark_partial "$name" capability; warn 'Root/私有 mount namespace 不可用，保留 rootfs；可改用 PRoot'; return 1; }
+    for feature in systemd docker network; do
+        value=$(awk -F= -v key="$feature" '$1==key {print $2}' <<<"$report")
+        [[ $value == supported || $value == unsupported ]] || return 1
+        chroot_meta_set "$name" "${feature}_capability" "$value"
+    done
+    if grep -qx systemd=unsupported <<<"$report"; then
+        chroot_meta_set "$name" systemd_requested 0
+        warn '此设备不满足 systemd 前置条件，安装保留基础 Ubuntu'
+    fi
+    if grep -qx docker=unsupported <<<"$report"; then warn '此设备不满足 Docker 前置条件，不会安装 Docker'; fi
+    if grep -qx network=unsupported <<<"$report"; then
+        chroot_root network-mode "$(chroot_base)" "$name" shared || return 1
+        warn '能力方案：共享网络（Ubuntu 可见手机接口）'
+    else
+        chroot_root network-mode "$(chroot_base)" "$name" isolated || return 1
+        info '能力方案：独立 IPv4 网络'
+    fi
+}
+
 chroot_bootstrap() (
-    local name=${1:?缺少容器名称} skip_bash_sh=0 skip_docker=0 accept_network=0 result
+    local name=${1:?缺少容器名称} skip_bash_sh=0 skip_docker=0 accept_network=0 result init_supported=1 docker_supported=1
     local CHROOT_INIT_LOCK_FD
     shift
     while (($#)); do
@@ -315,12 +309,14 @@ chroot_bootstrap() (
         shift
     done
     require_name "$name"
+    [[ $(chroot_meta_get "$name" systemd_capability 2>/dev/null || true) != unsupported ]] || init_supported=0
+    [[ $(chroot_meta_get "$name" docker_capability 2>/dev/null || true) != unsupported ]] || docker_supported=0
     mkdir -p "$(chroot_config_base)"
     exec {CHROOT_INIT_LOCK_FD}>"$(chroot_config_base)/$name.init.lock"
     flock -n "$CHROOT_INIT_LOCK_FD" || { warn '该容器正在执行另一项初始化；请等待后重试。'; return 1; }
     # Save user intent before any stage can fail. Metadata is not proof that a
     # service is running; repair always revalidates network and live services.
-    chroot_meta_set "$name" systemd_requested 1
+    chroot_meta_set "$name" systemd_requested "$init_supported"
     chroot_meta_set "$name" bash_sh_requested "$((1 - skip_bash_sh))"
     if ((skip_docker)); then chroot_meta_set "$name" docker_requested no; else chroot_meta_set "$name" docker_requested yes; fi
 
@@ -334,6 +330,19 @@ chroot_bootstrap() (
     # resolv.conf with a 127.0.0.53 stub symlink even under policy-rc.d.
     chroot_stage "$name" dns-after-packages chroot_apply_dns "$name" || return 1
 
+    if ((init_supported == 0)); then
+        if ((docker_supported && skip_docker == 0)); then
+            chroot_stage "$name" docker-direct chroot_docker_direct_install "$name" || return 1
+        else
+            chroot_meta_set "$name" docker_state unsupported
+            warn '当前能力方案：基础 Ubuntu，无 systemd/Docker；请通过向导查看阻断项'
+        fi
+        chroot_meta_set "$name" state ready
+        chroot_meta_set "$name" failed_stage ''
+        chroot_meta_set "$name" current_stage complete
+        return 0
+    fi
+
     if ((skip_bash_sh)); then
         info '已按要求保留 /bin/sh'
     else
@@ -346,9 +355,10 @@ chroot_bootstrap() (
     chroot_stage "$name" network-after-systemd chroot_network_preflight "$name" || return 1
     chroot_meta_set "$name" state system-ready
 
-    if ((skip_docker)); then
+    if ((skip_docker || docker_supported == 0)); then
         chroot_meta_set "$name" docker_requested no
-        chroot_meta_set "$name" docker_state skipped-by-user
+        if ((docker_supported == 0)); then chroot_meta_set "$name" docker_state unsupported
+        else chroot_meta_set "$name" docker_state skipped-by-user; fi
         chroot_meta_set "$name" state ready
         chroot_meta_set "$name" failed_stage ''
         chroot_meta_set "$name" current_stage complete
@@ -411,7 +421,7 @@ chroot_basic_repair() (
     chroot_meta_set "$name" state ready
     chroot_meta_set "$name" failed_stage ''
     chroot_meta_set "$name" current_stage complete
-    ok "Chroot '$name' 基础 rootfs 和网络就绪；按原选择未配置 systemd/Docker，完整初始化可执行：xtmoe chroot init $name"
+    ok "Chroot '$name' 基础 rootfs 和网络就绪；按原选择未配置 systemd/Docker，完整初始化可执行：xtmoe on → Chroot $name"
 )
 
 chroot_systemd_verify() {
@@ -488,7 +498,7 @@ fi
 SYSTEMD_VERIFY
 }
 chroot_login() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot login [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu} base config mode
     require_name "$name"; base=$(chroot_base); config="$(chroot_config_base)/$name.binds"
     if [[ $(chroot_meta_get "$name" systemd_requested 2>/dev/null || true) == 1 ]]; then
@@ -514,12 +524,12 @@ chroot_exec() {
 }
 
 chroot_systemd_check() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot systemd-check [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     chroot_root systemd-check "$(chroot_base)" "${1:-ubuntu}"
 }
 
 chroot_systemd_start() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot systemd-start [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu} config
     require_name "$name"
     config="$(chroot_config_base)/$name.binds"
@@ -533,6 +543,7 @@ chroot_systemd_start() {
 # resolv.conf, or Android/VPN routing may have changed since the previous start.
 chroot_systemd_network_refresh() {
     local name=$1 result
+    chroot_root network-refresh "$(chroot_base)" "$name" || return 1
     chroot_apply_dns "$name" || return 1
     if chroot_systemd_exec "$name" -- /bin/bash -c '
 systemctl daemon-reload || exit 1
@@ -610,17 +621,17 @@ chroot_systemd_exec() {
 }
 
 chroot_systemd_status() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot systemd-status [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     chroot_root systemd-status "$(chroot_base)" "${1:-ubuntu}"
 }
 
 chroot_systemd_stop() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot systemd-stop [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     chroot_root systemd-stop "$(chroot_base)" "${1:-ubuntu}"
 }
 
 chroot_systemd_restart() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot systemd-restart [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
     chroot_systemd_stop "$name" || return 1
@@ -652,7 +663,7 @@ timeout --kill-after=5 600 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeo
 }
 
 chroot_network_check() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot network-check [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
     chroot_exec "$name" -- /bin/bash -lc '
@@ -707,7 +718,7 @@ if command -v ip >/dev/null 2>&1; then
     ip -4 -brief address 2>&1 || true
     ip -4 rule show 2>&1 || true
 fi
-printf "%s\n" "--- TCP listening ports (Android/Chroot shared network) ---"
+printf "%s\n" "--- TCP listening ports (current Chroot network namespace) ---"
 if command -v ss >/dev/null 2>&1; then ss -lnt 2>&1 || true; fi
 printf "%s\n" "--- Docker / 1Panel services (if systemd is running) ---"
 if [ -d /run/systemd/system ]; then
@@ -727,17 +738,20 @@ printf "Summary: failures=%s (ICMP is informational)\n" "$failures"
 }
 
 chroot_network_repair() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot network-repair [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu} mode
     require_name "$name"
     mode=$(chroot_root status "$(chroot_base)" "$name") || return 1
     case "$mode" in
         systemd) chroot_systemd_network_refresh "$name" || return 1 ;;
         direct-docker)
+            chroot_root network-refresh "$(chroot_base)" "$name" || return 1
             chroot_apply_dns "$name" || return 1
-            info 'direct 模式仅修复 DNS；自动 bridge 路由服务需要 systemd 模式。'
+            info '已刷新独立网络与 DNS；共享模式的 Docker bridge 路由服务需要 systemd。'
             ;;
-        mounted|stopped) chroot_apply_dns "$name" || return 1 ;;
+        mounted|stopped)
+            chroot_root network-refresh "$(chroot_base)" "$name" || return 1
+            chroot_apply_dns "$name" || return 1 ;;
         *) warn "无法识别容器运行状态：$mode"; return 1 ;;
     esac
     info '修复步骤已完成；保留已停止服务的状态。开始网络检测（检测失败仍返回失败）……'
@@ -745,23 +759,23 @@ chroot_network_repair() {
 }
 
 chroot_cgroup_check() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot cgroup-check [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
     chroot_root cgroup-check "$(chroot_base)" "$name"
 }
 
 chroot_setup() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot setup [名称]'
-    local name=${1:-ubuntu}
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
+    local name=${1:-ubuntu} extra_packages=''
+    if [[ $(chroot_meta_get "$name" systemd_capability 2>/dev/null || true) != unsupported ]]; then extra_packages='systemd-sysv dbus'; fi
     chroot_exec "$name" -- /bin/bash -lc "$(chroot_apt_guard_script)
 $(chroot_userland_prepare_script)
 dpkg --configure -a
 apt-get -o APT::Update::Error-Mode=any update
-apt-get install -y ubuntu-standard coreutils ca-certificates curl locales tzdata man-db manpages less nano bash-completion apt-utils openssh-server sudo systemd-sysv dbus bash procps util-linux kmod mount iproute2 iptables iputils-ping
+apt-get install -y coreutils ca-certificates curl locales tzdata man-db manpages less nano bash-completion apt-utils openssh-server sudo bash procps util-linux kmod mount iproute2 iptables iputils-ping $extra_packages
 $(chroot_userland_restore_script)
 for tool in install timeout mktemp flock ip getent; do command -v \"\$tool\" || exit 1; done
-command -v systemctl
 /usr/sbin/iptables --version
 "
 }
@@ -902,7 +916,7 @@ APT_GUARD
 }
 
 chroot_update_system() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot update-system [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
     chroot_apply_dns "$name" || return 1
@@ -915,13 +929,13 @@ if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
 }
 
 chroot_use_bash_sh() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot use-bash-sh [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     chroot_exec "$name" -- /bin/bash -lc 'set -e; [[ -x /usr/bin/bash ]] || { echo "缺少 /usr/bin/bash" >&2; exit 1; }; if command -v debconf-set-selections >/dev/null 2>&1 && command -v dpkg-reconfigure >/dev/null 2>&1; then printf "dash dash/sh boolean false\\n" | debconf-set-selections; DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -f noninteractive dash; fi; ln -sfn bash /bin/sh; readlink -f /bin/sh'
 }
 
 chroot_bind() {
-    require_arg_range 3 4 "$#" 'xtmoe chroot bind <名称> <宿主目录> <容器目录> [ro|rw]'
+    require_arg_range 3 4 "$#" 'xtmoe on → Chroot <名称> <宿主目录> <容器目录> [ro|rw]'
     local name=${1:?缺少容器名称} source_path=${2:?缺少宿主目录} target=${3:?缺少容器目录} mode=${4:-rw}
     local config
     require_name "$name"
@@ -941,7 +955,7 @@ chroot_bind() {
 }
 
 chroot_unbind() {
-    require_arg_range 2 2 "$#" 'xtmoe chroot unbind <名称> <容器目录>'
+    require_arg_range 2 2 "$#" 'xtmoe on → Chroot <名称> <容器目录>'
     local name=${1:?缺少容器名称} target=${2:?缺少容器目录} config tmp
     require_name "$name"
     [[ $target == /* && $target != / && $target != *'|'* && $target != *$'\n'* ]] || die '容器路径必须是有效的非根绝对路径。'
@@ -954,7 +968,7 @@ chroot_unbind() {
 }
 
 chroot_backup() {
-    require_arg_range 1 2 "$#" 'xtmoe chroot backup <名称> [文件]'
+    require_arg_range 1 2 "$#" 'xtmoe on → Chroot <名称> [文件]'
     local name=${1:?缺少容器名称} output=${2:-"$PWD/${1}-$(date +%Y%m%d-%H%M%S)-chroot.tar.gz"}
     local base
     require_name "$name"; base=$(chroot_base)
@@ -963,7 +977,7 @@ chroot_backup() {
 }
 
 chroot_restore() {
-    require_arg_range 1 2 "$#" 'xtmoe chroot restore <文件> [名称]'
+    require_arg_range 1 2 "$#" 'xtmoe on → Chroot <文件> [名称]'
     local archive=${1:?缺少备份文件} name=${2:-ubuntu-restored} base config_base
     [[ -f $archive ]] || die "备份文件不存在：$archive"
     require_name "$name"; base=$(chroot_base); config_base=$(chroot_config_base)
@@ -976,7 +990,7 @@ chroot_restore() {
 }
 
 chroot_docker_check() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot docker-check [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
     chroot_root docker-check "$(chroot_base)" "$name"
@@ -1077,7 +1091,7 @@ chroot_docker_install() {
             *) positional+=("$argument") ;;
         esac
     done
-    ((${#positional[@]} <= 1)) || die 'xtmoe chroot docker-install [--accept-host-network-changes] [名称]'
+    ((${#positional[@]} <= 1)) || die 'xtmoe on → Chroot [--accept-host-network-changes] [名称]'
     name=${positional[0]:-ubuntu}
     require_name "$name"
     [[ -f $(chroot_base)/$name/.xtmoe-chroot ]] || die "Chroot 容器不存在：$name"
@@ -1173,7 +1187,7 @@ chroot_docker_install() {
 }
 
 chroot_docker_start() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot docker-start [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     chroot_systemd_start "$name" || return 1
     chroot_systemd_exec "$name" -- /usr/bin/systemctl start containerd.service docker.service || return 1
@@ -1182,13 +1196,13 @@ chroot_docker_start() {
 }
 
 chroot_docker_stop() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot docker-stop [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     chroot_systemd_exec "$name" -- /usr/bin/systemctl stop docker.service docker.socket containerd.service
 }
 
 chroot_docker_restart() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot docker-restart [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     chroot_systemd_start "$name" || return 1
     chroot_systemd_exec "$name" -- /bin/bash -ec 'systemctl start containerd.service; systemctl restart docker.service' || return 1
@@ -1197,7 +1211,7 @@ chroot_docker_restart() {
 }
 
 chroot_docker_status() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot docker-status [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     chroot_systemd_exec "$name" -- /bin/bash -lc '
 set -u
@@ -1222,7 +1236,7 @@ systemctl is-system-running || true
 }
 
 chroot_docker_logs() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot docker-logs [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     chroot_systemd_exec "$name" -- /usr/bin/journalctl -u containerd.service -u docker.service -n 200 --no-pager
 }
@@ -1237,7 +1251,7 @@ chroot_docker_direct_install() {
             *) positional+=("$argument") ;;
         esac
     done
-    ((${#positional[@]} <= 1)) || die 'xtmoe chroot docker-direct-install [--accept-host-network-changes] [名称]'
+    ((${#positional[@]} <= 1)) || die 'xtmoe on → Chroot [--accept-host-network-changes] [名称]'
     name=${positional[0]:-ubuntu}
     require_name "$name"
     [[ -f $(chroot_base)/$name/.xtmoe-chroot ]] || die "Chroot 容器不存在：$name"
@@ -1260,16 +1274,16 @@ chroot_docker_direct_install() {
 }
 
 chroot_docker_direct_start() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot docker-direct-start [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
     chroot_root docker-direct-start "$(chroot_base)" "$name" "$(chroot_config_base)/$name.binds" || return 1
     chroot_meta_set "$name" docker_state direct-daemon-ready
-    info 'direct dockerd 已通过 docker info 验证；请额外运行 xtmoe chroot docker-direct-run-test 验证实际容器。'
+    info 'direct dockerd 已通过 docker info 验证；请额外运行 xtmoe on → Chroot 验证实际容器。'
 }
 
 chroot_docker_direct_stop() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot docker-direct-stop [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
     chroot_root docker-direct-stop "$(chroot_base)" "$name" || return 1
@@ -1277,21 +1291,21 @@ chroot_docker_direct_stop() {
 }
 
 chroot_docker_direct_status() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot docker-direct-status [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
     chroot_root docker-direct-status "$(chroot_base)" "$name"
 }
 
 chroot_docker_direct_logs() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot docker-direct-logs [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
     chroot_root docker-direct-logs "$(chroot_base)" "$name"
 }
 
 chroot_docker_direct_run_test() {
-    require_arg_range 0 1 "$#" 'xtmoe chroot docker-direct-run-test [名称]'
+    require_arg_range 0 1 "$#" 'xtmoe on → Chroot [名称]'
     local name=${1:-ubuntu}
     require_name "$name"
     if chroot_root docker-direct-run-test "$(chroot_base)" "$name"; then
@@ -1388,7 +1402,7 @@ chroot_main() {
     shift || true
     [[ $action == help || $action == -h || $action == --help ]] && { chroot_help; return; }
     [[ $action == prepare ]] && { chroot_prepare "$@"; return; }
-    if [[ $action == install || $action == add ]]; then
+    if [[ $action == install ]]; then
         require_termux
         chroot_install "$@"
         return $?
@@ -1396,7 +1410,12 @@ chroot_main() {
     require_chroot
     ensure_dirs
     case "$action" in
-        login|shell) chroot_login "$@" ;;
+        network-status|network-mode|port-add|port-list|port-remove)
+            (($#)) || die '缺少容器名称'
+            local network_name=$1; shift; require_name "$network_name"
+            chroot_root "$action" "$(chroot_base)" "$network_name" "$@"
+            ;;
+        login) chroot_login "$@" ;;
         exec) chroot_exec "$@" ;;
         setup) chroot_setup "$@" ;;
         init) chroot_init "$@" ;;
@@ -1427,15 +1446,15 @@ chroot_main() {
         systemd-stop) chroot_systemd_stop "$@" ;;
         systemd-restart) chroot_systemd_restart "$@" ;;
         use-bash-sh) chroot_use_bash_sh "$@" ;;
-        list|ls)
-            require_arg_range 0 0 "$#" 'xtmoe chroot list'
+        list)
+            require_arg_range 0 0 "$#" 'xtmoe on → Chroot'
             chroot_list
             ;;
         status)
             require_arg_range 0 1 "$#" 'xtmoe chroot status [名称]'
             chroot_root status "$(chroot_base)" "${1:-ubuntu}"
             ;;
-        stop|umount)
+        stop)
             require_arg_range 0 1 "$#" 'xtmoe chroot stop [名称]'
             chroot_root stop "$(chroot_base)" "${1:-ubuntu}"
             ;;
@@ -1443,7 +1462,7 @@ chroot_main() {
         unbind) chroot_unbind "$@" ;;
         backup) chroot_backup "$@" ;;
         restore) chroot_restore "$@" ;;
-        remove|rm) chroot_remove "$@" ;;
+        remove) chroot_remove "$@" ;;
         *) die "未知 Chroot 操作：$action" ;;
     esac
 }

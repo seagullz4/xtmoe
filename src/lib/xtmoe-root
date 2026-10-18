@@ -161,14 +161,23 @@ mount_all() {
         is_mounted "$ROOTFS/proc" || mount -t proc proc "$ROOTFS/proc"
     fi
     if ! is_mounted "$ROOTFS/sys"; then
-        mount --rbind /sys "$ROOTFS/sys"
-        mount --make-rslave "$ROOTFS/sys" 2>/dev/null || mount --make-private "$ROOTFS/sys" 2>/dev/null || true
+        if [[ $(readlink /proc/self/ns/net) != "$(readlink /proc/1/ns/net)" ]]; then
+            net_guest_sysfs || die '无法挂载独立网络对应的 sysfs'
+        else
+            mount --rbind /sys "$ROOTFS/sys"
+            mount --make-rslave "$ROOTFS/sys" 2>/dev/null || mount --make-private "$ROOTFS/sys" 2>/dev/null || true
+        fi
     fi
     if ! is_mounted "$ROOTFS/dev"; then
         mount --rbind /dev "$ROOTFS/dev"
         mount --make-rslave "$ROOTFS/dev" 2>/dev/null || mount --make-private "$ROOTFS/dev" 2>/dev/null || true
     fi
     is_mounted "$ROOTFS/run" || mount -t tmpfs -o mode=755,nosuid,nodev tmpfs "$ROOTFS/run"
+    if [[ $(readlink /proc/self/ns/net) != "$(readlink /proc/1/ns/net)" ]]; then
+        printf 'isolated\n' >"$ROOTFS/run/xtmoe-network-mode"
+    else
+        printf 'shared\n' >"$ROOTFS/run/xtmoe-network-mode"
+    fi
     apply_bind_config "$config"
 }
 
@@ -375,15 +384,17 @@ systemd_running() {
     expected_root=$(realpath -m "$ROOTFS")
     [[ $actual_root == "$expected_root" ]] || return 1
     comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
-    [[ $comm == systemd || $comm == init ]]
+    [[ $comm == systemd || $comm == init || $comm == systemd-shutdow ]]
 }
 
 systemd_manager_ready() {
-    local pid
+    local pid comm
     systemd_pid_files
     [[ -r $PID_FILE ]] || return 1
     IFS= read -r pid <"$PID_FILE"
     process_alive "$pid" || return 1
+    comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
+    [[ $comm == systemd || $comm == init ]] || return 1
     [[ -S /proc/$pid/root/run/systemd/private && -d /proc/$pid/root/run/systemd/system ]]
 }
 
@@ -397,7 +408,7 @@ systemd_target_pid() {
     expected_root=$(realpath -m "$ROOTFS")
     [[ $actual_root == "$expected_root" ]] || die 'systemd PID 与当前容器不匹配'
     comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
-    [[ $comm == systemd || $comm == init ]] || die "systemd PID 进程类型不匹配：$comm"
+    [[ $comm == systemd || $comm == init || $comm == systemd-shutdow ]] || die "systemd PID 进程类型不匹配：$comm"
     printf '%s\n' "$pid"
 }
 
@@ -752,6 +763,7 @@ systemd_namespace_launch() {
     mount_all "$config" 0 || die '准备 systemd 挂载失败'
     ensure_cgroup_mount || die '准备 systemd cgroup 失败'
     systemd_protect_kernel_views || die '保护宿主内核接口失败'
+    net_proxy_environment || die '代理连接失败'
     exec chroot "$ROOTFS" /usr/bin/env -i \
         HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
@@ -771,6 +783,10 @@ systemd_start() {
         die '嵌套 systemd 进程存在，但 manager 尚未就绪'
     fi
     is_mounted "$ROOTFS" && die '容器已有普通 Chroot 挂载；请先退出会话并执行 stop。'
+    net_start || die '独立网络启动失败'
+    net_launch_args
+    net_proxy_environment || die '手机代理适配失败'
+    [[ $NET_MODE != isolated ]] || trap 'net_startup_cleanup' EXIT
     rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
     for extra in --ipc --uts --cgroup; do
         candidate_args=("${namespace_args[@]}" "$extra")
@@ -782,11 +798,12 @@ systemd_start() {
     [[ ! -L $SYSTEMD_LOG_FILE && ( ! -e $SYSTEMD_LOG_FILE || -f $SYSTEMD_LOG_FILE ) ]] || die '不安全的 systemd 日志路径'
     printf '\n[XTMOE %s] systemd start; container=xtmoe; namespaces=%s; host-selinux-enforce=%s\n' \
         "$(date -Iseconds)" "${namespace_args[*]}" "$(cat /sys/fs/selinux/enforce 2>/dev/null || printf unavailable)" >>"$SYSTEMD_LOG_FILE"
-    nohup unshare "${namespace_args[@]}" --fork --kill-child \
+    (net_close_fds; exec nohup "${NET_LAUNCH[@]}" unshare "${namespace_args[@]}" --fork --kill-child \
         "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" "${PROXY_HELPER_ARGS[@]}" \
-        _systemd-launch "$BASE" "$CONTAINER_NAME" "$config" \
+        _systemd-launch "$BASE" "$CONTAINER_NAME" "$config") \
         </dev/null >>"$SYSTEMD_LOG_FILE" 2>&1 &
     launcher_pid=$!
+    net_startup_record "$launcher_pid" launcher
     printf '%s\n' "$launcher_pid" >"$LAUNCHER_PID_FILE"
     target_pid=''
     for ((attempt = 0; attempt < 50; attempt++)); do
@@ -799,6 +816,7 @@ systemd_start() {
         die "无法定位嵌套 systemd 进程；查看 $SYSTEMD_LOG_FILE"
     fi
     printf '%s\n' "$target_pid" >"$PID_FILE"
+    net_startup_record "$target_pid" target
     for ((attempt = 0; attempt < 300; attempt++)); do
         systemd_manager_ready && break
         process_alive "$target_pid" || break
@@ -817,6 +835,8 @@ systemd_start() {
         die "systemd manager 未就绪；查看 $SYSTEMD_LOG_FILE"
     fi
     ok "嵌套 systemd 已启动并就绪（宿主 PID $target_pid）"
+    net_bind_master "$target_pid"
+    trap - EXIT
 }
 
 systemd_exec() {
@@ -824,7 +844,8 @@ systemd_exec() {
     local -a nsenter_args
     (($#)) || die '缺少要在 systemd 容器内执行的命令'
     pid=$(systemd_target_pid)
-    nsenter_args=(--target "$pid" --pid --mount)
+    nsenter_args=(--target "$pid" --pid --mount --net)
+    net_proxy_environment || return 1
     [[ -e /proc/$pid/ns/ipc ]] && nsenter_args+=(--ipc)
     [[ -e /proc/$pid/ns/uts ]] && nsenter_args+=(--uts)
     if [[ -e /proc/$pid/ns/cgroup ]] && nsenter --help 2>&1 | grep -q -- '--cgroup'; then
@@ -842,7 +863,7 @@ guest_interactive_login() {
     # Allocate the controlling PTY AFTER entering the PID namespace. Reusing
     # Android's terminal leaves its foreground pgrp outside the guest PID view.
     if [[ -t 0 && -t 1 ]]; then
-        rootfs_has_executable "$ROOTFS" /usr/bin/script || die '交互登录缺少 Ubuntu util-linux script；请执行 xtmoe chroot setup'
+        rootfs_has_executable "$ROOTFS" /usr/bin/script || die '交互登录缺少 Ubuntu util-linux script；请执行 xtmoe on → Chroot'
         "$executor" /usr/bin/script -q -e -c 'exec /bin/bash -l' /dev/null
     else
         "$executor" /bin/bash -l
@@ -860,8 +881,25 @@ systemd_status() {
     systemd_exec /usr/bin/systemctl is-system-running || true
 }
 
+systemd_resume_namespace_waiters() {
+    local namespace=$1 candidate comm state birth
+    local -a candidates=()
+    mapfile -t candidates < <(pgrep -x nsenter 2>/dev/null || true)
+    for candidate in "${candidates[@]}"; do
+        [[ $candidate =~ ^[1-9][0-9]*$ ]] || continue
+        birth=$(net_identity "$candidate") || continue
+        [[ $(readlink "/proc/$candidate/ns/pid_for_children" 2>/dev/null) == "$namespace" ]] || continue
+        comm=$(cat "/proc/$candidate/comm" 2>/dev/null || true)
+        state=$(awk '$1 == "State:" {print $2}' "/proc/$candidate/status" 2>/dev/null)
+        # Only resume stopped namespace-entry parents so they can reap their children.
+        if [[ $comm == nsenter && $state == T && $(net_identity "$candidate") == "$birth" ]]; then
+            kill -CONT "$candidate" 2>/dev/null || true
+        fi
+    done
+}
+
 systemd_stop() {
-    local pid attempt
+    local pid attempt namespace
     if ! systemd_running; then
         systemd_pid_files
         rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
@@ -869,15 +907,20 @@ systemd_stop() {
             unmount_all "$ROOTFS" || { warn '部分挂载仍被占用，停止未完成'; return 1; }
         fi
         ok '嵌套 systemd 未运行'
+        net_stop
         return 0
     fi
     pid=$(systemd_target_pid)
+    namespace=$(readlink "/proc/$pid/ns/pid") || return 1
     if rootfs_has_executable "$ROOTFS" /usr/bin/docker; then
         systemd_exec /usr/bin/systemctl stop docker.service docker.socket containerd.service >/dev/null 2>&1 || true
     fi
-    systemd_exec /usr/bin/systemctl poweroff >/dev/null 2>&1 || kill -TERM "$pid" 2>/dev/null || true
-    for ((attempt = 0; attempt < 100; attempt++)); do
+    # A nested manager exits its namespace; it must not use the machine shutdown path.
+    systemd_exec /usr/bin/systemctl exit >/dev/null 2>&1 || kill -TERM "$pid" 2>/dev/null || true
+    for ((attempt = 0; attempt < 1200; attempt++)); do
         process_alive "$pid" || break
+        if ((attempt % 10 == 0)); then systemd_resume_namespace_waiters "$namespace"; fi
+        if ((attempt == 300 || attempt == 600 || attempt == 900)); then warn '等待容器完成正常关闭（最长约 120 秒）'; fi
         sleep 0.1
     done
     if process_alive "$pid"; then
@@ -888,12 +931,14 @@ systemd_stop() {
     rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
     unmount_all "$ROOTFS" || { warn 'systemd 已停止，但部分挂载未卸载'; return 1; }
     ok '嵌套 systemd 已停止'
+    net_stop
 }
 
 direct_docker_namespace_launch() {
     local config=${1:-}
     mount --make-rprivate / || die '无法隔离 mount namespace 的挂载传播'
     mount_all "$config"
+    net_proxy_environment || die '代理连接失败'
     mkdir -p "$ROOTFS/var/log"
     exec chroot "$ROOTFS" /usr/bin/env -i \
         HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
@@ -913,15 +958,20 @@ direct_docker_start() {
     fi
     is_mounted "$ROOTFS" && die '容器已有普通 Chroot 挂载；请先退出会话并执行 stop。'
     command -v unshare >/dev/null 2>&1 || die '缺少 unshare；请执行 xtmoe chroot prepare'
+    net_start || die '独立网络启动失败'
+    net_launch_args
+    net_proxy_environment || die '手机代理适配失败'
+    [[ $NET_MODE != isolated ]] || trap 'net_startup_cleanup' EXIT
     mkdir -p "$(dirname -- "$DIRECT_DOCKER_LOG_FILE")"
     rm -f -- "$DIRECT_DOCKER_PID_FILE" "$DIRECT_DOCKER_LAUNCHER_PID_FILE"
     helper_path=$(realpath -m -- "${BASH_SOURCE[0]}")
     ok '正在启动 direct dockerd（等待进程，最长约 5 秒）'
-    nohup unshare --mount --pid --fork --kill-child \
+    (net_close_fds; exec nohup "${NET_LAUNCH[@]}" unshare --mount --pid --fork --kill-child \
         "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" "${PROXY_HELPER_ARGS[@]}" \
-        _docker-direct-launch "$BASE" "$CONTAINER_NAME" "$config" \
-        >"$DIRECT_DOCKER_LOG_FILE" 2>&1 &
+        _docker-direct-launch "$BASE" "$CONTAINER_NAME" "$config") \
+        </dev/null >"$DIRECT_DOCKER_LOG_FILE" 2>&1 &
     launcher_pid=$!
+    net_startup_record "$launcher_pid" launcher
     printf '%s\n' "$launcher_pid" >"$DIRECT_DOCKER_LAUNCHER_PID_FILE"
     target_pid=''
     for ((attempt = 0; attempt < 50; attempt++)); do
@@ -934,14 +984,15 @@ direct_docker_start() {
         die "无法定位直接启动的 dockerd；查看 $DIRECT_DOCKER_LOG_FILE"
     fi
     printf '%s\n' "$target_pid" >"$DIRECT_DOCKER_PID_FILE"
+    net_startup_record "$target_pid" target
     ok 'dockerd 进程已找到；正在等待 Docker socket（最长约 15 秒）'
     for ((attempt = 0; attempt < 150; attempt++)); do
-        [[ -S /proc/$target_pid/root/var/run/docker.sock ]] && break
+        [[ -S /proc/$target_pid/root/run/docker.sock ]] && break
         process_alive "$target_pid" || break
         sleep 0.1
     done
     process_alive "$target_pid" || { rm -f -- "$DIRECT_DOCKER_PID_FILE" "$DIRECT_DOCKER_LAUNCHER_PID_FILE"; die "dockerd 已退出；查看 $DIRECT_DOCKER_LOG_FILE"; }
-    if [[ ! -S /proc/$target_pid/root/var/run/docker.sock ]]; then
+    if [[ ! -S /proc/$target_pid/root/run/docker.sock ]]; then
         die "dockerd 未在 15 秒内创建 socket；查看 $DIRECT_DOCKER_LOG_FILE"
     fi
     ok 'Docker socket 已创建；正在验证 docker info（最长约 15 秒）'
@@ -949,13 +1000,16 @@ direct_docker_start() {
         die "dockerd API 在 15 秒内不可用；查看 $DIRECT_DOCKER_LOG_FILE"
     fi
     ok "直接 dockerd 已启动并可响应（宿主 PID $target_pid）"
+    net_bind_master "$target_pid"
+    trap - EXIT
 }
 
 direct_docker_exec() {
     local pid
     (($#)) || die '缺少要在直接 dockerd 容器内执行的命令'
     pid=$(direct_docker_target_pid)
-    nsenter --target "$pid" --mount --pid -- \
+    net_proxy_environment || return 1
+    nsenter --target "$pid" --mount --pid --net -- \
         chroot "$ROOTFS" /usr/bin/env -i \
         HOME=/root USER=root LOGNAME=root TERM="${TERM:-xterm-256color}" \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
@@ -987,6 +1041,7 @@ direct_docker_stop() {
     direct_docker_pid_files
     rm -f -- "$DIRECT_DOCKER_PID_FILE" "$DIRECT_DOCKER_LAUNCHER_PID_FILE"
     ok '直接 dockerd 已停止'
+    net_stop
 }
 
 direct_docker_logs() {
@@ -1056,11 +1111,29 @@ install_rootfs() {
 
 run_chroot() {
     local config=$1 command_status=0 script_bin; shift
+    if [[ ${XTMOE_NET_PLAIN:-0} != 1 ]]; then
+        net_start || return 1
+        if [[ $NET_MODE == isolated || $NET_MODE == shared ]]; then
+            net_proxy_environment || return 1
+            net_launch_args
+            net_bind_master "$$"
+            trap 'net_stop' EXIT
+            local helper_path=${XTMOE_ROOT_HELPER} rc=0
+            "${NET_LAUNCH[@]}" unshare --mount --fork --kill-child \
+                "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" "${PROXY_HELPER_ARGS[@]}" \
+                _network-plain "$BASE" "$CONTAINER_NAME" "$config" "$@" || rc=$?
+            net_stop || rc=1
+            trap - EXIT
+            return "$rc"
+        fi
+    fi
+    net_proxy_environment || return 1
     ensure_hosts_config "$ROOTFS"
     is_mounted "$ROOTFS" && die '容器已经处于 mounted 状态；请勿并发登录，先执行 stop。'
     trap 'unmount_all "$ROOTFS" || warn "异常退出后仍有挂载，请执行 xtmoe chroot stop"' EXIT
     trap 'exit 143' TERM
     mount_all "$config"
+    systemd_protect_kernel_views >&2 || die '无法保护 Chroot 的内核只读视图'
     set +e
     if (($#)); then
         chroot "$ROOTFS" /usr/bin/env -i \
@@ -1138,9 +1211,91 @@ remove_container() {
     rm -rf --one-file-system -- "$CONTAINER"
 }
 
+capability_probe() {
+    local base=unsupported systemd=unsupported docker=unsupported network=unsupported result
+    local true_bin="$TERMUX_PREFIX/bin/true" iptables_bin
+    if command -v chroot >/dev/null && command -v mount >/dev/null && command -v unshare >/dev/null &&
+        unshare --mount --fork "$true_bin" >/dev/null 2>&1; then base=supported; fi
+    if [[ $base == supported ]] && unshare --mount --pid --fork "$true_bin" >/dev/null 2>&1 &&
+        grep -Eqw 'cgroup|cgroup2' /proc/filesystems; then systemd=supported; fi
+    iptables_bin=$(command -v iptables-legacy || command -v iptables || true)
+    if [[ $base == supported && -n $iptables_bin ]]; then
+        result=0
+        timeout --kill-after=2 15 unshare --mount --net --fork "$TERMUX_PREFIX/bin/bash" -ec '
+mount --make-rprivate /
+probe=$(mktemp -d /data/local/tmp/xtmoe-cap.XXXXXX)
+trap '\''umount "$probe" 2>/dev/null || true; rmdir "$probe"'\'' EXIT
+mount -t sysfs sysfs "$probe"
+ip link add xcap0 type veth peer name xcap1
+ip link set xcap0 up
+"$1" -t nat -N XCAP
+"$1" -t nat -A XCAP -s 10.203.255.254/32 -j MASQUERADE
+"$1" -A FORWARD -i xcap0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+ip -4 rule add priority 10500 iif xcap0 lookup 40000
+' _ "$iptables_bin" >/dev/null 2>&1 || result=$?
+        case "$result" in 124|126|127|137) warn '网络能力探测未正常执行，不能选择降级方案'; return 1 ;; esac
+        if ((result == 0)) && [[ -w /proc/sys/net/ipv4/ip_forward ]]; then network=supported; fi
+    fi
+    if [[ $base == supported && $network == supported ]] && grep -qw pids /proc/cgroups &&
+        unshare --pid --mount --net --ipc --uts --fork "$true_bin" >/dev/null 2>&1; then docker=supported; fi
+    printf 'base=%s\nsystemd=%s\ndocker=%s\nnetwork=%s\n' "$base" "$systemd" "$docker" "$network"
+    [[ $base == supported ]] || printf 'base_reason=缺少 chroot/mount/unshare，或 Root 无法创建私有 mount namespace\n'
+    [[ $systemd == supported ]] || printf 'systemd_reason=需要基础挂载、PID namespace 和 cgroup 文件系统；可在基础 Ubuntu 中继续工作\n'
+    [[ $docker == supported ]] || printf 'docker_reason=需要 namespace、pids controller、可用网络；存储和实际容器仍须进一步验证\n'
+    [[ $network == supported ]] || printf 'network_reason=network namespace/veth/sysfs/NAT/conntrack/策略路由或可写转发不满足\n'
+    printf '说明=这是前置能力探测；镜像、软件包和服务实际运行仍需验证\n'
+}
+
 ACTION=${1:-}
+ORIGINAL_GUEST_PROXY_ENV=("${GUEST_PROXY_ENV[@]}")
+XTMOE_ROOT_HELPER=$(realpath -m -- "${BASH_SOURCE[0]}")
+network_library="$(dirname -- "$XTMOE_ROOT_HELPER")/xtmoe-network"
+[[ -r $network_library ]] || network_library="$(dirname -- "$XTMOE_ROOT_HELPER")/lib/xtmoe-network"
+# shellcheck source=src/lib/xtmoe-network
+source "$network_library"
+
 shift || true
 case "$ACTION" in
+    capabilities-readonly)
+        printf '内核=%s\n' "$(uname -r)"
+        for feature in mnt pid net ipc uts; do
+            if [[ -e /proc/self/ns/$feature ]]; then printf 'namespace.%s=present（需深度验证创建权限）\n' "$feature"
+            else printf 'namespace.%s=unsupported\n' "$feature"; fi
+        done
+        printf 'cgroup=%s\n' "$(cgroup_mode)"
+        ;;
+    capabilities)
+        capability_probe
+        ;;
+    _net-hold)
+        net_close_fds
+        exec sleep infinity
+        ;;
+    _net-watch)
+        net_close_fds
+        container_paths "${1:?}" "${2:?}"
+        net_watch
+        ;;
+    _network-plain)
+        container_paths "${1:?}" "${2:?}"
+        config=${3:-}; shift 3
+        XTMOE_NET_PLAIN=1
+        mount --make-rprivate / || die '无法建立私有挂载传播'
+        run_chroot "$config" "$@"
+        ;;
+    network-status|network-mode|network-refresh|network-proxy-sync|port-add|port-list|port-remove)
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"; shift 2
+        [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
+        case "$ACTION" in
+            network-status) net_status ;;
+            network-mode) net_mode_set "$@" ;;
+            port-add) net_port_change add "$@" ;;
+            port-remove) net_port_change remove "$@" ;;
+            port-list) net_paths; net_ports_status ;;
+            network-refresh) net_paths; if net_running; then net_start; fi ;;
+            network-proxy-sync) net_proxy_environment ;;
+        esac
+        ;;
     _internal-path-codec)
         [[ ${XTMOE_INTERNAL_TEST:-0} == 1 ]] || die '内部测试操作不可用'
         encoded=$(mount_path_encode "${1:?缺少测试路径}")
@@ -1162,11 +1317,13 @@ case "$ACTION" in
         ok 'rootfs shell check passed'
         ;;
     _systemd-launch)
+        net_close_fds
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
         [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
         systemd_namespace_launch "${3:-}"
         ;;
     _docker-direct-launch)
+        net_close_fds
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
         [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
         direct_docker_namespace_launch "${3:-}"
@@ -1295,6 +1452,7 @@ case "$ACTION" in
         else
             unmount_all "$ROOTFS" || die '部分挂载无法卸载，可能仍有进程占用'
         fi
+        net_stop
         ;;
     status)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
@@ -1306,7 +1464,8 @@ case "$ACTION" in
         elif is_mounted "$ROOTFS"; then
             printf 'mounted\n'
         else
-            printf 'stopped\n'
+            net_paths
+            if net_running; then printf 'mounted\n'; else printf 'stopped\n'; fi
         fi
         ;;
     backup)

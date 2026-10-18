@@ -1,0 +1,621 @@
+#!/usr/bin/env bash
+# XTMOE private IPv4 networks. Sourced by xtmoe-root; never eval configuration.
+
+net_close_fds() {
+    # Root wrappers may pass sockets besides stdin/out/err. Daemons must not pin them.
+    local file descriptor
+    for file in /proc/self/fd/*; do
+        descriptor=${file##*/}
+        [[ $descriptor =~ ^[0-9]+$ ]] || continue
+        ((descriptor > 2 && descriptor != 255)) || continue
+        exec {descriptor}>&-
+    done
+}
+
+net_ipv4() {
+    local value=$1 octet
+    local -a octets=()
+    [[ $value =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    IFS=. read -r -a octets <<<"$value"
+    for octet in "${octets[@]}"; do
+        [[ ${#octet} -le 3 && ( $octet == 0 || $octet != 0* ) ]] || return 1
+        ((10#$octet <= 255)) || return 1
+    done
+}
+
+net_port() { [[ $1 =~ ^[1-9][0-9]{0,4}$ ]] && ((10#$1 <= 65535)); }
+
+net_paths() {
+    NET_CONFIG="$CONTAINER/.xtmoe-network"
+    NET_PORTS="$CONTAINER/.xtmoe-ports"
+    NET_ROOT=/data/local/tmp/xtmoe-network
+    NET_KEY=$(printf '%s' "$CONTAINER" | sha256sum); NET_KEY=${NET_KEY:0:10}
+    NET_RUN="$NET_ROOT/$NET_KEY"
+    NET_HOST="xn$NET_KEY"
+    NET_CHAIN="XN$NET_KEY"
+    NET_MODE=auto NET_SLOT=-1 NET_PRIORITY=10500
+    local key value extra
+    if [[ -e $NET_CONFIG || -L $NET_CONFIG ]]; then
+        [[ -f $NET_CONFIG && ! -L $NET_CONFIG ]] || die '非法网络配置文件'
+        local -A seen=()
+        while IFS='=' read -r key value extra; do
+            [[ -n $key && -z $extra && ! ${seen[$key]+yes} ]] || die '网络配置格式错误'
+            seen[$key]=1
+            case "$key" in
+                mode) [[ $value == auto || $value == isolated || $value == shared ]] || die '非法网络模式'; NET_MODE=$value ;;
+                slot) [[ $value =~ ^[0-9]{1,5}$ ]] && ((10#$value < 16384)) || die '非法网络地址槽'; NET_SLOT=$((10#$value)) ;;
+                priority) [[ $value =~ ^10[0-9]{3}$ ]] && ((value>=10001 && value<=10900)) || die '非法网络路由优先级'; NET_PRIORITY=$value ;;
+                *) die '未知网络配置键' ;;
+            esac
+        done <"$NET_CONFIG"
+    fi
+}
+
+net_addresses() {
+    NET_PRIORITY=${NET_PRIORITY:-10500}
+    NET_SUBNET="10.203.$((NET_SLOT / 64)).$((NET_SLOT % 64 * 4))/30"
+    NET_GATEWAY="${NET_SUBNET%.*}.$((NET_SLOT % 64 * 4 + 1))"
+    NET_GUEST="${NET_SUBNET%.*}.$((NET_SLOT % 64 * 4 + 2))"
+    NET_TABLE=$((40000 + NET_SLOT))
+}
+
+net_save_config() {
+    local tmp
+    tmp=$(mktemp "$CONTAINER/.network.XXXXXX") || return 1
+    printf 'mode=%s\n' "$NET_MODE" >"$tmp"
+    printf 'priority=%s\n' "$NET_PRIORITY" >>"$tmp"
+    ((NET_SLOT < 0)) || printf 'slot=%s\n' "$NET_SLOT" >>"$tmp"
+    chmod 0644 "$tmp"; mv -T -- "$tmp" "$NET_CONFIG"
+}
+
+net_lock() {
+    [[ ! -L $NET_ROOT ]] || die '网络运行目录不能是链接'
+    if [[ ! -e $NET_ROOT ]]; then mkdir -m 0700 "$NET_ROOT" || return 1; fi
+    [[ -d $NET_ROOT && $(stat -c %u "$NET_ROOT") == 0 && $(stat -c %a "$NET_ROOT") == 700 ]] || die '网络运行目录归属或权限错误'
+    [[ ! -L $NET_ROOT/lock ]] || die '网络锁不能是链接'
+    exec {NET_LOCK_FD}>"$NET_ROOT/lock"
+    flock -w 30 "$NET_LOCK_FD" || die '网络管理操作忙'
+}
+
+net_unlock() { flock -u "$NET_LOCK_FD"; exec {NET_LOCK_FD}>&-; }
+
+net_identity() { awk '{print $22}' "/proc/$1/stat" 2>/dev/null; }
+net_pid_alive() {
+    local pid birth extra
+    [[ -f $1 && ! -L $1 ]] || return 1
+    read -r pid birth extra <"$1" || return 1
+    [[ $pid =~ ^[1-9][0-9]*$ && $birth =~ ^[0-9]+$ && -z $extra && $(net_identity "$pid") == "$birth" ]]
+}
+net_record_pid() { printf '%s %s\n' "$1" "$(net_identity "$1")" >"$2"; }
+net_kill_record() {
+    local pid birth
+    if net_pid_alive "$1"; then read -r pid birth <"$1"; kill -TERM "$pid" 2>/dev/null || true; fi
+    rm -f -- "$1"
+}
+
+net_running() { net_pid_alive "$NET_RUN/holder"; }
+net_enter() {
+    local pid birth
+    net_running || { warn '独立网络未运行'; return 1; }
+    read -r pid birth <"$NET_RUN/holder"
+    nsenter --net="/proc/$pid/ns/net" -- "$@"
+}
+
+net_launch_args() {
+    NET_LAUNCH=()
+    [[ $NET_MODE == isolated ]] || return 0
+    local pid birth
+    net_running || return 1
+    read -r pid birth <"$NET_RUN/holder"
+    # shellcheck disable=SC2034 # consumed by the Root launchers
+    NET_LAUNCH=(nsenter --net="/proc/$pid/ns/net" --)
+}
+
+net_cidr_overlap() {
+    # Integer masks avoid python/package dependencies at the Root boundary.
+    local cidr=$1 other=$2 a b mask bits number octet
+    local -a chunks=()
+    for cidr in "$cidr" "$other"; do
+        bits=${cidr#*/}; [[ $bits =~ ^[0-9]{1,2}$ ]] && ((10#$bits <= 32)) || return 1
+        net_ipv4 "${cidr%/*}" || return 1
+        number=0; IFS=. read -r -a chunks <<<"${cidr%/*}"
+        for octet in "${chunks[@]}"; do number=$(((number << 8) + 10#$octet)); done
+        if [[ ! ${a+x} ]]; then a=$number; mask=$((10#$bits)); else b=$number; ((10#$bits >= mask)) || mask=$((10#$bits)); fi
+    done
+    mask=$((mask == 0 ? 0 : (0xffffffff << (32-mask)) & 0xffffffff))
+    (( (a & mask) == (b & mask) ))
+}
+
+net_allocate() {
+    local candidate route file slot old_slot=$NET_SLOT conflict priority offset rules occupied
+    local routes
+    rules=$(ip -4 rule show) || return 1
+    occupied=1
+    for ((priority=10500;priority<=10860;priority+=40)); do
+        occupied=0
+        for offset in 0 10 20 30; do
+            if grep -Eq "^$((priority+offset)):" <<<"$rules"; then occupied=1; break; fi
+        done
+        if ((occupied==0)); then NET_PRIORITY=$priority; break; fi
+    done
+    ((occupied==0)) || { warn '没有可用的专属路由优先级组，拒绝接管 Android 规则'; return 1; }
+    routes=$(ip -4 route show table all | awk '$1 ~ /^[0-9]+\./ && $1 ~ /\// && $1 != "0.0.0.0/0" {print $1}') || return 1
+    for file in "$BASE"/*/.xtmoe-network; do
+        [[ -f $file && ! -L $file && $file != "$NET_CONFIG" ]] || continue
+        slot=$(awk -F= '$1 == "slot" {print $2}' "$file")
+        [[ $slot =~ ^[0-9]{1,5}$ ]] && ((10#$slot < 16384)) || continue
+        candidate=$((10#$slot))
+        routes+=$'\n'"10.203.$((candidate / 64)).$((candidate % 64 * 4))/30"
+    done
+    for ((candidate=-1; candidate<16384; candidate++)); do
+        if ((candidate == -1)); then
+            ((old_slot >= 0)) || continue
+            NET_SLOT=$old_slot
+        else NET_SLOT=$candidate; fi
+        net_addresses; conflict=0
+        while IFS= read -r route; do
+            [[ -n $route ]] || continue
+            if net_cidr_overlap "$NET_SUBNET" "$route"; then conflict=1; break; fi
+        done <<<"$routes"
+        if ((conflict == 0)) && { [[ -n $(ip -4 route show table "$NET_TABLE" 2>/dev/null) ]] || grep -Eq "lookup $NET_TABLE( |$)" <<<"$rules"; }; then conflict=1; fi
+        if ((conflict == 0)); then net_save_config; return; fi
+    done
+    warn '10.203.0.0/16 地址池没有可用 /30 网段'; return 1
+}
+
+net_ipt() { "$NET_IPTABLES" -w 5 "$@"; }
+net_rule_ensure() {
+    local table=$1 chain=$2; shift 2
+    net_ipt -t "$table" -C "$chain" "$@" 2>/dev/null || net_ipt -t "$table" -A "$chain" "$@"
+}
+
+net_egress() {
+    local route word index
+    local -a words=()
+    route=$(ip -4 route get 1.1.1.1) || return 1
+    NET_EGRESS='' NET_EGRESS_TABLE=main
+    read -r -a words <<<"$route"
+    for ((index=0;index<${#words[@]};index++)); do
+        word=${words[index]}
+        case "$word" in dev) NET_EGRESS=${words[index+1]:-} ;; table) NET_EGRESS_TABLE=${words[index+1]:-} ;; esac
+    done
+    [[ $NET_EGRESS =~ ^[A-Za-z0-9_.-]{1,15}$ && $NET_EGRESS != "$NET_HOST" && $NET_EGRESS != dummy0 && $NET_EGRESS != lo ]] || return 1
+    [[ $NET_EGRESS_TABLE == main || $NET_EGRESS_TABLE =~ ^[A-Za-z0-9_.-]{1,32}$ ]]
+}
+
+net_rules_remove() {
+    local table hook
+    while net_ipt -C FORWARD -i "$NET_HOST" -j DROP 2>/dev/null; do net_ipt -D FORWARD -i "$NET_HOST" -j DROP || return; done
+    while net_ipt -C FORWARD -o "$NET_HOST" -j DROP 2>/dev/null; do net_ipt -D FORWARD -o "$NET_HOST" -j DROP || return; done
+    while net_ipt -C INPUT -j "${NET_CHAIN}I" 2>/dev/null; do net_ipt -D INPUT -j "${NET_CHAIN}I" || return; done
+    if net_ipt -S "${NET_CHAIN}I" >/dev/null 2>&1; then
+        net_ipt -F "${NET_CHAIN}I" || return
+        net_ipt -X "${NET_CHAIN}I" || return
+    fi
+    for table in nat filter; do
+        if [[ $table == nat ]]; then
+            for hook in PREROUTING OUTPUT; do
+                while net_ipt -t nat -C "$hook" -j "$NET_CHAIN" 2>/dev/null; do net_ipt -t nat -D "$hook" -j "$NET_CHAIN" || return; done
+            done
+            while net_ipt -t nat -C POSTROUTING -j "${NET_CHAIN}S" 2>/dev/null; do net_ipt -t nat -D POSTROUTING -j "${NET_CHAIN}S" || return; done
+            if net_ipt -t nat -S "${NET_CHAIN}S" >/dev/null 2>&1; then
+                net_ipt -t nat -F "${NET_CHAIN}S" || return
+                net_ipt -t nat -X "${NET_CHAIN}S" || return
+            fi
+        else
+            for hook in INPUT FORWARD; do
+                while net_ipt -C "$hook" -j "$NET_CHAIN" 2>/dev/null; do net_ipt -D "$hook" -j "$NET_CHAIN" || return; done
+            done
+        fi
+        if net_ipt -t "$table" -S "$NET_CHAIN" >/dev/null 2>&1; then
+            net_ipt -t "$table" -F "$NET_CHAIN" || return
+            net_ipt -t "$table" -X "$NET_CHAIN" || return
+        fi
+    done
+    while ip -4 rule del priority "$NET_PRIORITY" to "$NET_SUBNET" lookup "$NET_TABLE" 2>/dev/null; do :; done
+    while ip -4 rule del priority "$((NET_PRIORITY+10))" iif "$NET_HOST" lookup "$NET_TABLE" 2>/dev/null; do :; done
+    # Only this container owns this table and these exact routes.
+    ip -4 route del table "$NET_TABLE" "$NET_SUBNET" dev "$NET_HOST" 2>/dev/null || true
+    ip -4 route del table "$NET_TABLE" unreachable default metric 32767 2>/dev/null || true
+    if [[ -f $NET_RUN/egress ]]; then
+        local gateway device
+        read -r device gateway <"$NET_RUN/egress"
+        [[ -z $device ]] || ip -4 rule del priority "$((NET_PRIORITY+20))" iif "$NET_HOST" lookup "$gateway" 2>/dev/null || true
+    fi
+}
+
+net_port_lines() {
+    [[ ! -L $NET_PORTS ]] || { warn '端口配置不能是链接'; return 1; }
+    [[ -f $NET_PORTS ]] || return 0
+    local address host guest proto extra
+    while IFS='|' read -r address host guest proto extra; do
+        net_ipv4 "$address" && net_port "$host" && net_port "$guest" && [[ $proto == tcp || $proto == udp ]] && [[ -z $extra ]] || return 1
+        printf '%s|%s|%s|%s\n' "$address" "$host" "$guest" "$proto"
+    done <"$NET_PORTS"
+}
+
+net_lan_address() {
+    net_ipv4 "$1" || return 1
+    case "$1" in 10.*|192.168.*) ;; 172.*) local second=${1#*.}; second=${second%%.*}; ((10#$second>=16 && 10#$second<=31)) || return 1 ;; *) return 1 ;; esac
+    ip -4 -o addr show | awk -v ip="$1" '{split($4,a,"/"); if (a[1] == ip) found=1} END {exit !found}'
+}
+
+net_port_busy() {
+    local address=$1 host=$2 proto=$3
+    ss -H -lntu | awk -v address="$address" -v port=":$host" -v proto="$proto" '
+        $1 == proto && $5 ~ port"$" {
+            local_address=$5; sub(/:[0-9]+$/, "", local_address)
+            if (local_address==address || local_address=="*" || local_address=="0.0.0.0" || local_address=="[::]") found=1
+        } END {exit !found}'
+}
+
+net_refresh() {
+    net_running || return 0
+    local ports address host guest proto egress_ok=0 old_table signature old_signature=''
+    net_addresses
+    ports=$(net_port_lines) || return 1
+    net_egress && egress_ok=1
+    signature="$egress_ok|$NET_EGRESS|$NET_EGRESS_TABLE|$ports|$(ip -4 -o addr show)"
+    [[ ! -f $NET_RUN/signature ]] || old_signature=$(<"$NET_RUN/signature")
+    [[ $signature != "$old_signature" ]] || return 0
+    # Keep this veth closed while replacing rules; failures leave it closed until retry.
+    net_ipt -C FORWARD -i "$NET_HOST" -j DROP 2>/dev/null || net_ipt -I FORWARD 1 -i "$NET_HOST" -j DROP || return
+    net_ipt -C FORWARD -o "$NET_HOST" -j DROP 2>/dev/null || net_ipt -I FORWARD 1 -o "$NET_HOST" -j DROP || return
+    if [[ -f $NET_RUN/egress ]]; then
+        read -r _ old_table <"$NET_RUN/egress"
+        ip -4 rule del priority "$((NET_PRIORITY+20))" iif "$NET_HOST" lookup "$old_table" 2>/dev/null || true
+    fi
+    # Dedicated routes serve private destinations; the final rule guards egress.
+    ip -4 route replace table "$NET_TABLE" "$NET_SUBNET" dev "$NET_HOST" src "$NET_GATEWAY" || return
+    ip -4 route del unreachable default table "$NET_TABLE" metric 32767 2>/dev/null || true
+    ip -4 rule show | grep -Fq "to $NET_SUBNET lookup $NET_TABLE" || ip -4 rule add priority "$NET_PRIORITY" to "$NET_SUBNET" lookup "$NET_TABLE" || return
+    # A lookup of the dedicated table without a default must fall through for outbound traffic.
+    ip -4 rule show | grep -Fq "iif $NET_HOST lookup $NET_TABLE" || ip -4 rule add priority "$((NET_PRIORITY+10))" iif "$NET_HOST" lookup "$NET_TABLE" suppress_prefixlength 0 || return
+    if ((egress_ok)); then
+        ip -4 rule add priority "$((NET_PRIORITY+20))" iif "$NET_HOST" lookup "$NET_EGRESS_TABLE" || return
+        printf '%s %s\n' "$NET_EGRESS" "$NET_EGRESS_TABLE" >"$NET_RUN/egress"
+    else
+        rm -f "$NET_RUN/egress"
+    fi
+    # Final per-interface unreachable rule prevents fall-through to an unrelated Android network.
+    ip -4 rule show | grep -Fq "iif $NET_HOST unreachable" || ip -4 rule add priority "$((NET_PRIORITY+30))" iif "$NET_HOST" unreachable || return
+    local table hook
+    for table in nat filter; do
+        net_ipt -t "$table" -S "$NET_CHAIN" >/dev/null 2>&1 || net_ipt -t "$table" -N "$NET_CHAIN" || return
+        net_ipt -t "$table" -F "$NET_CHAIN" || return
+    done
+    net_ipt -A "$NET_CHAIN" -o "$NET_HOST" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT || return
+    net_ipt -t nat -S "${NET_CHAIN}S" >/dev/null 2>&1 || net_ipt -t nat -N "${NET_CHAIN}S" || return
+    net_ipt -t nat -F "${NET_CHAIN}S" || return
+    net_ipt -A "$NET_CHAIN" -i "$NET_HOST" -s "$NET_GUEST/32" -j ACCEPT || return
+    while IFS='|' read -r address host guest proto; do
+        [[ -n $address ]] || continue
+        if ! net_lan_address "$address"; then warn "映射未生效：$address:$host（地址不在手机上）"; continue; fi
+        if net_port_busy "$address" "$host" "$proto"; then warn "映射未生效：$address:$host（宿主端口已占用）"; continue; fi
+        net_ipt -t nat -A "$NET_CHAIN" -d "$address/32" -p "$proto" --dport "$host" -j DNAT --to-destination "$NET_GUEST:$guest" || return
+        net_ipt -A "$NET_CHAIN" -o "$NET_HOST" -d "$NET_GUEST/32" -p "$proto" --dport "$guest" -m conntrack --ctstate DNAT -j ACCEPT || return
+        net_ipt -t nat -A "${NET_CHAIN}S" -o "$NET_HOST" -d "$NET_GUEST/32" -p "$proto" --dport "$guest" -m conntrack --ctstate DNAT -j SNAT --to-source "$NET_GATEWAY" || return
+    done <<<"$ports"
+    net_ipt -A "$NET_CHAIN" -o "$NET_HOST" -j DROP || return
+    net_ipt -A "$NET_CHAIN" -i "$NET_HOST" -j DROP || return
+    if ((egress_ok)); then net_ipt -t nat -A "${NET_CHAIN}S" -s "$NET_GUEST/32" -o "$NET_EGRESS" -j MASQUERADE || return; fi
+    for hook in PREROUTING OUTPUT; do
+        net_ipt -t nat -C "$hook" -j "$NET_CHAIN" 2>/dev/null || net_ipt -t nat -I "$hook" 1 -j "$NET_CHAIN" || return
+    done
+    net_ipt -C FORWARD -j "$NET_CHAIN" 2>/dev/null || net_ipt -I FORWARD 1 -j "$NET_CHAIN" || return
+    net_ipt -t nat -C POSTROUTING -j "${NET_CHAIN}S" 2>/dev/null || net_ipt -t nat -I POSTROUTING 1 -j "${NET_CHAIN}S" || return
+    while net_ipt -C FORWARD -i "$NET_HOST" -j DROP 2>/dev/null; do net_ipt -D FORWARD -i "$NET_HOST" -j DROP || return; done
+    while net_ipt -C FORWARD -o "$NET_HOST" -j DROP 2>/dev/null; do net_ipt -D FORWARD -o "$NET_HOST" -j DROP || return; done
+    printf '%s' "$signature" >"$NET_RUN/signature"
+}
+
+net_start() {
+    net_paths
+    if [[ $NET_MODE == auto ]]; then
+        local capabilities
+        capabilities=$(capability_probe) || return 1
+        if grep -qx network=supported <<<"$capabilities"; then NET_MODE=isolated
+        else NET_MODE=shared; warn '设备不支持独立网络，自动方案选择共享网络；容器将显示手机接口'; fi
+        net_save_config || return 1
+    fi
+    [[ $NET_MODE == isolated ]] || return 0
+    net_lock
+    NET_IPTABLES=$(command -v iptables-legacy || command -v iptables) || { net_unlock; return 1; }
+    if net_running; then
+        net_addresses
+        if [[ -f $NET_RUN/master ]] && ! net_pid_alive "$NET_RUN/master"; then
+            net_cleanup_locked || { net_unlock; return 1; }
+        else
+            net_refresh; local rc=$?; net_unlock; return "$rc"
+        fi
+    fi
+    [[ ! -L $NET_RUN ]] || die '网络状态不能是链接'
+    [[ -d $NET_RUN ]] || mkdir -m 0700 "$NET_RUN"
+    if [[ -f $NET_RUN/iptables ]]; then NET_IPTABLES=$(<"$NET_RUN/iptables"); net_addresses; net_cleanup_locked || { net_unlock; return 1; }; fi
+    net_allocate || { net_unlock; return 1; }
+    if ip link show "$NET_HOST" >/dev/null 2>&1; then warn '同名宿主接口已存在，拒绝接管'; net_unlock; return 1; fi
+    NET_IPTABLES=$(command -v iptables-legacy || command -v iptables)
+    printf '%s\n' "$NET_IPTABLES" >"$NET_RUN/iptables"
+    printf '%s\n' "$CONTAINER" >"$NET_RUN/container"
+    if ! (net_create_locked); then
+        net_cleanup_locked || true; net_unlock; return 1
+    fi
+    net_unlock
+}
+
+net_create_locked() {
+    local helper_path holder birth attempt forwarding
+    helper_path=$(realpath -m -- "${BASH_SOURCE[1]}")
+    # The library's caller can be another function; use the Root helper saved by the entrypoint.
+    helper_path=${XTMOE_ROOT_HELPER:-$helper_path}
+    nohup unshare --net -- "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" _net-hold "$BASE" "$CONTAINER_NAME" \
+        {NET_LOCK_FD}>&- </dev/null >"$NET_RUN/holder.log" 2>&1 &
+    holder=$!; net_record_pid "$holder" "$NET_RUN/holder"
+    for ((attempt=0;attempt<50;attempt++)); do
+        [[ $(readlink "/proc/$holder/ns/net" 2>/dev/null) != "$(readlink /proc/self/ns/net)" ]] && net_pid_alive "$NET_RUN/holder" && break
+        sleep 0.1
+    done
+    net_running && [[ $(readlink "/proc/$holder/ns/net") != "$(readlink /proc/self/ns/net)" ]] || return 1
+    [[ ! -e /sys/class/net/$NET_HOST ]] || return 1
+    ip link add "$NET_HOST" type veth peer name "${NET_HOST}g" || return
+    ip link set "${NET_HOST}g" netns "$holder" || return
+    ip addr add "$NET_GATEWAY/30" dev "$NET_HOST" || return
+    ip link set "$NET_HOST" up || return
+    net_enter ip link set "${NET_HOST}g" name eth0 || return
+    net_enter ip link set lo up || return
+    net_enter ip addr add "$NET_GUEST/30" dev eth0 || return
+    net_enter ip link set eth0 up || return
+    net_enter ip route add default via "$NET_GATEWAY" dev eth0 || return
+    # IPv6 loopback stays usable; no IPv6 forwarding or link-local uplink is supplied.
+    net_enter sysctl -q -w net.ipv6.conf.eth0.disable_ipv6=1 || return
+    forwarding=$(cat /proc/sys/net/ipv4/ip_forward)
+    if [[ ! -f $NET_ROOT/forwarding ]]; then printf '%s\n' "$forwarding" >"$NET_ROOT/forwarding"; fi
+    [[ $forwarding == 1 ]] || sysctl -q -w net.ipv4.ip_forward=1 || return
+    net_refresh || return
+    nohup "$TERMUX_PREFIX/bin/bash" "$helper_path" "$TERMUX_PREFIX" _net-watch "$BASE" "$CONTAINER_NAME" \
+        {NET_LOCK_FD}>&- </dev/null >"$NET_RUN/watch.log" 2>&1 &
+    net_record_pid "$!" "$NET_RUN/watcher"
+}
+
+net_cleanup_locked() {
+    local file remaining=0
+    net_kill_record "$NET_RUN/watcher"
+    net_proxy_clear
+    net_rules_remove || return
+    while ip -4 rule del priority "$((NET_PRIORITY+30))" iif "$NET_HOST" unreachable 2>/dev/null; do :; done
+    ip link show "$NET_HOST" >/dev/null 2>&1 && ip link delete "$NET_HOST" || true
+    net_kill_record "$NET_RUN/holder"
+    rm -f "$NET_RUN/signature" "$NET_RUN/egress" "$NET_RUN/master" "$NET_RUN/iptables"
+    for file in "$NET_ROOT"/*/holder; do net_pid_alive "$file" && remaining=1; done
+    if ((remaining == 0)) && [[ -f $NET_ROOT/forwarding ]]; then
+        if [[ $(<"$NET_ROOT/forwarding") == 0 && $(cat /proc/sys/net/ipv4/ip_forward) == 1 ]]; then sysctl -q -w net.ipv4.ip_forward=0 || return; fi
+        rm -f "$NET_ROOT/forwarding"
+    fi
+}
+
+net_stop() {
+    net_paths; [[ -d $NET_RUN ]] || return 0
+    net_lock; net_addresses
+    NET_IPTABLES=$(command -v iptables-legacy || command -v iptables)
+    net_cleanup_locked; local rc=$?; net_unlock; return "$rc"
+}
+
+net_watch() {
+    net_paths; NET_IPTABLES=$(<"$NET_RUN/iptables")
+    net_addresses
+    local attempts=0
+    while net_running; do
+        sleep 5
+        net_lock
+        if [[ -f $NET_RUN/master ]]; then
+            if ! net_pid_alive "$NET_RUN/master"; then
+                rm -f "$NET_RUN/watcher"; net_cleanup_locked; net_unlock; return
+            fi
+        elif ((attempts++ >= 24)); then
+            rm -f "$NET_RUN/watcher"; net_cleanup_locked; net_unlock; return
+        fi
+        net_refresh || { rm -f "$NET_RUN/signature"; warn '网络刷新失败；等待重试'; }
+        net_unlock
+    done
+    net_lock
+    rm -f "$NET_RUN/watcher"
+    net_cleanup_locked
+    net_unlock
+}
+
+net_bind_master() {
+    net_paths
+    [[ $NET_MODE == isolated ]] || return 0
+    net_record_pid "$1" "$NET_RUN/master"
+    rm -f "$NET_RUN/startup-target" "$NET_RUN/startup-launcher"
+}
+
+net_startup_record() {
+    [[ $NET_MODE == isolated ]] || return 0
+    net_record_pid "$1" "$NET_RUN/startup-$2"
+}
+
+net_startup_cleanup() {
+    local file pid birth attempt
+    for file in "$NET_RUN/startup-target" "$NET_RUN/startup-launcher"; do
+        if net_pid_alive "$file"; then
+            read -r pid birth <"$file"
+            kill -TERM "$pid" 2>/dev/null || true
+            for ((attempt=0;attempt<10;attempt++)); do net_pid_alive "$file" || break; sleep 0.1; done
+            if net_pid_alive "$file"; then kill -KILL "$pid" 2>/dev/null || true; fi
+        fi
+        rm -f "$file"
+    done
+    net_stop
+}
+
+net_guest_sysfs() {
+    # Fresh sysfs is essential: an inherited bind mount retains the host's net view.
+    if [[ $(readlink /proc/self/ns/net) != "$(readlink /proc/1/ns/net)" ]]; then
+        mount -t sysfs -o nosuid,nodev,noexec sysfs "$ROOTFS/sys" || return
+        if [[ -d /sys/fs/cgroup ]]; then
+            mount --rbind /sys/fs/cgroup "$ROOTFS/sys/fs/cgroup" || return
+            mount --make-rslave "$ROOTFS/sys/fs/cgroup" || return
+        fi
+    fi
+}
+
+net_proxy_clear() {
+    local file
+    for file in "$NET_RUN"/proxy-*.pid; do
+        if [[ -f $file ]]; then net_kill_record "$file"; rm -f "${file%.pid}.port"; fi
+    done
+    return 0
+}
+
+net_proxy_environment() {
+    if declare -p ORIGINAL_GUEST_PROXY_ENV >/dev/null 2>&1; then GUEST_PROXY_ENV=("${ORIGINAL_GUEST_PROXY_ENV[@]}"); fi
+    net_paths
+    [[ $NET_MODE == isolated ]] || return 0
+    net_running || return 0
+    net_lock || return 1
+    local result=0
+    net_proxy_apply || result=$?
+    net_unlock
+    return "$result"
+}
+
+net_proxy_apply() {
+    net_addresses
+    local assignment name url scheme authority credentials host port suffix relay_file relay_port candidate offset
+    local -a replacement=() wanted=()
+    for assignment in "${GUEST_PROXY_ENV[@]}"; do
+        name=${assignment%%=*}; url=${assignment#*=}
+        if [[ $name == no_proxy || $name == NO_PROXY || $url != *://* ]]; then replacement+=("$assignment"); continue; fi
+        scheme=${url%%://*}; authority=${url#*://}; suffix=''
+        if [[ $authority == */* ]]; then suffix=/${authority#*/}; authority=${authority%%/*}; fi
+        credentials=''; if [[ $authority == *@* ]]; then credentials=${authority%@*}@; authority=${authority##*@}; fi
+        case "$authority" in
+            127.0.0.1:*|localhost:*|\[::1\]:*) port=${authority##*:}; host=127.0.0.1 ;;
+            *) replacement+=("$assignment"); continue ;;
+        esac
+        [[ $authority != localhost:* ]] || host=localhost
+        net_port "$port" || return 1
+        [[ $authority != \[::1\]:* ]] || host='[::1]'
+        command -v socat >/dev/null || { warn '本机代理跨网络需要 Termux socat；请执行 xtmoe chroot prepare'; return 1; }
+        relay_file="$NET_RUN/proxy-$port.pid"; wanted+=("$relay_file")
+        if net_pid_alive "$relay_file" && [[ -f ${relay_file%.pid}.port ]]; then
+            read -r relay_port <"${relay_file%.pid}.port"
+            net_port "$relay_port" || return 1
+        else
+            local -a host_net=()
+            # Launchers still see Android procfs here; relays belong to Android's netns.
+            [[ $(readlink /proc/self/ns/net) == "$(readlink /proc/1/ns/net)" ]] || host_net=(nsenter --net=/proc/1/ns/net --)
+            relay_port=''
+            # The phone proxy may bind 0.0.0.0:PORT. Choose a separate private relay port.
+            for ((offset=0;offset<64;offset++)); do
+                candidate=$((20000 + (10#$port + offset) % 40000))
+                (net_close_fds; exec nohup "${host_net[@]}" socat "TCP4-LISTEN:$candidate,bind=$NET_GATEWAY,reuseaddr,fork,range=$NET_GUEST/32" "TCP:$host:$port") \
+                    </dev/null >"$NET_RUN/proxy-$port.log" 2>&1 &
+                net_record_pid "$!" "$relay_file"
+                sleep 0.1
+                if net_pid_alive "$relay_file"; then relay_port=$candidate; break; fi
+            done
+            [[ -n $relay_port ]] || { warn '无法分配手机代理的私有转接端口'; return 1; }
+            printf '%s\n' "$relay_port" >"${relay_file%.pid}.port"
+        fi
+        replacement+=("$name=$scheme://$credentials$NET_GATEWAY:$relay_port$suffix")
+    done
+    for relay_file in "$NET_RUN"/proxy-*.pid; do
+        [[ -f $relay_file ]] || continue
+        local keep=0 file
+        for file in "${wanted[@]}"; do [[ $file != "$relay_file" ]] || keep=1; done
+        if ((keep==0)); then net_kill_record "$relay_file"; rm -f "${relay_file%.pid}.port"; fi
+    done
+    GUEST_PROXY_ENV=("${replacement[@]}")
+    if [[ $(readlink /proc/self/ns/net) == "$(readlink /proc/1/ns/net)" ]]; then
+        NET_IPTABLES=$(<"$NET_RUN/iptables")
+        net_ipt -S "${NET_CHAIN}I" >/dev/null 2>&1 || net_ipt -N "${NET_CHAIN}I" || return
+        net_ipt -F "${NET_CHAIN}I" || return
+        for relay_file in "${wanted[@]}"; do
+            read -r port <"${relay_file%.pid}.port"
+            net_port "$port" || return 1
+            net_ipt -A "${NET_CHAIN}I" -i "$NET_HOST" -s "$NET_GUEST/32" -d "$NET_GATEWAY/32" -p tcp --dport "$port" -j ACCEPT || return
+            net_ipt -A "${NET_CHAIN}I" -d "$NET_GATEWAY/32" -p tcp --dport "$port" -j DROP || return
+        done
+        net_ipt -C INPUT -j "${NET_CHAIN}I" 2>/dev/null || net_ipt -I INPUT 1 -j "${NET_CHAIN}I" || return
+    fi
+}
+
+net_status() {
+    net_paths
+    printf 'configured=%s\n' "$NET_MODE"
+    if systemd_running; then local pid; pid=$(systemd_target_pid); printf 'actual=%s\n' "$(if [[ $(readlink "/proc/$pid/ns/net") == "$(readlink /proc/self/ns/net)" ]]; then printf shared; else printf isolated; fi)";
+    elif direct_docker_running; then local pid; pid=$(direct_docker_target_pid); printf 'actual=%s\n' "$(if [[ $(readlink "/proc/$pid/ns/net") == "$(readlink /proc/self/ns/net)" ]]; then printf shared; else printf isolated; fi)";
+    elif net_running; then printf 'actual=isolated\n'; else printf 'actual=stopped\n'; fi
+    if ((NET_SLOT >= 0)); then net_addresses; printf 'address=%s\ngateway=%s\n' "$NET_GUEST" "$NET_GATEWAY"; fi
+    [[ ! -f $NET_RUN/egress ]] || printf 'egress=%s\n' "$(<"$NET_RUN/egress")"
+    printf 'IPv6=loopback-only\n'
+    net_ports_status
+}
+
+net_ports_status() {
+    local address host guest proto state lines
+    lines=$(net_port_lines) || return 1
+    while IFS='|' read -r address host guest proto; do
+        [[ -n $address ]] || continue
+        state=stopped
+        if net_running; then
+            state=active
+            net_lan_address "$address" || state='address-unavailable'
+            if net_port_busy "$address" "$host" "$proto"; then state='port-occupied'; fi
+            [[ ! -f $NET_RUN/signature ]] && state=pending
+        fi
+        printf '%s:%s -> %s/%s [%s]\n' "$address" "$host" "$guest" "$proto" "$state"
+    done <<<"$lines"
+}
+
+net_mode_set() {
+    [[ $# == 1 && ( $1 == auto || $1 == shared || $1 == isolated ) ]] || die '模式必须是 auto、isolated 或 shared'
+    systemd_running && die '请先停止容器再修改网络模式'
+    direct_docker_running && die '请先停止容器再修改网络模式'
+    is_mounted "$ROOTFS" && die '请先停止容器再修改网络模式'
+    net_paths
+    if net_running && net_pid_alive "$NET_RUN/master"; then die '独立网络仍有活动会话；请先停止容器'; fi
+    net_stop || return
+    NET_MODE=$1; net_save_config
+}
+
+net_port_change() {
+    local action=$1; shift
+    local listen='' guest='' proto=tcp address host current line tmp other protocol
+    while (($#)); do
+        (($# >= 2)) || die '端口参数缺少值'
+        case "$1" in --listen) listen=$2 ;; --to) guest=$2 ;; --proto) proto=$2 ;; *) die '未知端口参数' ;; esac
+        shift 2
+    done
+    [[ $listen == *:* && ( $proto == tcp || $proto == udp ) ]] || die '需要 --listen IPv4:端口 [--proto tcp|udp]'
+    address=${listen%:*}; host=${listen##*:}
+    net_ipv4 "$address" && net_port "$host" || die '无效监听地址或端口'
+    if [[ $action == add ]]; then
+        net_port "$guest" && net_lan_address "$address" || die '需要有效容器端口和手机当前持有的局域网 IPv4'
+    fi
+    net_paths; [[ $NET_MODE == isolated ]] || die '端口管理仅用于独立网络'
+    net_lock
+    current=$(net_port_lines) || { net_unlock; return 1; }
+    if [[ $action == add ]]; then
+        # Reserve the explicit tuple across stopped and running XTMOE containers too.
+        for other in "$BASE"/*/.xtmoe-ports; do
+            [[ -f $other && ! -L $other && $other != "$NET_PORTS" ]] || continue
+            if awk -F'|' -v a="$address" -v h="$host" -v p="$proto" '$1==a && $2==h && $4==p {found=1} END {exit !found}' "$other"; then net_unlock; die '端口已被其他 XTMOE 容器预留'; fi
+        done
+        if net_port_busy "$address" "$host" "$proto"; then net_unlock; die '宿主端口已有监听'; fi
+    fi
+    tmp=$(mktemp "$CONTAINER/.ports.XXXXXX") || { net_unlock; return 1; }
+    while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        IFS='|' read -r other current _ protocol <<<"$line"
+        [[ $other == "$address" && $current == "$host" && $protocol == "$proto" ]] || printf '%s\n' "$line" >>"$tmp"
+    done < <(net_port_lines)
+    [[ $action != add ]] || printf '%s|%s|%s|%s\n' "$address" "$host" "$guest" "$proto" >>"$tmp"
+    chmod 0644 "$tmp"; mv -T "$tmp" "$NET_PORTS"
+    if net_running; then
+        net_addresses; NET_IPTABLES=$(<"$NET_RUN/iptables"); net_refresh || { net_unlock; return 1; }
+    fi
+    net_unlock
+}

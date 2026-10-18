@@ -32,8 +32,6 @@ manager_chroot_names() {
     done | sort
 }
 
-manager_qemu_names() { qemu_names; }
-
 manager_docker_state() {
     local name=$1 base state
     base=$(chroot_base)
@@ -104,16 +102,7 @@ manager_collect_rows() {
         XTMOE_LIST_DOCKER+=("$docker_state")
     done
 
-    while IFS= read -r name; do
-        [[ -n $name ]] || continue
-        state=$(qemu_status_value "$name" 2>/dev/null || printf unknown)
-        [[ $state == ready || $state == initializing || $include_all == 1 ]] || continue
-        XTMOE_LIST_MODES+=(qemu)
-        XTMOE_LIST_NAMES+=("$name")
-        XTMOE_LIST_STATES+=("$state")
-        XTMOE_LIST_INIT+=("$(qemu_config_get "$name" init_state 2>/dev/null || printf unknown)")
-        XTMOE_LIST_DOCKER+=("$(qemu_config_get "$name" docker_state 2>/dev/null || printf unknown)")
-    done < <(manager_qemu_names)
+
 }
 
 list_main() {
@@ -153,7 +142,7 @@ list_main() {
 }
 
 enter_main() {
-    require_arg_range 2 2 "$#" 'xtmoe enter <proot|chroot|qemu> <名称>'
+    require_arg_range 2 2 "$#" 'xtmoe enter <proot|chroot> <名称>'
     local mode=$1 name=$2
     require_name "$name"
     case "$mode" in
@@ -165,11 +154,7 @@ enter_main() {
             [[ -f $(chroot_base)/$name/.xtmoe-chroot ]] || die "Chroot 容器不存在：$name"
             chroot_main login "$name"
             ;;
-        qemu)
-            qemu_vm_exists "$name" || die "QEMU VM 不存在：$name"
-            qemu_main ssh "$name"
-            ;;
-        *) die "未知模式：$mode（只能是 proot、chroot 或 qemu）" ;;
+        *) die "未知模式：$mode（只能是 proot 或 chroot）" ;;
     esac
 }
 
@@ -203,7 +188,6 @@ menu_select_container() {
     case "$mode" in
         proot) mapfile -t names < <(manager_proot_names) ;;
         chroot) mapfile -t names < <(manager_chroot_names) ;;
-        qemu) mapfile -t names < <(manager_qemu_names) ;;
         *) die "内部错误：未知容器模式：$mode" ;;
     esac
     if ((${#names[@]} == 0)); then
@@ -232,35 +216,27 @@ menu_entries() {
         proot:main)
             printf '%s\n' '安装 Ubuntu 24.04|install' '容器运行管理|runtime' '备份、恢复与删除|data' ;;
         chroot:main)
-            printf '%s\n' '容器管理|containers' 'systemd 服务管理（systemctl）|systemd' 'Docker 服务管理|docker' '网络与 DNS|network' ;;
+            printf '%s\n' '容器管理|containers' 'systemd 服务管理|systemd' 'Docker 服务管理|docker' '网络与 DNS|network' '诊断与修复|diagnostics' ;;
         chroot:containers)
-            printf '%s\n' '安装依赖|prepare' '创建 Ubuntu 容器（一键初始化）|install' '进入容器|login' '删除容器|remove' '备份容器|backup' '从备份恢复容器|restore' '容器状态|status' ;;
+            printf '%s\n' '安装依赖|prepare' '创建 Ubuntu（按能力初始化）|install' '进入容器|login' '停止容器|stop' '容器状态|status' '数据管理|data' ;;
         chroot:systemd)
             printf '%s\n' '前置检查|systemd-check' '开启 systemd|systemd-start' '停止 systemd|systemd-stop' '重启 systemd|systemd-restart' '状态检查|systemd-status' ;;
         chroot:network)
-            printf '%s\n' '检测网络、DNS 与监听端口|network-check' '修复 DNS 与 Docker 默认网络|network-repair' ;;
-        qemu:main)
-            printf '%s\n' '安装与准备|install' '虚拟机运行管理|runtime' '备份、恢复与删除|data' '端口转发|ports' 'Docker 验收|docker' ;;
-        qemu:install)
-            printf '%s\n' '安装 Ubuntu 24.04 + Docker VM|install' '单独准备 QEMU 依赖|prepare' ;;
+            printf '%s\n' '检测网络、DNS 与监听端口|network-check' '修复 DNS 与 Docker 默认网络|network-repair' '独立网络状态和私有 IP|network-status' '设置网络模式（须停止容器）|network-mode' '查看局域网端口映射|port-list' '添加局域网端口映射|port-add' '删除局域网端口映射|port-remove' ;;
         proot:runtime)
-            printf '%s\n' '进入容器|login' '停止活动会话|stop' '更新容器系统|update-system' '查看状态|status' ;;
-        qemu:runtime)
-            printf '%s\n' 'SSH 进入 VM|ssh' '启动 VM|start' '停止 VM|stop' '查看状态|status' '等待初始化就绪|wait-ready' '串口控制台|console' '更新 Ubuntu|update-system' ;;
-        proot:data|qemu:data)
+            printf '%s\n' '进入容器|login' '执行容器命令|exec' '停止活动会话|stop' '更新容器系统|update-system' '查看状态|status' '活动会话|ps' ;;
+        chroot:diagnostics)
+            printf '%s\n' '深度环境能力检查|capabilities' '检查 systemd|systemd-check' '检查 Docker|docker-check' '初始化或修复|repair' '更新容器系统|update-system' '执行容器命令|exec' '绑定目录|bind' ;;
+        proot:data|chroot:data)
             printf '%s\n' '备份|backup' '从备份恢复|restore' '重装（删除系统内数据）|reinstall' '卸载（永久删除系统和数据）|remove' ;;
         chroot:docker)
             printf '%s\n' '前置检查|docker-check' '开启 Docker|docker-start' '停止 Docker|docker-stop' '重启 Docker|docker-restart' '状态检查|docker-status' '安装或修复 Docker|docker-install' '查看日志|docker-logs' ;;
-        qemu:ports)
-            printf '%s\n' '查看端口映射|ports' '添加端口映射|port-add' '删除端口映射|port-remove' ;;
-        qemu:docker)
-            printf '%s\n' 'Docker daemon 状态|docker-status' '运行 hello-world 验收|docker-test' ;;
         *) return 1 ;;
     esac
 }
 
 menu_mode_label() {
-    case "$1" in proot) printf PRoot ;; chroot) printf Chroot ;; qemu) printf QEMU ;; *) die "未知菜单模式：$1" ;; esac
+    case "$1" in proot) printf PRoot ;; chroot) printf Chroot ;; *) die "未知菜单模式：$1" ;; esac
 }
 
 # Only the selected action goes to stdout. UI goes to stderr so command
@@ -295,19 +271,10 @@ menu_dispatch_action() {
     backend="${mode}_main"
     case "$action" in
         install)
-            if [[ $mode == qemu ]]; then
-                name=$(menu_read '新 VM 名称' ubuntu-qemu) || return 0
-                menu_run "$backend" install "$name"
-            else
-                name=$(menu_read '新容器名称' ubuntu) || return 0
-                if [[ $mode == proot ]]; then
-                    menu_run "$backend" install ubuntu:24.04 "$name"
-                else
-                    menu_run "$backend" install ubuntu 24.04 "$name"
-                fi
-            fi
-            return 0
-            ;;
+            name=$(menu_read '新容器名称' ubuntu) || return 0
+            if [[ $mode == proot ]]; then menu_run "$backend" install ubuntu:24.04 "$name"
+            else menu_run "$backend" install ubuntu 24.04 "$name"; fi
+            return 0 ;;
         prepare) menu_run "$backend" prepare; return 0 ;;
         restore)
             file=$(menu_read '要恢复的备份文件（留空取消）') || return 0
@@ -316,7 +283,7 @@ menu_dispatch_action() {
                 info 'PRoot 恢复名称保存在备份中，不另行指定新名称。'
                 menu_run "$backend" restore "$file"
             else
-                if [[ $mode == qemu ]]; then name=ubuntu-qemu-restored; else name=ubuntu-restored; fi
+                name=ubuntu-restored
                 name=$(menu_read '恢复后的新名称（不会覆盖已有系统）' "$name") || return 0
                 menu_run "$backend" restore "$file" "$name"
             fi
@@ -330,23 +297,47 @@ menu_dispatch_action() {
     fi
     require_name "$name"
     case "$action" in
+        capabilities) menu_run chroot_root capabilities "$(chroot_base)" "$name" ;;
+        exec)
+            file=$(menu_read '容器内命令（留空取消）') || return 0
+            [[ -n $file ]] || return 0
+            menu_run "$backend" exec "$name" -- /bin/bash -lc "$file"
+            ;;
+        bind)
+            host=$(menu_read '宿主目录（留空取消）') || return 0
+            [[ -n $host ]] || return 0
+            guest=$(menu_read '容器挂载目录（留空取消）') || return 0
+            [[ -n $guest ]] || return 0
+            protocol=$(menu_read 'ro/rw' ro) || return 0
+            menu_run "$backend" bind "$name" "$host" "$guest" "$protocol"
+            ;;
+        data) menu_category "$mode" data "数据管理 — $name" "$name" ;;
         backup)
             file=$(menu_read '备份文件' "$PWD/${name}-$(date +%Y%m%d-%H%M%S)-${mode}.tar.gz") || return 0
             menu_run "$backend" backup "$name" "$file"
             ;;
         port-add)
-            host=$(menu_read '宿主端口（留空取消）') || return 0
-            [[ -n $host ]] || return 0
-            guest=$(menu_read '客体端口（留空取消）') || return 0
-            [[ -n $guest ]] || return 0
-            protocol=$(menu_read '协议 tcp/udp' tcp) || return 0
-            menu_run "$backend" port-add "$name" "$host" "$guest" "$protocol"
+            if [[ $mode == chroot ]]; then
+                host=$(menu_read '手机局域网 IPv4:端口（留空取消）') || return 0
+                [[ -n $host ]] || return 0
+                guest=$(menu_read '容器端口') || return 0
+                protocol=$(menu_read '协议 tcp/udp' tcp) || return 0
+                menu_run "$backend" port-add "$name" --listen "$host" --to "$guest" --proto "$protocol"
+                return 0
+            fi
             ;;
         port-remove)
-            host=$(menu_read '宿主端口（留空取消）') || return 0
-            [[ -n $host ]] || return 0
-            protocol=$(menu_read '协议 tcp/udp' tcp) || return 0
-            menu_run "$backend" port-remove "$name" "$host" "$protocol"
+            if [[ $mode == chroot ]]; then
+                host=$(menu_read '手机局域网 IPv4:端口（留空取消）') || return 0
+                [[ -n $host ]] || return 0
+                protocol=$(menu_read '协议 tcp/udp' tcp) || return 0
+                menu_run "$backend" port-remove "$name" --listen "$host" --proto "$protocol"
+                return 0
+            fi
+            ;;
+        network-mode)
+            protocol=$(menu_read '网络模式 auto/isolated/shared' auto) || return 0
+            menu_run "$backend" network-mode "$name" "$protocol"
             ;;
         *) menu_run "$backend" "$action" "$name" ;;
     esac
@@ -392,7 +383,6 @@ menu_backend() {
 
 menu_proot() { menu_backend proot; }
 menu_chroot() { menu_backend chroot; }
-menu_qemu() { menu_backend qemu; }
 
 menu_proxy() {
     local action address bypass
@@ -415,37 +405,32 @@ menu_proxy() {
     done
 }
 
+menu_maintenance() {
+    local action
+    while true; do
+        action=$(menu_pick_entry '程序维护' '环境与能力检查|doctor' '更新程序|update' '查看版本|version' '卸载程序（保留容器）|uninstall') || return 0
+        case "$action" in
+            doctor) menu_run doctor ;;
+            update) menu_run update_main; info '更新操作结束，请退出并重新运行 xtmoe on。'; return 0 ;;
+            version) printf 'XTMOE %s\n' "$XTMOE_VERSION" ;;
+            uninstall) menu_run uninstall_app_main ;;
+        esac
+    done
+}
+
 on_main() {
     (($# == 0)) || die 'xtmoe on 不接受额外参数'
     require_termux
-    [[ -t 0 && -t 1 ]] || die 'xtmoe on 是交互向导；自动化请使用对应的直接子命令。'
+    [[ -t 0 && -t 1 ]] || die 'xtmoe on 需要交互终端；快捷操作请查看 xtmoe help。'
     local choice
     while true; do
-        cat <<'EOF'
-
-XTMOE 管理向导
-  1) PRoot（无需 Root）
-  2) Chroot（需要 Root）
-  3) QEMU 完整虚拟机（独立内核）
-  4) 查看并进入正在运行的系统
-  5) 更新 XTMOE
-  6) 代理配置
-  0) 退出
-EOF
-        choice=$(menu_read '请选择模式') || return 0
+        choice=$(menu_pick_entry "XTMOE ${XTMOE_VERSION:-v1.0.0}" 'PRoot 管理（无需 Root）|proot' 'Chroot 管理（需要 Root）|chroot' '查看并进入系统|list' '代理设置|proxy' '程序维护|maintenance') || return 0
         case "$choice" in
-            1) menu_proot ;;
-            2) menu_chroot ;;
-            3) menu_qemu ;;
-            4) menu_run list_main ;;
-            6) menu_proxy ;;
-            5)
-                menu_run update_main
-                info 'XTMOE 已更新；请重新运行 xtmoe on 载入新版本。'
-                return 0
-                ;;
-            0|'') return 0 ;;
-            *) warn '无效选项。' ;;
+            proot) menu_proot ;;
+            chroot) menu_chroot ;;
+            list) menu_run list_main ;;
+            proxy) menu_proxy ;;
+            maintenance) menu_maintenance ;;
         esac
     done
 }

@@ -1,110 +1,16 @@
-# Android 真机验收记录
+# Android 验收与证据等级
 
-## 2026-10-18：Ubuntu 用户空间完整性复查
+模拟测试覆盖参数、能力组合、异常处理和菜单逻辑，不等同真机。文档中“目标支持”不等于该设备已实测。
 
-在现有 Ubuntu 24.04.5 ARM64 上复查，没有重建 rootfs。初筛确认 APT 依赖、systemd/D-Bus、DNS/hosts 与 Docker 正常，但 Ubuntu Base 遗留文件过滤器使多个已安装包缺少 man/doc/翻译；抽查十个核心包发现 626 个缺少的 doc/man 文件，没有发现其他类别文件损坏。
+v1.0.0 验收包括：
 
-已补充基础工具与安全的用户空间恢复：识别并备份精确匹配的官方 Base 过滤器，恢复缺少文件的已安装包，不改第三方过滤策略；保留 APT 服务策略和配置文件，支持中断续跑。发现官方 man 占位脚本返回 0 后，进一步按精确内容与 LOCAL diversion 恢复真正 man-db，并验证手册路径与正文。新系统默认 hostname 保持 localhost，已配置主机名在后续修复中保留并补齐 hosts。
+1. 干净安装程序，版本、帮助、公开命令白名单及旧操作拒绝。
+2. PRoot 安装、进入、命令、会话停止、备份、恢复和移除。
+3. Chroot 自动能力选择、Ubuntu 配置、服务、停止/重启、网络和数据生命周期。
+4. 手机与局域网实际访问、显式端口映射的添加/删除，代理适配。
+5. 不影响既有用户容器、SELinux、CPU/温控或第三方网络规则。
+6. ARM32/ARM64/x86/x86_64 及受限 Root/cgroup/network 的模拟组合。
 
-修复后真机 17 类功能检查退出 0：包审计与依赖、基础命令、UTF-8、目录/设备与挂载、名称解析、systemd/D-Bus、时间设置、SSH 配置和 socket 激活、手册路径/正文、sudo 权限切换、APT 官方源、Docker/Compose/Buildx 与 hello-world。全体已安装包 `dpkg --verify` 没有报告缺失或差异；systemd running，failed units 为 0，Docker active。重复 setup 无重复重装，现有配置保留。真实 PTY 的 sudo -i、前台进程组和 Ctrl+C 再次通过。
+真机报告与原始日志放在本机排除发布的验收目录。未测试的厂商、ROM、Root 实现、VPN、IPv6 或内核能力不得记为通过。当前项目只有单台 ARM64 安卓设备的现场验证条件，不能宣传“全安卓完全兼容”。
 
-SSH 的 /run/sshd 由其 RuntimeDirectory 在 ssh.service 激活时创建，初筛直接执行 sshd -t 的报错不能判为损坏；回环连接触发既有 ssh.socket 后获得 OpenSSH banner，sshd -t 正常。ubuntu-minimal 是元包，本环境使用 ubuntu-standard 与已列出的真实基础工具；没有为了元包名称强行安装网络/硬件管理栈。
-
-保留并报告内核/环境差异：cgroup BPF 防火墙加载失败、F2FS journal 属性不支持、部分 LLMNR/mDNS 主机名探测警告。服务 running 不代表未支持的加固功能已经生效。没有关闭 SELinux、清空日志、屏蔽安全配置或伪造内核能力。共享网络/设备、嵌套启动、VFS 和默认 Bash-as-sh 仍与原生物理 Ubuntu 不同，不能承诺所有应用与日志“毫无差别”。
-
-本地回归 261 passed, 0 failed；18 个 Bash 文件语法、ShellCheck warning 和空白检查通过。原始证据设备 ~/xtmoe-userland-evidence-20261018/，本地 dist/validation/userland/，均不发布。此次检查对象为当前设备/现有系统，不扩展为所有内核或完整新装矩阵。
-
-## 2026-10-18：xtmoe proxy 持久代理命令
-
-同一 Android 13 / ARM64 / KernelSU 设备，使用手机代理软件实际提供的 HTTP/混合端口验证；保留命令 on/set/off/status/test/apply/reset/exec 的配置与进程边界。
-
-- 配置保存后在新的 XTMOE 进程中自动加载；proxy test 实际 HTTPS 请求成功，配置权限 0600。父 Termux Shell 不被修改，普通宿主命令可用 proxy exec 包装。
-- PRoot Alpine 3.22 的下载、--env 显式传递及容器 HTTP 请求成功，临时系统已删除。
-- 在持久代理开启状态下，新建 Ubuntu 24.04 Chroot，Base 校验、APT、systemd、Docker 官方包、registry 与 hello-world 验收成功，无手工 y。
-- Chroot curl 和 Docker daemon HTTP/HTTPS proxy 字段与保存配置一致，BusyBox 拉取成功。
-- 再次 on 相同地址，Docker MainPID 保持不变；off 清除托管 drop-in，daemon proxy 字段为空；随后 on 恢复设置。停止 Chroot 后再次 on，容器仍保持 stopped。
-- 安装、环境修复、PRoot、Chroot 安装、Chroot 代理切换与清理六阶段退出码均为 0。两个临时容器已清理，用户保存的实际代理配置保留。
-- 新 Termux 环境曾遇到 Bash conffile 无交互失败，以及 curl/ngtcp2 配套库缺符号。前者通过安装选项保留旧配置处理，后者完整升级配套包修复；proxy test 会单独识别 curl 无法运行，避免误报代理网络故障。
-
-本地回归为 `253 passed, 0 failed`；18 个 Bash 文件语法、ShellCheck warning 级别和空白检查通过。原始日志保存在设备 `~/xtmoe-proxy-evidence-20261018/` 与本地 `dist/validation/proxy/`，不发布运行配置、凭据和日志。本轮没有验证任意 systemd 服务、Docker 应用内部或 QEMU 客体的透明代理；这些不在命令自动接管范围。
-
-## 2026-10-18：四类精简菜单、首次安装与代理兼容
-
-本轮在同一台 Android 13 / ARM64 / KernelSU / `4.14.336-GinHalion` 设备通过 ADB 验收；保留用户现有 `ubuntu`，另建 `xtmoe-first-20261018-04`。宿主 VPN 正在使用，SELinux 为 Enforcing，未切换宿主安全模式。
-
-- 以 Termux 应用 UID/GID 及实际附加组运行，执行 `install ubuntu 24.04 xtmoe-first-20261018-04 </dev/null`。新 rootfs 使用官方校验的缓存 Ubuntu Base，Ubuntu 基础组件与 Docker 软件包正常下载；退出 0，无手工 y、无手工 rootfs 配置、无 `repair` 或 `network-repair` 补救。
-- 安装完成即验证普通 DNS 文件、固定 nameserver、NSS 和 localhost；systemd、containerd、Docker 和精确路由服务正常，hello-world 成功。
-- BusyBox 默认 bridge 容器 DNS 和 HTTP 通过；手机访问 `127.0.0.1:18082` 返回测试网页正文。
-- 重启测试发现旧的 Docker 重启同时重启 containerd，日志出现 `Force shutdown daemon`，应用没有正常恢复。日常重启改为保留运行中的 containerd，仅重启 Docker；安装更新运行时时先停 Docker。复测 Docker 停止/开启/重启、systemd 重启、完整停止后通过 login 自动启动，配置 unless-stopped 的测试网页均恢复可访问。
-- 用仅监听回环的临时 HTTP/CONNECT 代理实测：Ubuntu curl 返回 HTTP 200，Docker 拉取 BusyBox 成功；代理日志实际记录 Docker registry/auth CONNECT。随后清除 XTMOE 测试代理配置并停止临时代理服务。
-- 回到用户原有 `ubuntu`，经正常启动命令使 Docker 和已安装的 1Panel Core/Agent active；1Panel 在实际监听端口返回 HTTP 200。进一步仅在内存中读取现有安全入口并验证其 HTML/脚本页面，确认可打开应用登录页；直接访问根路径显示安全入口提示不算网络失败。没有重装用户容器、自动安装新的 1Panel、修改登录凭据或安全入口，也没有输出账号、密码或入口 URL。
-- 更新手机源码与安装命令，`xtmoe doctor` 通过。精简菜单为容器、systemd、Docker、网络/DNS 四组，服务/网络分组一次选择目标后连续操作。
-
-本轮最终模拟回归为 `244 passed, 0 failed`，16 个 Bash 文件语法检查、ShellCheck warning 级别和 `git diff --check` 通过。Git Bash 使用 `MSYS=winsymlinks:nativestrict` 支持链接夹具；直接在 Android Termux 运行全量模拟套件的尝试因 Linux `/usr/bin/env` 夹具及架构假设不适用而失败，不作为通过证据。真实设备的安装、代理、生命周期、HTTP 与备份恢复由独立脚本验收。
-
-真机原始日志与备份仅保存在设备 `~/xtmoe-optimized-evidence-20261018-04/`，本地验收副本位于项目 `dist/validation/`，均不发布。新一轮验证不扩大到自定义 Compose 网络、IPv6、其他 Root/内核或所有 1Panel 功能；上述旧章节仍是各自历史轮次的证据。
-
-## 2026-10-18：Android 13 / ARM64 / KernelSU
-
-在用户授权的 Redmi Note 9 5G（M2007J22C，cannon）通过 USB ADB 实测。ZeroTermux 实际包名为 `com.termux`，使用标准 Termux 路径。内核 `4.14.336-GinHalion`，Root 为 KernelSU。以下结果只适用于该设备/内核/网络状态，不代表全部 Android 4.14 设备。
-
-### 实际故障与修复
-
-1. systemd 启动需显式容器身份和只读 sysfs/SELinux 视图；不通过关闭宿主 SELinux 修复。
-2. nft NAT/addrtype 规则失败；内核启用 legacy NAT，但缺少 nft NAT chain/compat 配置。独立 netns 实测 legacy 后，选择 iptables/ip6tables legacy。
-3. Docker 29 的 containerd OverlayFS snapshotter 在加密 F2FS 数据目录上挂载失败，内核记录 filesystem not supported。经备份后选择经典 VFS，并关闭 containerd snapshotter；保留原后端数据。
-4. 默认 bridge 的转发流量被 Android/VPN 策略路由拒绝。只为其子网和入口接口增加精确规则，跟随当前宿主 VPN 路由，随 Docker 生命周期创建/清理。
-
-### 已取得的真机证据
-
-- 严格 `apt-get update` 返回 0，Ubuntu noble/updates/backports/security 与 Docker 官方源可访问。
-- systemd 为 running，Docker/containerd 均 active。
-- Docker 29.9.1、systemd cgroup v2、VFS。
-- `docker run --rm hello-world` 返回 0，真实输出 `Hello from Docker!`。
-- BusyBox 默认 bridge 容器内 DNS 和 Ubuntu HTTP 请求通过。
-- 本机 `127.0.0.1:18081` 映射到测试容器 80 端口，请求成功，测试容器已移除。
-- 重启 Docker 后 hello-world 通过；完整停止/再次启动 Chroot 后 Docker 和路由服务自动启动，hello-world 与 bridge DNS/HTTP 再次通过。
-- 路由服务单独停止后，记录的精确规则和状态文件消失；重新启动服务后默认 bridge DNS/HTTP 再次通过。
-- 已将修复源码同步到设备，以 Termux 普通 UID 执行安装器与 doctor，再通过公共命令 `xtmoe chroot repair --accept-host-network-changes ubuntu` 完整续跑，返回 0，实际拉取和容器运行均通过，阶段元数据由流程更新。
-- 宿主 SELinux 操作前后均为 Permissive，修复未修改它；没有足够历史证据判断最初模式的来源。
-
-### 不应推断为通过的项目
-
-- VFS 性能、长期压力测试、全部镜像/应用、特权容器或任意 OCI 配置。
-- 额外 Compose/自定义网络、IPv6 容器出站、切换 VPN 后的自动实时刷新。
-- Android 手机开机自动启动、其他 Root 方案或其他设备。
-- 1Panel 安装和功能：本次不自动安装 1Panel。
-- 重装、备份恢复、卸载无残留的完整破坏性矩阵：没有为了验收而删除用户现有容器。
-
-本次未禁用 SELinux、刷写内核、清空宿主防火墙或删除用户 Docker 数据。后端和路由修改有明确授权；运行时备份保存于用户设备，不上传到仓库。
-
-## 2026-10-18：删除旧容器、重新克隆后的首次安装
-
-同一设备上，用户另行明确授权删除 `ubuntu` 并从 GitHub 重新拉取项目。旧源码改名保留，诊断日志放在容器外；本节不是用前面已修复的 rootfs 重跑验收。
-
-### 真实复现的首次安装缺陷
-
-- `install: command not found`：Ubuntu 已存在 `/usr/bin/install`，但旧 compatibility 分支的非登录 chroot Shell 继承 Android/Termux PATH。修复为统一清理环境并传入 Ubuntu PATH；显式安装并验证 coreutils、util-linux 等基础工具。
-- 安装初期固定 DNS 正常，`systemd-resolved` 包配置随后将 resolv.conf 换成 `127.0.0.53` stub，造成 systemd 启动后 Docker 依赖阶段解析失败。`policy-rc.d` 不能阻止配置文件变更；增加包安装后和 systemd 启动后的 DNS 恢复/实际源访问复验，Docker 依赖与系统更新也恢复 DNS。
-- 普通 Chroot install/init/repair 默认执行，不再读取 y，开始前显示宿主网络影响；原确认参数保留兼容，`--skip-docker` 可选择不安装 Docker。破坏性重装/卸载仍保留确认。
-
-### 首次安装证据
-
-代码提交：`8c46a4e7b6783baba77c63f250be9274325260ae`，包含 PATH 修复提交 `24f4d0962cfbe60ecc1b4dd497fe2a266ba321f3`。第一次全新测试暴露 resolved 覆盖后已删除测试容器，再次从 GitHub 克隆上述修正版，使用新的空缓存与新 rootfs；未向新 rootfs 手工补配置。
-
-正常流程为 `sh termux.sh` → `xtmoe doctor` → `xtmoe chroot install ubuntu 24.04 ubuntu </dev/null`。没有使用 --yes，也没有通过管道输入确认。安装直接返回 0，并自动完成：官方镜像重新下载与 SHA-256 校验、基础包、DNS/NSS、systemd、legacy 实测/选择、目标文件系统 OverlayFS 探测与 VFS 配置、Docker 官方源/软件包、registry 拉取、真实 hello-world 运行。安装元数据由公共流程生成 `state=ready`、`docker_state=ready`、`failed_stage` 为空。
-
-安装后的独立验收：
-
-- resolv.conf 为普通文件，固定 DNS 两项存在；NSS 为 `hosts: files dns`。
-- install、timeout、mktemp、flock、ip、getent、systemctl 可执行；基础依赖和包状态正常。
-- 严格 APT update 访问 Ubuntu 与 Docker 源成功。
-- systemd 为 running，docker/containerd/路由服务 active，失败单元为 0；实际使用经典 VFS、systemd cgroup v2。
-- hello-world 返回 0；BusyBox 默认 bridge 的 DNS/HTTP 和本机端口映射成功；测试容器、端口已清理。
-- 默认 `xtmoe chroot update-system ubuntu </dev/null`、`xtmoe chroot repair ubuntu </dev/null` 均成功，没有再出现 PATH 或 stub DNS 故障。
-- 公共 stop 清理旧 PID、挂载和精确路由；systemd-start 后 Docker 自动恢复。重启后的 APT、DNS、hello-world、bridge 网络再次通过。
-- 运行时源树保持干净，安装代码来自 GitHub 克隆；未上传私有诊断日志、PROJECT_STATE.md 或 push_github.py。
-
-补充：ADB 的简单 su 切 UID 会遗漏 Android 应用的 inet 等附加组，导致宿主 git/curl 解析失败；测试采用真实应用 UID/GID 及附加组运行安装器，而不是修改 Android DNS 或关闭 VPN。此问题与容器 DNS 覆盖缺陷分别诊断。
-
-本轮按授权实际删除了旧容器及失败的首次测试 rootfs，保留了旧源码和外部诊断日志；不是声称完成跨设备或所有模式矩阵。前节列出的性能、IPv6、自定义网络、其他 Root/机型及 1Panel 限制仍适用。
+开发用脚本和测试入口见 [测试说明](../tests/README.md)；它们不属于公开安装命令。

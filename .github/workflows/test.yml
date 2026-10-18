@@ -26,16 +26,20 @@ jobs:
             termux.sh \
             src/bin/xtmoe \
             src/lib/common.sh \
+            src/lib/capabilities.sh \
             src/lib/proxy.sh \
             src/lib/proot.sh \
             src/lib/chroot.sh \
-            src/lib/qemu.sh \
             src/lib/manager.sh \
             src/lib/xtmoe-root \
+            src/lib/xtmoe-network \
             src/lib/xtmoe-docker-routing \
             tests/run.sh \
             tests/audit.sh \
             tests/chroot-init.sh \
+            tests/chroot-network.sh \
+            tests/capabilities.sh \
+            tests/internal.sh \
             tests/docker-runtime.sh \
             tests/menus.sh \
             tests/proxy.sh \
@@ -51,16 +55,20 @@ jobs:
             termux.sh \
             src/bin/xtmoe \
             src/lib/common.sh \
+            src/lib/capabilities.sh \
             src/lib/proxy.sh \
             src/lib/proot.sh \
             src/lib/chroot.sh \
-            src/lib/qemu.sh \
             src/lib/manager.sh \
             src/lib/xtmoe-root \
+            src/lib/xtmoe-network \
             src/lib/xtmoe-docker-routing \
             tests/run.sh \
             tests/audit.sh \
             tests/chroot-init.sh \
+            tests/chroot-network.sh \
+            tests/capabilities.sh \
+            tests/internal.sh \
             tests/docker-runtime.sh \
             tests/menus.sh \
             tests/proxy.sh \
@@ -88,3 +96,6 @@ jobs:
 
       - name: Check whitespace
         run: git diff --check
+
+      - name: Validate documentation and public commands
+        run: python3 tests/validate-docs.py

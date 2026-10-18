@@ -1,153 +1,25 @@
-# PRoot 模式
+# PRoot 使用指南
 
-需要代理时，先在普通 Termux 执行 `xtmoe proxy on 10808`（实际 HTTP/混合端口），再 login/exec。XTMOE 会用 `proot-distro login --env` 显式传入代理，不依赖 PRoot 保留宿主环境。已打开的会话需重新进入；详情见 [统一代理](PROXY.md)。
-
-PRoot 不需要手机 Root。XTMOE 将容器生命周期委托给 Termux 官方维护的 `proot-distro`，并负责统一入口、环境诊断和危险操作确认。
-
-本文所有命令都以前置安装完成为条件：先在源码目录执行 `sh termux.sh`，再执行 `xtmoe doctor` 并处理其报告的基础环境问题。
-
-交互入口 `xtmoe on` → PRoot 分为安装 Ubuntu、容器运行管理、备份恢复与删除三类。进入/停止/更新/状态放在运行管理；备份、恢复、重装、卸载放在数据分类。已有容器按数字选择，`0` 或回车返回；PRoot 恢复沿用归档内名称。
-
-## 安装容器
-
-默认安装 Ubuntu 24.04：
-
-```sh
-xtmoe proot install
-```
-
-显式指定 OCI/Docker 镜像和本地名称：
+PRoot 无需 Root，在 Android 内核上运行用户空间；不是完整虚拟机，也不提供原生 systemd 或 Docker daemon 的保证。
 
 ```sh
 xtmoe proot install ubuntu:24.04 ubuntu
-xtmoe proot install debian:13 debian
-xtmoe proot install alpine:latest alpine
-```
-
-镜像名称和可用架构由 `proot-distro` 解析。需要精确复现时，可以使用带 `sha256` 摘要的镜像引用。
-
-## 进入和执行命令
-
-```sh
 xtmoe proot login ubuntu
 xtmoe proot exec ubuntu -- uname -a
-xtmoe proot exec ubuntu -- /bin/bash -lc 'apt-get update && apt-get upgrade -y'
-```
-
-也可以通过统一列表或直接入口进入：
-
-```sh
-xtmoe list
-xtmoe enter proot ubuntu
-```
-
-退出交互式 Shell：
-
-```sh
-exit
-```
-
-## 共享文件
-
-先授予 Termux 存储权限：
-
-```sh
-termux-setup-storage
-```
-
-将 Download 映射到容器 `/mnt/download`：
-
-```sh
-xtmoe proot login ubuntu --bind "$HOME/storage/downloads:/mnt/download"
-```
-
-共享 Termux 临时目录或 X11 socket：
-
-```sh
-xtmoe proot login ubuntu --shared-tmp
-xtmoe proot login ubuntu --shared-x11
-```
-
-这些参数由当前 `proot-distro login` 提供；可用选项以设备上的帮助为准：
-
-```sh
-xtmoe proot raw login --help
-```
-
-## 会话和后台进程
-
-```sh
+xtmoe proot list
 xtmoe proot ps
 xtmoe proot stop ubuntu
-```
-
-查看单个容器状态：
-
-```sh
+xtmoe proot backup ubuntu "$HOME/ubuntu-backup.tar.gz"
+xtmoe proot update-system ubuntu
 xtmoe proot status ubuntu
 ```
 
-## 更新与重装
+安装按 Termux 用户空间 ABI 选择原生架构。上游镜像没有对应架构时失败，不安装模拟器。镜像名称可使用 proot-distro 当前支持的原生 OCI 镜像，默认 Ubuntu 24.04。
 
-```sh
-xtmoe proot update-system ubuntu
-xtmoe proot reinstall ubuntu
-```
-
-`update-system` 会识别 APT、DNF、Pacman、APK 或 Zypper；无法识别时停止，不猜测更新命令。`reinstall` 使用 `proot-distro reset` 按原镜像重建，会永久删除容器数据且不自动备份；非交互执行必须显式添加 `--yes`。
-
-`stop` 会让 `proot-distro` 停止该容器已登记的活动会话。需要使用更高级的后台、入口点或会话参数时，可直接调用：
-
-```sh
-xtmoe proot raw run --help
-xtmoe proot raw login --help
-```
-
-## 备份与恢复
-
-先停止活动会话，再备份：
-
-```sh
-xtmoe proot stop ubuntu
-xtmoe proot backup ubuntu "$HOME/storage/downloads/ubuntu.tar.gz"
-```
-
-恢复时，容器名称来自备份内容：
-
-```sh
-xtmoe proot restore "$HOME/storage/downloads/ubuntu.tar.gz"
-```
-
-如需改名，查看当前 `proot-distro` 的 rename 命令：
-
-```sh
-xtmoe proot raw rename --help
-```
-
-## 删除
-
-```sh
-xtmoe proot remove ubuntu
-```
-
-也可以使用统一的镜像卸载命令：
+恢复、重装及其他管理操作在 `xtmoe on → PRoot 管理` 中选择。恢复名称来自备份，不能覆盖已有目标。删除前停止会话并备份：
 
 ```sh
 xtmoe uninstall proot ubuntu
 ```
 
-非交互脚本必须显式确认：
-
-```sh
-xtmoe proot remove --yes ubuntu
-xtmoe uninstall --yes proot ubuntu
-```
-
-删除无法撤销，建议先备份。
-
-## PRoot 限制
-
-- PRoot 通过 `ptrace` 转换文件路径和部分系统调用，会有性能损耗。
-- 它不提供真正的 Linux 内核、虚拟机或强安全隔离。
-- systemd、内核模块、FUSE、Docker 等依赖底层内核能力的功能通常不可用或受限。
-- Android 12 及以上系统可能因后台进程限制终止长时间运行的任务；应关闭 Termux 的电池优化，并按设备系统设置允许后台运行。
+代理通过向导配置，重新进入后传给容器；不改变父 Shell 环境。PRoot 的接口可见性和权限仍受 Android 限制，不能用其统计值推断完整宿主能力。性能、后台存活和兼容性依设备实测。

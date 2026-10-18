@@ -11,12 +11,8 @@ PRoot 模式（无需 Root）
   xtmoe proot ps                      列出活动会话
   xtmoe proot stop <名称>             停止容器会话
   xtmoe proot backup <名称> [文件]    备份
-  xtmoe proot restore <文件>          恢复（名称保存在备份中）
   xtmoe proot update-system [名称]    更新容器内软件包
-  xtmoe proot reinstall [--yes] [名称] 按原镜像重装（删除容器数据）
   xtmoe proot status [名称]           查看安装和活动会话状态
-  xtmoe proot remove [--yes] <名称>   永久删除
-  xtmoe proot raw <参数...>           直接调用 proot-distro
 EOF
 }
 
@@ -50,14 +46,12 @@ proot_session_count() {
 
 proot_install() {
     require_arg_range 0 2 "$#" 'xtmoe proot install [镜像] [名称]'
-    local image=${1:-ubuntu:24.04} name=${2:-ubuntu}
+    local image=${1:-ubuntu:24.04} name=${2:-ubuntu} install_help
     require_name "$name"
     info "安装 PRoot 容器：$name（$image）"
-    if proot-distro install --help 2>&1 | grep -q -- '--name'; then
-        proot-distro install --name "$name" "$image"
-    else
-        proot-distro install --override-alias "$name" "$image"
-    fi
+    install_help=$(proot-distro install --help 2>&1) || die '无法读取 proot-distro 安装接口'
+    [[ $install_help == *--name* && $install_help == *--architecture* ]] || die '请更新 proot-distro 到提供 --name 和 --architecture 的当前版本'
+    timeout --foreground --kill-after=15 1800 proot-distro install --name "$name" --architecture "$(native_proot_arch)" "$image"
 }
 
 proot_login() {
@@ -75,14 +69,25 @@ proot_backup() {
     require_arg_range 1 2 "$#" 'xtmoe proot backup <名称> [文件]'
     local name=${1:?缺少容器名称} output=${2:-"$PWD/${1}-$(date +%Y%m%d-%H%M%S).tar.gz"}
     require_name "$name"
+    [[ ! -e $output && ! -L $output ]] || die '备份文件已存在，拒绝覆盖'
     proot-distro backup "$name" --output "$output"
     ok "备份已写入：$output"
 }
 
 proot_restore() {
-    local archive=${1:?缺少备份文件}
-    [[ -f $archive ]] || die "备份文件不存在：$archive"
-    (($# == 1)) || die 'PRoot 备份内已经包含容器名称；restore 不接受新名称。恢复后可用 raw rename 改名。'
+    local archive=${1:?缺少备份文件} name directory
+    [[ -f $archive && ! -L $archive ]] || die "备份文件不存在或不是普通文件：$archive"
+    (($# == 1)) || die 'PRoot 备份内已经包含容器名称；restore 不接受新名称。请通过向导操作。'
+    # Read the entire listing before extraction; do not truncate the producer with head.
+    name=$(tar -tf "$archive" | awk '
+        { path=$0; sub(/^\.\//,"",path); if(path=="." || path=="") next
+          if(path ~ /^\// || path ~ /(^|\/)\.\.($|\/)/) bad=1
+          split(path,parts,"/"); if(target=="") target=parts[1]; if(target!=parts[1]) bad=1
+          if(parts[2]=="rootfs") rootfs=1
+        } END {if(bad || !rootfs || target=="") exit 1; print target}') || die '不是有效的单容器备份'
+    require_name "$name"
+    directory="$PREFIX/var/lib/proot-distro/containers/$name"
+    [[ ! -e $directory && ! -L $directory ]] || die "恢复目标已存在，拒绝覆盖：$name"
     proot-distro restore "$archive"
 }
 
@@ -170,8 +175,8 @@ proot_main() {
     [[ $action == help || $action == -h || $action == --help ]] && { proot_help; return; }
     require_proot
     case "$action" in
-        install|add) proot_install "$@" ;;
-        login|shell)
+        install) proot_install "$@" ;;
+        login)
             local name=${1:-ubuntu}
             require_name "$name"
             (($# == 0)) || shift
@@ -184,9 +189,9 @@ proot_main() {
             (($#)) || die '缺少要执行的命令'
             proot_login "$name" -- "$@"
             ;;
-        list|ls) proot-distro list "$@" ;;
+        list) proot-distro list "$@" ;;
         ps) proot-distro ps "$@" ;;
-        stop|kill)
+        stop)
             require_arg_range 1 1 "$#" 'xtmoe proot stop <名称>'
             require_name "$1"
             proot-distro kill "$1"
@@ -196,8 +201,7 @@ proot_main() {
         update-system) proot_update_system "$@" ;;
         reinstall) proot_reinstall "$@" ;;
         status) proot_status "$@" ;;
-        remove|rm) proot_remove "$@" ;;
-        raw) proot-distro "$@" ;;
-        *) die "未知 PRoot 操作：$action" ;;
+        remove) proot_remove "$@" ;;
+            *) die "未知 PRoot 操作：$action" ;;
     esac
 }

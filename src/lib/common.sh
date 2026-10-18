@@ -24,6 +24,7 @@ is_termux() {
 require_termux() {
     if [[ ${XTMOE_ALLOW_NON_TERMUX:-0} != 1 ]]; then
         is_termux || die '此操作只能在 Android Termux 中运行。'
+        android_supported || die 'Android 环境不满足 v1.0.0 要求'
     fi
     [[ $(id -u) -ne 0 ]] || die '请在 Termux 普通用户会话中运行；不要先执行 su/tsu。'
 }
@@ -116,4 +117,8 @@ proxy_environment() {
     fi
     return 0
 }
+
+
+# shellcheck source=src/lib/capabilities.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/capabilities.sh"
 

@@ -1,35 +1,18 @@
-# XTMOE
+# XTMOE v1.0.0
 
-XTMOE 0.4.0-dev 是一个从零设计的 Android Termux Linux 环境管理工具，使用可诊断、可测试的命令式实现，并明确分离 **PRoot**、**Chroot** 和 **QEMU** 三种模式。既可以使用 `xtmoe on` 交互向导，也可以使用完整子命令进行自动化。
+面向 Android Termux 的 PRoot / Chroot Ubuntu 管理工具。以中文交互向导集中管理安装、容器、服务、网络、代理和数据；无需记忆大量维护命令。
 
-项目只实现当前架构。安装入口从已经下载的源码树安装，并且不会自动修改 Termux 软件源、字体、键盘布局或颜色主题。
+## 支持范围
 
-## 选择运行模式
+- Android 7.0 / API 24 或更新系统；Android 5、6 不支持。
+- PRoot 无需 Root。Chroot 需要有效 Root、私有挂载能力及匹配的原生 Ubuntu Base。
+- 目标覆盖 ARM32、ARM64、x86、x86_64；可用模式取决于 Termux 用户空间 ABI 和官方镜像。Ubuntu 24.04 Base 无 i386 镜像，因此 x86 仅尝试 PRoot。
+- systemd、Docker、独立 IPv4 网络按能力自动启用，不能仅凭手机品牌或内核版本保证全部支持。
+- 当前真机证据覆盖单台 ARM64 Android 设备；其他组合是适配目标，不是已实测承诺。
 
-| 项目 | PRoot | Chroot | QEMU |
-| --- | --- | --- | --- |
-| 需要手机 Root | 否 | 是 | 否 |
-| 推荐人群 | 绝大多数用户 | 熟悉 Root 和挂载的用户 | 需要独立内核、完整 Docker 的用户 |
-| 安装来源 | Termux `proot-distro` | Canonical Ubuntu Base | Ubuntu 24.04 Cloud Image |
-| 性能 | 有转换开销 | 接近原生用户空间 | 无 KVM 时 TCG 较慢 |
-| 内核 | 共用 Android 内核 | 共用 Android 内核 | 独立 Linux 客体内核 |
-| systemd | 通常不可用 | 嵌套运行、取决于内核 | 客体内原生运行 |
-| Docker | 通常不可用 | 取决于 Android 内核 | 默认安装并实际验证 |
-| 删除风险 | 较低 | 必须先卸载绑定挂载 | 必须先正常关闭 VM |
+详见 [兼容性矩阵](docs/COMPATIBILITY.md)。优先使用 F-Droid 或官方 GitHub Termux；Google Play 分支按实验性环境检测。
 
-普通 Linux 环境请选择 **PRoot**；追求 Chroot 性能且设备已 Root 可选 **Chroot**；需要独立内核和完整 Docker 时选择 **QEMU**。
-
-## 要求
-
-- 从 [F-Droid](https://f-droid.org/packages/com.termux/) 或 [Termux GitHub Releases](https://github.com/termux/termux-app/releases) 安装的当前 Termux；不要使用已经停止维护的旧 Play 商店构建。
-- Android 7 或更高版本。
-- 至少约 1 GB 可用空间；桌面环境通常需要 3–6 GB。
-- Chroot 额外要求 Magisk、KernelSU 或 APatch 等可工作的 Root 方案。
-- QEMU 建议至少 2 GiB 可用内存和 10 GiB 可用存储；Cloud Image 下载约 600 MiB。
-
-## 安装
-
-在 Termux 普通用户会话中运行：
+## 安装和主要入口
 
 ```sh
 pkg update
@@ -38,238 +21,62 @@ git clone https://github.com/seagullz4/xtmoe.git xtmoe
 cd xtmoe
 sh termux.sh
 xtmoe doctor
-```
-
-不要先执行 `su` 或 `tsu`。XTMOE 仅在 Chroot 的必要步骤中单独申请 Root。
-
-只有 `sh termux.sh` 已成功完成且 `xtmoe doctor` 未报告基础环境错误后，才可以执行后续的 `xtmoe on`、`xtmoe list`、PRoot、Chroot 或 QEMU 管理命令。
-
-## 统一管理向导
-
-完成安装和环境检查后，推荐直接运行：
-
-```sh
 xtmoe on
 ```
 
-向导先选择 PRoot、Chroot 或 QEMU，再按任务分组。PRoot 首屏 3 项，Chroot 首屏 4 项，QEMU 首屏 5 项；菜单只负责导航，实际操作调用公共子命令。
-
-Chroot 导航示例：
-
-```text
-Chroot
-├─ 1 容器管理：安装依赖、创建、进入、删除、备份、恢复、状态
-├─ 2 systemd 服务管理（systemctl）：前置检查、开启、停止、重启、状态
-├─ 3 Docker 服务管理：前置检查、开启、停止、重启、状态、安装修复、日志
-└─ 4 网络与 DNS：检测、修复
-```
-
-每页 `0` 或直接回车返回上一级；删除仍执行公共命令的确认，不自动添加 `--yes`。systemd、Docker 和网络分组先选一次容器，再在带容器名称的页面连续操作。创建容器自动初始化 Ubuntu、systemd 和 Docker；初始化续跑、系统更新、重装、cgroup 和 direct 兼容模式保留直接命令。完整分类见 [日常操作](docs/OPERATIONS.md#分组管理向导)。
-
-当操作需要已存在的容器时，向导会列出该模式全部容器，例如 `1) ubuntu`、`2) debian`；输入数字选择，无需手工输入名称。`0`、直接回车或输入结束均可取消，不会沿用旧目标。新装与 Chroot/QEMU 恢复要求输入新名称；PRoot 恢复沿用备份内的名称。
-
-统一代理可以保存一次供后续 XTMOE 命令、PRoot/Chroot 会话和 Chroot Docker 拉镜像使用：
-
-也可以运行 `xtmoe on`，选择首屏 `6）代理配置`，按菜单设置地址、启停、查看和测试。
-
-```sh
-xtmoe proxy on 10808       # 换成手机代理软件实际的 HTTP/混合端口
-xtmoe proxy status
-xtmoe proxy test
-xtmoe proxy off
-```
-
-运行中的 systemd Docker 仅在代理配置变化时重启，停止的容器保持停止；这不是所有应用的透明代理。完整用法与范围见 [统一代理](docs/PROXY.md)。
-
-查看当前正在运行的系统并选择进入：
-
-```sh
-xtmoe list
-```
-
-查看全部已安装系统但不进入交互选择：
-
-```sh
-xtmoe list --all --no-prompt
-xtmoe enter chroot ubuntu
-```
-
-以后更新只需执行：
-
-```sh
-xtmoe update
-```
-
-`git pull` 只更新源码目录，不会自动替换 `$PREFIX/bin/xtmoe`；请优先使用 `xtmoe update`。如果当前安装版本还没有该命令，先执行一次：
-
-```sh
-cd "$HOME/xtmoe"
-git pull --ff-only
-sh termux.sh
-```
+`xtmoe on` 包含 PRoot、Chroot、系统列表、代理设置和程序维护。按编号选择，0 返回。更新、恢复、重装、服务、修复、网络和端口映射统一放在向导中。
 
 ## PRoot 快速开始
 
 ```sh
 xtmoe proot install ubuntu:24.04 ubuntu
 xtmoe proot login ubuntu
-```
-
-执行单条命令：
-
-```sh
 xtmoe proot exec ubuntu -- uname -a
-```
-
-查看、停止和备份：
-
-```sh
 xtmoe proot list
 xtmoe proot ps
 xtmoe proot stop ubuntu
 xtmoe proot backup ubuntu "$HOME/ubuntu-backup.tar.gz"
 xtmoe proot update-system ubuntu
 xtmoe proot status ubuntu
-```
-
-卸载 PRoot 镜像及其全部数据：
-
-```sh
 xtmoe uninstall proot ubuntu
 ```
 
-完整说明见 [PRoot 使用指南](docs/PROOT.md)。
+PRoot 使用当前 proot-distro 的原生架构能力；缺少镜像或依赖时报告失败，不自动换发行版。
 
 ## Chroot 快速开始
-
-先阅读 [Chroot 使用指南](docs/CHROOT.md) 中的风险说明，然后运行：
 
 ```sh
 xtmoe chroot prepare
 xtmoe doctor
 xtmoe chroot install ubuntu 24.04 ubuntu
 xtmoe chroot systemd-login ubuntu
-```
-
-退出后确认挂载已经释放：
-
-```sh
 xtmoe chroot stop ubuntu
 xtmoe chroot status ubuntu
-```
-
-停止后卸载 Chroot 镜像及其全部数据：
-
-```sh
-xtmoe chroot stop ubuntu
+# 删除前先停止并备份：
 xtmoe uninstall chroot ubuntu
 ```
 
-安装过程从 Ubuntu 官方发布页选择最新的 24.04.x Ubuntu Base 原生架构镜像，并使用官方 `SHA256SUMS` 校验后才解压。全新交互安装默认初始化 Ubuntu 标准组件、嵌套 systemd、Bash `/bin/sh`，并在内核严格检查通过后安装 Docker Engine。全新安装默认直接执行、不再要求输入 y。Docker 标准 bridge 的宿主网络风险会提前显示；不需要 Docker 使用 --skip-docker。原确认参数保留兼容，以下命令仍可用：
+安装默认完成基础 Ubuntu，再配置支持的 systemd、Docker 和独立网络。能力缺失会明确说明；下载、配置或启动失败仍真实报错并保留系统。快捷入口 `systemd-login` 按容器实际运行方案进入，不代表任何手机都能运行 systemd。
+
+## 基础命令
 
 ```sh
-xtmoe chroot install --yes --accept-host-network-changes ubuntu 24.04 ubuntu
+xtmoe on
+xtmoe doctor
+xtmoe list
+xtmoe list --all --no-prompt
+xtmoe version
+xtmoe help
 ```
 
-不需要 Docker 时应明确使用：
+不提供旧版快捷命令或别名。程序更新、卸载和高级容器操作请在向导中选择。
 
-```sh
-xtmoe chroot install --yes --skip-docker ubuntu 24.04 ubuntu
-```
+## 数据与安全
 
-安装会在下载前检查 Root、依赖和存储空间，自动补齐缺少的 Termux 依赖；配置 DNS 后通过真实 APT update 验证网络，再安装基础包并验证 systemd。iptables 等用户态依赖会先准备，再执行 Docker 完整门控，不再把缺包一概误报成内核缺失。
+配置、数据和缓存位于 Termux 用户目录的 `.config/xtmoe`、`.local/share/xtmoe`、`.cache/xtmoe`。程序更新不重建现有容器；卸载程序保留数据，删除指定容器另行确认。Root 操作可能影响手机，Chroot 不是安全沙箱。
 
-Docker 网络门控会在临时 namespace 实测规则而非只查询 NAT 列表，必要时在显示网络范围后选择测试通过的 legacy 后端。全新无用户配置/数据时实测目标 OverlayFS，不能挂载则使用经典 VFS。Android 默认 IPv4 bridge 路由辅助服务随 Docker 启停并跟随宿主当前 VPN/出口；自定义网络仍需单独验收。真机结果与限制见 [Android 验收记录](docs/ANDROID_VALIDATION.md)。
-
-已有 Ubuntu 无需重装，使用一键配置：
-
-```sh
-xtmoe chroot init ubuntu
-# 只配置 Ubuntu、网络和 systemd，不安装 Docker：
-xtmoe chroot init --skip-docker ubuntu
-```
-
-向导中也可选择 Chroot → 安装与初始化 → “一键配置已有 Ubuntu”，按数字选择容器。`init` 主动补全默认配置；修复中断、沿用已保存的 Bash/Docker 选择则用 `xtmoe chroot repair ubuntu`。`setup` 只安装基础包，不等同完整初始化。
-
-若缺少 namespace、pids/devices cgroup controller 或受 Root 权限阻断，命令返回状态 `2`：已完成的 Ubuntu/systemd 保留，但 XTMOE 不安装、不启动 Docker，也不会把它报告为可用。网络/APT/用户态依赖或服务异常返回 `1`。systemd 本身若启动失败也不会宣称其可用。
-
-如果严格模式被内核阻断，但希望试用不依赖 `systemctl` 的 daemon，可在 Chroot 中显式选择 direct dockerd 兼容模式：
-
-```sh
-xtmoe chroot docker-direct-install ubuntu
-xtmoe chroot docker-direct-status ubuntu
-xtmoe chroot docker-direct-run-test ubuntu
-```
-
-它通过 `dockerd --iptables=true` 启动并验证 `docker info`；只有运行测试成功才表示实际容器可运行。该模式不代表 Docker bridge、Compose 或 1Panel 已可靠支持。
-
-## QEMU 快速开始
-
-QEMU 创建拥有独立 Linux 内核的 Ubuntu 24.04 完整虚拟机，不需要手机 Root：
-
-```sh
-xtmoe qemu prepare
-xtmoe qemu install ubuntu-qemu
-```
-
-安装会询问 CPU、内存、磁盘和 SSH 端口，随后下载并校验官方 Cloud Image，通过 cloud-init 配置专用 SSH 密钥和 Docker。进入、验证和停止：
-
-```sh
-xtmoe qemu ssh ubuntu-qemu
-xtmoe qemu docker-status ubuntu-qemu
-xtmoe qemu docker-test ubuntu-qemu
-xtmoe qemu stop ubuntu-qemu
-```
-
-没有 KVM 时会自动使用 TCG，功能完整但性能明显低于 PRoot/Chroot。完整说明见 [QEMU 使用指南](docs/QEMU.md)。
+独立网络优先，首次探测不支持时说明采用共享网络。已有明确网络设置不会被更新静默切换。端口映射默认关闭，由用户在向导中手动添加；IPv6 外网暂不提供。代理设置只管理显式代理，不控制手机 VPN。
 
 ## 文档
 
-- [安装与升级](docs/INSTALL.md)
-- [PRoot 模式](docs/PROOT.md)
-- [Chroot 模式](docs/CHROOT.md)
-- [QEMU 完整虚拟机](docs/QEMU.md)
-- [存储、SSH、桌面、备份等操作](docs/OPERATIONS.md)
-- [故障排查](docs/TROUBLESHOOTING.md)
-- [优化计划与验收状态](docs/ROADMAP.md)
-- [项目结构与维护约定](docs/ARCHITECTURE.md)
-
-## Android 真机验收
-
-安装后先运行只读检查，再运行 PRoot 生命周期测试：
-
-```sh
-bash tests/android-smoke.sh doctor
-bash tests/android-smoke.sh proot
-```
-
-Chroot 冒烟测试会实际申请 Root、挂载、备份、恢复并删除名称带时间戳的测试容器，因此要求显式确认：
-
-```sh
-XTMOE_SMOKE_ACCEPT_CHROOT_RISK=YES bash tests/android-smoke.sh chroot
-```
-
-QEMU 冒烟测试会下载大型镜像并创建临时 VM，必须单独确认：
-
-```sh
-XTMOE_SMOKE_ACCEPT_QEMU_COST=YES bash tests/android-smoke.sh qemu
-```
-
-测试范围和剩余机型矩阵见 [测试说明](tests/README.md) 与 [ROADMAP](docs/ROADMAP.md)。
-
-## 安全边界
-
-- PRoot、Chroot 和本工具默认配置的 QEMU 都不应当作为运行不可信程序的安全边界。
-- Chroot 中的 root 与 Android 共用内核；把宿主目录挂入容器后，容器可以修改该目录。
-- 删除逻辑只接受 XTMOE 自己的数据目录和带 `.xtmoe-chroot` 标记的容器，并拒绝删除仍有挂载的容器。
-- 不要把整个 `/data`、`/` 或 Termux `$HOME` 以可写方式挂入 Chroot。
-- 删除前先备份，并执行 `xtmoe chroot stop <名称>`。
-- QEMU 默认只在 `127.0.0.1` 转发端口；备份包含 VM 数据和 SSH 私钥，必须安全保存。
-
-## 项目状态
-
-PRoot 以 Termux 官方 `proot-distro` 为后端，Chroot 使用受控 Root 助手，QEMU 使用同架构 Ubuntu Cloud Image 和独立客体内核。Windows 开发环境只能完成静态与模拟测试；Android 上的挂载、KVM/TCG、Cloud Image 启动、网络和 Docker 必须真机验收。当前进度记录在 [ROADMAP](docs/ROADMAP.md)。
-
-## 许可证
-
-项目使用 Apache License 2.0；上游著作权来源见 `Copyright`。
+[安装与维护](docs/INSTALL.md) · [兼容性](docs/COMPATIBILITY.md) · [PRoot](docs/PROOT.md) · [Chroot](docs/CHROOT.md) · [代理](docs/PROXY.md) · [操作指南](docs/OPERATIONS.md) · [排障](docs/TROUBLESHOOTING.md) · [架构](docs/ARCHITECTURE.md) · [验收范围](docs/ANDROID_VALIDATION.md) · [路线图](docs/ROADMAP.md) · [变更记录](CHANGELOG.md)

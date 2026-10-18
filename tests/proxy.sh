@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 # Sourced by run.sh. All network requests and daemon operations are simulated.
 
-assert_ok 'Proxy CLI persists settings across processes and forwards to PRoot without changing the parent' bash -c '
+assert_ok 'Proxy library persists settings across processes and forwards to PRoot without changing the parent' bash -c '
     set -Eeuo pipefail
     export XTMOE_CONFIG_DIR="$2/proxy-cli-config" XTMOE_DATA_DIR="$2/proxy-cli-data"
     export http_proxy=http://parent.example:3128
-    bash "$1/src/bin/xtmoe" proxy on 7890 --no-proxy example.internal
+    bash "$1/tests/internal.sh" proxy on 7890 --no-proxy example.internal
     [[ $http_proxy == http://parent.example:3128 ]] || exit 1
-    bash "$1/src/bin/xtmoe" proxy exec -- bash -c '\''[[ $http_proxy == http://127.0.0.1:7890 && $HTTPS_PROXY == "$http_proxy" && $NO_PROXY == example.internal,localhost,127.0.0.1,::1 ]]'\'' || exit 1
+    bash "$1/tests/internal.sh" proxy exec -- bash -c '\''[[ $http_proxy == http://127.0.0.1:7890 && $HTTPS_PROXY == "$http_proxy" && $NO_PROXY == example.internal,localhost,127.0.0.1,::1 ]]'\'' || exit 1
     bash "$1/src/bin/xtmoe" proot exec demo -- printf "%s" "two words"
     grep -Fq -- "--env http_proxy=http://127.0.0.1:7890" "$MOCK_LOG" && grep -Fq -- "-- printf %s two words" "$MOCK_LOG" || exit 1
-    bash "$1/src/bin/xtmoe" proxy off
-    bash "$1/src/bin/xtmoe" proxy exec -- bash -c '\''[[ ! ${http_proxy+x} && ! ${ALL_PROXY+x} ]]'\'' || exit 1
-    bash "$1/src/bin/xtmoe" proxy on
-    bash "$1/src/bin/xtmoe" proxy status | grep -q 已启用
-    bash "$1/src/bin/xtmoe" proxy reset
+    bash "$1/tests/internal.sh" proxy off
+    bash "$1/tests/internal.sh" proxy exec -- bash -c '\''[[ ! ${http_proxy+x} && ! ${ALL_PROXY+x} ]]'\'' || exit 1
+    bash "$1/tests/internal.sh" proxy on
+    bash "$1/tests/internal.sh" proxy status | grep -q 已启用
+    bash "$1/tests/internal.sh" proxy reset
     [[ ! -e $XTMOE_CONFIG_DIR/proxy.conf ]] || exit 1
-    bash "$1/src/bin/xtmoe" proxy exec -- bash -c '\''[[ $http_proxy == http://parent.example:3128 ]]'\''
+    bash "$1/tests/internal.sh" proxy exec -- bash -c '\''[[ $http_proxy == http://parent.example:3128 ]]'\''
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
 assert_ok 'Proxy configuration treats credentials as data and status never prints them' bash -c '
@@ -87,7 +87,7 @@ assert_ok 'Proxy help and status distinguish persistent HTTP configuration from 
     source "$1/src/lib/common.sh"; source "$1/src/lib/proxy.sh"
     XTMOE_CONFIG_DIR="$2/proxy-icmp-guidance"
     output=$(proxy_help) || exit 1
-    [[ $output == *ICMP* && $output == *"proxy test"* ]] || exit 1
+    [[ $output == *ICMP* && $output == *"连通测试"* ]] || exit 1
     [[ $output == *"不关闭 Android VPN"* && $output == *"reset 是删除保存配置"* ]] || exit 1
     output=$(proxy_status) || exit 1
     [[ $output == *未保存配置* && $output == *ICMP/ping* && $output == *Android/VPN* && $output == *"不会关闭 Android VPN"* ]]

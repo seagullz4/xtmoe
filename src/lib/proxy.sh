@@ -2,29 +2,12 @@
 
 proxy_help() {
     cat <<'EOF'
-统一代理（保存到 Termux 用户配置，供后续 XTMOE 命令使用）
-
-  xtmoe proxy                         查看状态
-  xtmoe proxy on <URL或端口>           保存并启用 HTTP/HTTPS 代理，同步运行中的 Chroot
-  xtmoe proxy on                      重新启用已保存地址；没有地址时交互输入
-  xtmoe proxy set <URL或端口>          与 on 相同
-  xtmoe proxy off                     关闭 XTMOE 显式代理并同步 Chroot，不关闭 Android VPN
-  xtmoe proxy status                  查看状态（隐藏认证信息）
-  xtmoe proxy test [HTTP/HTTPS测试URL] 验证实际代理请求，默认 https://github.com
-  xtmoe proxy apply [Chroot名称]       同步指定或全部 Chroot；不启动已停止容器
-  xtmoe proxy reset                   删除保存配置，恢复沿用当前 Termux 代理环境
-  xtmoe proxy exec -- <命令>           在代理环境中运行 Termux 命令或子 Shell
-
-示例：xtmoe proxy on http://127.0.0.1:7890
-      xtmoe proxy on 7890
-      xtmoe proxy on http://127.0.0.1:7890 --no-proxy localhost,127.0.0.1,::1
-
-需要代理软件实际提供 HTTP/混合端口；纯 SOCKS 端口不能直接当 HTTP 代理。
-支持 XTMOE 宿主下载、PRoot/Chroot 新会话和 Chroot Docker daemon 拉镜像。
-不会修改父 Termux Shell，不是透明代理；QEMU 客体及 Docker 应用内部代理需单独配置。
-HTTP/HTTPS 代理不承载 ping 的 ICMP；ping 失败不代表代理请求失败，请使用 proxy test。
-Android VPN 是独立的全局/分应用网络层；即使 off，普通 curl 仍可能经 VPN 使用代理出口。
-reset 是删除保存配置并恢复继承环境，不等于强制关闭代理。
+代理设置位于 xtmoe on → 代理设置：
+设置并开启、开启已保存、关闭、查看状态、连通测试、同步 Chroot、清除配置。
+只支持 HTTP/HTTPS 或 HTTP 混合端口；纯 SOCKS 不能供 APT/Docker 通用使用。
+关闭只关闭 XTMOE 显式代理，不关闭 Android VPN。
+reset 是删除保存配置并恢复继承 Termux 环境，不等于强制直连。
+HTTP/HTTPS 代理不承载普通 ICMP/ping。
 EOF
 }
 
@@ -94,7 +77,7 @@ proxy_clear_environment() {
 }
 
 proxy_load() {
-    proxy_read || { warn '无法读取代理配置；可使用 xtmoe proxy off/reset 修复。'; return 1; }
+    proxy_read || { warn '无法读取代理配置；可使用 xtmoe on → 代理设置 修复。'; return 1; }
     case "$XTMOE_PROXY_ENABLED" in
         1)
             proxy_clear_environment
@@ -141,7 +124,7 @@ proxy_status() {
             if [[ -n $value ]]; then printf '环境地址：%s\n' "$(proxy_mask_url "$value")"; else printf '环境中未设置代理\n'; fi
             ;;
     esac
-    printf '状态仅表示配置；实际连通性请运行 xtmoe proxy test。\n'
+    printf '状态仅表示配置；实际连通性请运行 xtmoe on → 代理设置。\n'
     printf 'HTTP/HTTPS 代理不承载 ICMP/ping；ping 仍遵循 Android/VPN 路由。\n'
     printf '关闭 XTMOE 显式代理不会关闭 Android VPN；普通 curl 的出口仍可能受 VPN、父 Shell 或 curl 配置影响。\n'
 }
@@ -170,10 +153,15 @@ proxy_sync_chroots() {
                 fi
                 ;;
             direct-docker)
+                chroot_root network-proxy-sync "$(chroot_base)" "$name" || failures=1
                 warn "$name：direct daemon 需执行 docker-direct-stop/start 重启后使用新代理。"
                 failures=1
                 ;;
-            stopped|mounted) info "$name：保持当前状态，重新进入时使用代理配置。" ;;
+            mounted)
+                chroot_root network-proxy-sync "$(chroot_base)" "$name" || failures=1
+                info "$name：已同步网络代理连接；现有 Shell 环境需重新进入。"
+                ;;
+            stopped) info "$name：保持当前状态，重新进入时使用代理配置。" ;;
             *) warn "$name：无法识别运行状态，未修改服务。"; failures=1 ;;
         esac
     done
@@ -186,7 +174,7 @@ proxy_enable() {
         argument=$1; shift
         case "$argument" in
             --no-proxy) (($#)) || die '--no-proxy 缺少值'; bypass=$1; bypass_set=1; shift ;;
-            -*) die '未知代理参数；请查看 xtmoe proxy help。' ;;
+            -*) die '未知代理参数；请查看 xtmoe on → 代理设置。' ;;
             *) ((url_set == 0)) || die '只能指定一个代理地址。'; url=$argument; url_set=1 ;;
         esac
     done
@@ -195,7 +183,7 @@ proxy_enable() {
         url=$XTMOE_PROXY_URL
         ((bypass_set)) || bypass=$XTMOE_PROXY_BYPASS
         if [[ -z $url ]]; then
-            [[ -t 0 ]] || die '尚未保存地址。请执行 xtmoe proxy on http://127.0.0.1:端口'
+            [[ -t 0 ]] || die '尚未保存地址。请执行 xtmoe on → 代理设置 http://127.0.0.1:端口'
             printf '请输入 HTTP/混合代理地址或端口：' >&2
             IFS= read -r url || return 1
         fi
@@ -219,7 +207,7 @@ proxy_test() {
     else
         url=${http_proxy:-${HTTP_PROXY:-${all_proxy:-${ALL_PROXY:-}}}}
     fi
-    [[ -n $url ]] || { warn '当前没有启用代理；请先执行 xtmoe proxy on。'; return 1; }
+    [[ -n $url ]] || { warn '当前没有启用代理；请先执行 xtmoe on → 代理设置。'; return 1; }
     require_command curl '请运行 sh termux.sh 安装依赖'
     curl --version >/dev/null 2>&1 || { warn 'curl 本身无法运行；请先修复 Termux 软件包/运行库（pkg upgrade），再测试代理。'; return 1; }
     # Never let curl print credential-bearing proxy URLs on error.
@@ -241,7 +229,7 @@ proxy_main() {
     case "$action" in
         on|set|enable) proxy_enable "$@" ;;
         off|disable)
-            require_arg_range 0 0 "$#" 'xtmoe proxy off'
+            require_arg_range 0 0 "$#" 'xtmoe on → 代理设置'
             if proxy_read; then url=$XTMOE_PROXY_URL; bypass=$XTMOE_PROXY_BYPASS; fi
             proxy_write 0 "$url" "$bypass" || return 1
             proxy_load || return 1
@@ -250,13 +238,13 @@ proxy_main() {
             proxy_sync_chroots
             ;;
         status)
-            require_arg_range 0 0 "$#" 'xtmoe proxy status'
+            require_arg_range 0 0 "$#" 'xtmoe on → 代理设置 status'
             proxy_status
             ;;
-        test) require_arg_range 0 1 "$#" 'xtmoe proxy test [URL]'; proxy_test "$@" ;;
-        apply) require_arg_range 0 1 "$#" 'xtmoe proxy apply [Chroot名称]'; proxy_load && proxy_sync_chroots "$@" ;;
+        test) require_arg_range 0 1 "$#" 'xtmoe on → 代理设置 [URL]'; proxy_test "$@" ;;
+        apply) require_arg_range 0 1 "$#" 'xtmoe on → 代理设置 [Chroot名称]'; proxy_load && proxy_sync_chroots "$@" ;;
         reset)
-            require_arg_range 0 0 "$#" 'xtmoe proxy reset'
+            require_arg_range 0 0 "$#" 'xtmoe on → 代理设置'
             file=$(proxy_config_file)
             [[ ! -L $file && ( ! -e $file || -f $file && -O $file ) ]] || die '拒绝删除不安全的代理配置路径。'
             rm -f -- "$file" || return 1
@@ -267,11 +255,11 @@ proxy_main() {
             ;;
         exec)
             [[ ${1:-} == -- ]] && shift
-            (($#)) || die '用法：xtmoe proxy exec -- <命令>'
+            (($#)) || die '用法：xtmoe on → 代理设置 -- <命令>'
             proxy_load || return 1
             "$@"
             ;;
         http://*|https://*|[0-9]*) proxy_enable "$action" "$@" ;;
-        *) die '未知代理操作；请查看 xtmoe proxy help。' ;;
+        *) die '未知代理操作；请查看 xtmoe on → 代理设置。' ;;
     esac
 }
