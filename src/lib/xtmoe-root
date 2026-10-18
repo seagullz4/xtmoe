@@ -1186,22 +1186,25 @@ backup_container() {
     chown "$owner_uid:$owner_gid" "$output" 2>/dev/null || true
 }
 
-restore_container() {
+restore_container() (
     local archive=$1 partial
     [[ -f $archive && ! -L $archive ]] || die "备份不存在或不是普通文件：$archive"
-    [[ ! -e $CONTAINER ]] || die '目标容器已存在'
-    if tar -tzf "$archive" | awk '$0 ~ /^\// || $0 ~ /(^|\/)\.\.($|\/)/ { bad=1 } END { exit bad ? 0 : 1 }'; then
-        die '备份包含绝对路径或上级目录引用，拒绝恢复'
-    fi
-    partial="$BASE/.${CONTAINER##*/}.restore.$$"
-    mkdir -p "$partial"
-    if ! tar --numeric-owner -xzpf "$archive" -C "$partial"; then
-        rm -rf --one-file-system -- "$partial"
-        die '备份解压失败'
-    fi
-    valid_container_tree "$partial" || { rm -rf --one-file-system -- "$partial"; die '不是有效的 XTMOE Chroot 备份'; }
-    mv -- "$partial" "$CONTAINER"
-}
+    [[ ! -e $CONTAINER && ! -L $CONTAINER ]] || die '目标容器已存在'
+    partial=$(mktemp -d "$BASE/.${CONTAINER##*/}.restore.XXXXXX") || return 1
+    trap 'rm -rf --one-file-system -- "$partial"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    # A failed producer in an if-pipeline is not an unsafe-path verdict.
+    # Require a complete successful listing before checking or extracting it.
+    tar -tzf "$archive" >"$partial/list" || die '无法完整读取备份清单，拒绝恢复'
+    awk '$0 ~ /^\// || $0 ~ /(^|\/)\.\.($|\/)/ { bad=1 } END { exit bad ? 1 : 0 }' \
+        "$partial/list" || die '备份包含绝对路径或上级目录引用，拒绝恢复'
+    mkdir "$partial/container" || return 1
+    tar --numeric-owner -xzpf "$archive" -C "$partial/container" || die '备份解压失败'
+    valid_container_tree "$partial/container" || die '不是有效的 XTMOE Chroot 备份'
+    [[ ! -e $CONTAINER && ! -L $CONTAINER ]] || die '恢复期间目标容器已出现，拒绝覆盖'
+    mv -T -- "$partial/container" "$CONTAINER"
+)
 
 remove_container() {
     [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器标记不存在，拒绝删除'

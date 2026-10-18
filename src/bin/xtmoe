@@ -43,7 +43,8 @@ EOF
 }
 
 source_root() {
-    local source_file="${PREFIX:?PREFIX 未设置}/libexec/xtmoe/source-root" root=''
+    local source_file="$XTMOE_LIB_DIR/../source-root" root=''
+    [[ -r $source_file ]] || source_file="${PREFIX:?PREFIX 未设置}/libexec/xtmoe/source-root"
     [[ -r $source_file ]] || die '缺少源码位置记录；请在 XTMOE 源码目录重新执行 sh termux.sh'
     IFS= read -r root <"$source_file"
     [[ -n $root && -d $root/.git && -r $root/termux.sh && -r $root/src/bin/xtmoe ]] ||
@@ -51,10 +52,16 @@ source_root() {
     printf '%s' "$root"
 }
 
-update_main() {
+update_main() (
     (($# == 0)) || die 'xtmoe on → 程序维护 → 更新程序 不接受额外参数'
     require_termux
     require_command git '执行 pkg install git'
+    require_command flock '执行 pkg install util-linux'
+    mkdir -p "$PREFIX/libexec"
+    local update_lock="$PREFIX/libexec/.xtmoe-update.lock"
+    [[ ! -L $update_lock ]] || die '更新锁不能是符号链接'
+    exec 8>"$update_lock"
+    flock -n 8 || die '另一个程序更新正在进行，请稍后重试'
     local root status new_version
     root=$(source_root)
     status=$(git -C "$root" status --porcelain --untracked-files=no)
@@ -65,7 +72,7 @@ update_main() {
     sh "$root/termux.sh"
     new_version=$(bash "${PREFIX:?PREFIX 未设置}/bin/xtmoe" version)
     ok "更新完成：$new_version"
-}
+)
 
 uninstall_app_main() {
     local yes=0 argument

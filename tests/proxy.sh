@@ -13,7 +13,8 @@ assert_ok 'Proxy library persists settings across processes and forwards to PRoo
     bash "$1/tests/internal.sh" proxy off
     bash "$1/tests/internal.sh" proxy exec -- bash -c '\''[[ ! ${http_proxy+x} && ! ${ALL_PROXY+x} ]]'\'' || exit 1
     bash "$1/tests/internal.sh" proxy on
-    bash "$1/tests/internal.sh" proxy status | grep -q 已启用
+    status=$(bash "$1/tests/internal.sh" proxy status) || exit 1
+    [[ $status == *已启用* ]] || exit 1
     bash "$1/tests/internal.sh" proxy reset
     [[ ! -e $XTMOE_CONFIG_DIR/proxy.conf ]] || exit 1
     bash "$1/tests/internal.sh" proxy exec -- bash -c '\''[[ $http_proxy == http://parent.example:3128 ]]'\''

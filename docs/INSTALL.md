@@ -14,6 +14,8 @@ xtmoe on
 
 安装器复制程序到 $PREFIX/bin 和 $PREFIX/libexec/xtmoe；不会删除已有容器。依赖按需要准备，不自动切换 Termux 软件源。网络异常可使用 Termux 自带 termux-change-repo。
 
+程序完整版本位于 `$PREFIX/libexec/xtmoe/releases/`，`current` 指向当前版本。安装器使用互斥锁、暂存校验和原子指针切换；中途失败不会逐个覆盖当前模块。已运行命令及 Root/网络助手保留原版本路径。旧版本（包括首次迁移前的旧布局）暂不自动清理，因此更新会增加少量程序文件占用；不要手动删除仍可能被助手使用的目录。SIGKILL/断电可能留下未发布暂存目录，但不会把它作为当前版本。
+
 PRoot 安装依赖当前 proot-distro。Chroot 安装前准备 Root/挂载工具，验证用户空间架构；数据与缓存所在文件系统各至少 2 GiB，使用 Docker 时预留更多。
 
 ## 程序维护

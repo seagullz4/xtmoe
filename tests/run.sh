@@ -122,8 +122,9 @@ assert_ok 'Installer copies all required modules' env XTMOE_SKIP_PACKAGES=1 XTMO
 assert_ok 'Installed version works' bash "$PREFIX/bin/xtmoe" version
 assert_contains 'Installed version matches source' 'xtmoe v1.0.0' "$TEST_TMP/stdout"
 for module in common.sh capabilities.sh proxy.sh proot.sh chroot.sh manager.sh xtmoe-network; do
-    [[ -f "$PREFIX/libexec/xtmoe/lib/$module" ]] && pass "Installed module $module" || fail "Missing module $module"
+    [[ -f "$PREFIX/libexec/xtmoe/current/lib/$module" ]] && pass "Installed module $module" || fail "Missing module $module"
 done
+source "$ROOT_DIR/tests/install-safety.sh"
 expected_modules=$(printf '%s\n' capabilities.sh chroot.sh common.sh manager.sh proot.sh proxy.sh xtmoe-docker-routing xtmoe-docker-routing.service xtmoe-network | sort)
 actual_modules=$(find "$ROOT_DIR/src/lib" -maxdepth 1 -type f -printf '%f\n' | sed '/^xtmoe-root$/d' | sort)
 [[ $actual_modules == "$expected_modules" ]] && pass 'Only intended dual-mode modules are shipped' || fail 'Unexpected module inventory'
