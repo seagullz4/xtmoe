@@ -249,7 +249,7 @@ main() {
     local command=${1:-help}
     shift || true
     case "$command" in
-        proxy|help|-h|--help|version|-V|--version) ;;
+        proxy|on|help|-h|--help|version|-V|--version) ;;
         *) proxy_load || return 1 ;;
     esac
     case "$command" in

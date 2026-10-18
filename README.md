@@ -70,6 +70,8 @@ Chroot
 
 统一代理可以保存一次供后续 XTMOE 命令、PRoot/Chroot 会话和 Chroot Docker 拉镜像使用：
 
+也可以运行 `xtmoe on`，选择首屏 `6）代理配置`，按菜单设置地址、启停、查看和测试。
+
 ```sh
 xtmoe proxy on 10808       # 换成手机代理软件实际的 HTTP/混合端口
 xtmoe proxy status

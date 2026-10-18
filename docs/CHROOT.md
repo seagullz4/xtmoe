@@ -269,6 +269,8 @@ direct 启动显示三个阶段：寻找 daemon 进程（50 次轮询，间隔 0
 
 交互登录通过 Termux `util-linux` 提供的 `script` 创建独立伪终端。Ctrl+C 只中断容器内当前前台命令并返回提示符，不会退出容器；使用 `exit` 或 Ctrl+D 才结束登录。`xtmoe chroot exec` 保持非交互模式，不分配伪终端。
 
+systemd/direct 会话的交互登录在进入目标 PID namespace 后，用 Ubuntu 的 `script` 创建控制终端，避免沿用 Android 终端中在容器 PID 视图不可见的前台进程组。这样 `sudo -i`、作业控制和 Ctrl+C 使用容器内一致的终端会话；仅在标准输入和输出都为终端时分配，管道和 `exec` 不改变。已经打开的旧会话需要退出后重新 login。
+
 XTMOE 在卸载失败时返回失败状态，不会把“Shell 已退出”误报成“容器已安全停止”。此时应按照下面的停止流程处理占用进程。
 
 ## 停止和检查

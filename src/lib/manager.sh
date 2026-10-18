@@ -188,7 +188,7 @@ menu_run() {
     local result
     # A conditional subshell disables errexit in nested installers.
     set +e
-    ( set -Eeuo pipefail; "$@" )
+    ( set -Eeuo pipefail; if [[ $1 != proxy_main ]] && declare -F proxy_load >/dev/null; then proxy_load; fi; "$@" )
     result=$?
     set -e
     if ((result != 0)); then
@@ -394,6 +394,27 @@ menu_proot() { menu_backend proot; }
 menu_chroot() { menu_backend chroot; }
 menu_qemu() { menu_backend qemu; }
 
+menu_proxy() {
+    local action address bypass
+    local -a entries=(
+        '设置并开启代理|set' '开启已保存代理|on' '关闭代理|off'
+        '查看代理状态|status' '测试代理连通性|test' '同步到已有 Chroot|apply'
+        '清除配置，沿用 Termux 环境|reset'
+    )
+    while true; do
+        action=$(menu_pick_entry '统一代理配置（运行中的 Docker 配置变化时会重启）' "${entries[@]}") || return 0
+        case "$action" in
+            set)
+                address=$(menu_read 'HTTP/混合代理 URL 或本机端口（留空取消）') || return 0
+                [[ -n $address ]] || continue
+                bypass=$(menu_read '直连域名/IP（逗号分隔）' 'localhost,127.0.0.1,::1') || return 0
+                menu_run proxy_main on "$address" --no-proxy "$bypass"
+                ;;
+            on|off|status|test|apply|reset) menu_run proxy_main "$action" ;;
+        esac
+    done
+}
+
 on_main() {
     (($# == 0)) || die 'xtmoe on 不接受额外参数'
     require_termux
@@ -408,6 +429,7 @@ XTMOE 管理向导
   3) QEMU 完整虚拟机（独立内核）
   4) 查看并进入正在运行的系统
   5) 更新 XTMOE
+  6) 代理配置
   0) 退出
 EOF
         choice=$(menu_read '请选择模式') || return 0
@@ -416,6 +438,7 @@ EOF
             2) menu_chroot ;;
             3) menu_qemu ;;
             4) menu_run list_main ;;
+            6) menu_proxy ;;
             5)
                 menu_run update_main
                 info 'XTMOE 已更新；请重新运行 xtmoe on 载入新版本。'

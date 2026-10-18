@@ -143,6 +143,16 @@ assert_ok 'Chroot systemd verification accepts running and qualified degraded, n
     if chroot_systemd_verify init-order; then exit 1; fi
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
+assert_ok 'Noninteractive systemd and direct logins retain command channels without allocating a PTY' bash -c '
+    source <(awk "/^\\[\\[ .*id -u/ {skip=1} /^valid_name\\(\\)/ {skip=0} /^ACTION=/ {exit} !skip {print}" "$1/src/lib/xtmoe-root")
+    login_log="$2/noninteractive-logins"
+    systemd_exec() { printf "systemd:%s\n" "$*" >>"$login_log"; }
+    direct_docker_exec() { printf "direct:%s\n" "$*" >>"$login_log"; }
+    systemd_login </dev/null
+    guest_interactive_login direct_docker_exec </dev/null
+    grep -qx "systemd:/bin/bash -l" "$login_log" && grep -qx "direct:/bin/bash -l" "$login_log"
+' _ "$ROOT_DIR" "$TEST_TMP"
+
 # Focused guest-side verifier scenarios: fake time avoids a 120-second real
 # wait, but execute the production generated script rather than copying it.
 systemd_verifier_fixture() (

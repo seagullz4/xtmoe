@@ -827,8 +827,20 @@ systemd_exec() {
         LANG=C.UTF-8 "${GUEST_PROXY_ENV[@]}" "$@"
 }
 
+guest_interactive_login() {
+    local executor=$1
+    # Allocate the controlling PTY AFTER entering the PID namespace. Reusing
+    # Android's terminal leaves its foreground pgrp outside the guest PID view.
+    if [[ -t 0 && -t 1 ]]; then
+        rootfs_has_executable "$ROOTFS" /usr/bin/script || die '交互登录缺少 Ubuntu util-linux script；请执行 xtmoe chroot setup'
+        "$executor" /usr/bin/script -q -e -c 'exec /bin/bash -l' /dev/null
+    else
+        "$executor" /bin/bash -l
+    fi
+}
+
 systemd_login() {
-    systemd_exec /bin/bash -l
+    guest_interactive_login systemd_exec
 }
 
 systemd_status() {
@@ -1245,7 +1257,7 @@ case "$ACTION" in
         if systemd_running; then
             systemd_login
         elif direct_docker_running; then
-            direct_docker_exec /bin/bash -l
+            guest_interactive_login direct_docker_exec
         else
             run_chroot "${3:-}"
         fi

@@ -128,3 +128,26 @@ assert_fail 'Unknown grouped menu mode fails rather than dispatching an arbitrar
     source "$1/src/lib/common.sh"; source "$1/src/lib/manager.sh"
     menu_backend arbitrary
 ' _ "$ROOT_DIR"
+
+assert_ok 'Proxy menu preserves address boundaries, cancels empty input and dispatches public commands' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/manager.sh"
+    MENU_PROXY_LOG="$2/proxy-menu"
+    proxy_main() { printf "%s\n" "$*" >>"$MENU_PROXY_LOG"; }
+    printf "1\n\n1\nhttp://127.0.0.1:10808\ninternal.example\n2\n3\n4\n5\n6\n7\n0\n" | menu_proxy
+    [[ $(wc -l <"$MENU_PROXY_LOG") == 7 ]] && grep -qx "on http://127.0.0.1:10808 --no-proxy internal.example" "$MENU_PROXY_LOG" && grep -qx reset "$MENU_PROXY_LOG"
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Wizard actions reload saved proxy each time while reset keeps the original Termux environment' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/common.sh"; source "$1/src/lib/proxy.sh"; source "$1/src/lib/manager.sh"
+    XTMOE_CONFIG_DIR="$2/menu-proxy-live"; export http_proxy=http://original.example:3128
+    proxy_sync_chroots() { :; }
+    check_proxy() { [[ ${http_proxy:-unset} == "$1" ]] || exit 1; }
+    menu_run proxy_main on 10808
+    menu_run check_proxy http://127.0.0.1:10808
+    menu_run proxy_main off
+    menu_run check_proxy unset
+    menu_run proxy_main reset
+    menu_run check_proxy http://original.example:3128
+    [[ $http_proxy == http://original.example:3128 ]]
+' _ "$ROOT_DIR" "$TEST_TMP"

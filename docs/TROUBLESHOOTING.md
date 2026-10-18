@@ -1,5 +1,11 @@
 # 故障排查
 
+## sudo -i 提示 no job control
+
+如果出现 `cannot set terminal process group (-1): Inappropriate ioctl for device` 和 `no job control in this shell`，但已经进入 `root@localhost:~#`，说明登录 Shell 已启动，控制终端/前台进程组没有正确关联。systemd 登录旧通道只进入 PID/mount namespace，未在新 PID 视图中重新取得控制终端，sudo 登录 Shell 因而无法建立作业控制。
+
+新版对 systemd/direct 交互 login 在容器内创建 PTY；更新命令后退出旧会话，重新执行 `xtmoe chroot login ubuntu`。已有提示符为 root 时无需重复 sudo 来获得 Root；要切换到 root 的家目录可用 `cd ~`。不要通过关闭作业控制或隐藏 stderr 处理此问题。非交互 exec、管道本来不分配终端；需要交互时使用 login。
+
 ## 先运行 doctor
 
 ```sh
