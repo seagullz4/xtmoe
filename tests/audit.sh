@@ -1,6 +1,31 @@
 #!/usr/bin/env bash
 # Sourced by run.sh: focused failure-path regressions from lifecycle review.
 
+assert_ok 'PRoot architecture detection failure blocks installation before upstream calls' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/common.sh"; source "$1/src/lib/proot.sh"
+    log="$2/proot-unknown-arch"
+    dpkg() { return 37; }
+    proot-distro() { printf "%s\n" "$*" >>"$log"; printf "%s\n" "--name --architecture"; }
+    timeout() { printf forbidden >>"$log"; }
+    if proot_install ubuntu:24.04 invalid-arch; then exit 1; fi
+    [[ ! -e $log ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+for proot_action in backup reinstall; do
+    assert_ok "PRoot $proot_action preserves upstream failure without reporting success" bash -c '
+        set -Eeuo pipefail
+        source "$1/src/lib/common.sh"; source "$1/src/lib/proot.sh"
+        log="$2/proot-failure-$3"; action=$3
+        confirm() { return 0; }; proot_exists() { return 0; }
+        proot-distro() { if [[ $1 == help ]]; then printf reset; else return 41; fi; }
+        result=0
+        if "proot_$action" existing >"$log" 2>&1; then exit 1; else result=$?; fi
+        [[ $result == 41 ]] || exit 1
+        if grep -F "[OK]" "$log"; then exit 1; fi
+    ' _ "$ROOT_DIR" "$TEST_TMP" "$proot_action"
+done
+
 assert_ok 'Wizard operation aborts after failure while menu remains usable' bash -c '
     set -Eeuo pipefail
     source "$1/src/lib/common.sh"

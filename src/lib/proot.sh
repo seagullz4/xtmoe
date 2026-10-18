@@ -46,12 +46,13 @@ proot_session_count() {
 
 proot_install() {
     require_arg_range 0 2 "$#" 'xtmoe proot install [镜像] [名称]'
-    local image=${1:-ubuntu:24.04} name=${2:-ubuntu} install_help
+    local image=${1:-ubuntu:24.04} name=${2:-ubuntu} install_help architecture
     require_name "$name"
+    architecture=$(native_proot_arch) || return 1
     info "安装 PRoot 容器：$name（$image）"
     install_help=$(proot-distro install --help 2>&1) || die '无法读取 proot-distro 安装接口'
     [[ $install_help == *--name* && $install_help == *--architecture* ]] || die '请更新 proot-distro 到提供 --name 和 --architecture 的当前版本'
-    timeout --foreground --kill-after=15 1800 proot-distro install --name "$name" --architecture "$(native_proot_arch)" "$image"
+    timeout --foreground --kill-after=15 1800 proot-distro install --name "$name" --architecture "$architecture" "$image"
 }
 
 proot_login() {
@@ -70,7 +71,7 @@ proot_backup() {
     local name=${1:?缺少容器名称} output=${2:-"$PWD/${1}-$(date +%Y%m%d-%H%M%S).tar.gz"}
     require_name "$name"
     [[ ! -e $output && ! -L $output ]] || die '备份文件已存在，拒绝覆盖'
-    proot-distro backup "$name" --output "$output"
+    proot-distro backup "$name" --output "$output" || return $?
     ok "备份已写入：$output"
 }
 
@@ -149,7 +150,7 @@ proot_reinstall() {
     if ! proot-distro help 2>&1 | grep -Eq '(^|[[:space:]])reset([[:space:]]|$)'; then
         die '当前 proot-distro 不支持安全 reset；请先在 Termux 中更新 proot-distro。'
     fi
-    proot-distro reset "$name"
+    proot-distro reset "$name" || return $?
     ok "PRoot 容器已按原镜像重装：$name"
 }
 
