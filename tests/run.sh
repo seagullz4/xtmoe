@@ -112,6 +112,7 @@ assert_fail 'Container deletion requires confirmation' bash "$CLI" uninstall pro
 
 source "$ROOT_DIR/tests/audit.sh"
 source "$ROOT_DIR/tests/chroot-init.sh"
+source "$ROOT_DIR/tests/ssh.sh"
 source "$ROOT_DIR/tests/docker-runtime.sh"
 source "$ROOT_DIR/tests/menus.sh"
 source "$ROOT_DIR/tests/proxy.sh"

@@ -11,6 +11,7 @@ Chroot 快捷命令（Android 7+、有效 Root、原生 Ubuntu 24.04）
 
 安装自动检测基础挂载、systemd、Docker 和独立网络；显示实际选择。
 systemd-login 按保存的实际方案进入，无 systemd 时进入基础 Shell。
+新建 Chroot 的 SSH 初始账号为 root/123456；首次登录后请用 passwd 修改。
 备份、恢复、修复、服务、网络和端口映射请使用 xtmoe on。
 
 EOF
@@ -53,7 +54,7 @@ chroot_meta_initialize() {
     file=$(chroot_meta_file "$name")
     tmp="$file.tmp.$$"
     mkdir -p "$(dirname -- "$file")"
-    printf 'distro=ubuntu\nversion=%s\narch=%s\nstate=base-ready\ndocker_requested=%s\n' \
+    printf 'distro=ubuntu\nversion=%s\narch=%s\nstate=base-ready\ndocker_requested=%s\nssh_initialization=pending\n' \
         "$version" "$arch" "$docker_requested" >"$tmp"
     mv -f -- "$tmp" "$file"
 }
@@ -329,6 +330,7 @@ chroot_bootstrap() (
     # systemd-resolved's package scripts can replace the Base image's regular
     # resolv.conf with a 127.0.0.53 stub symlink even under policy-rc.d.
     chroot_stage "$name" dns-after-packages chroot_apply_dns "$name" || return 1
+    chroot_initial_ssh "$name" || return 1
 
     if ((init_supported == 0)); then
         if ((docker_supported && skip_docker == 0)); then
@@ -351,6 +353,7 @@ chroot_bootstrap() (
 
     chroot_stage "$name" systemd chroot_systemd_start "$name" || return 1
     chroot_stage "$name" systemd-verify chroot_systemd_verify "$name" || return 1
+    chroot_initial_ssh_service "$name" || return 1
     chroot_stage "$name" dns-after-systemd chroot_apply_dns "$name" || return 1
     chroot_stage "$name" network-after-systemd chroot_network_preflight "$name" || return 1
     chroot_meta_set "$name" state system-ready
@@ -418,6 +421,7 @@ chroot_basic_repair() (
     flock -n "$CHROOT_INIT_LOCK_FD" || { warn '该容器正在初始化，请稍后重试。'; return 1; }
     chroot_stage "$name" dns chroot_apply_dns "$name" || return 1
     chroot_stage "$name" network chroot_network_preflight "$name" || return 1
+    chroot_initial_ssh "$name" || return 1
     chroot_meta_set "$name" state ready
     chroot_meta_set "$name" failed_stage ''
     chroot_meta_set "$name" current_stage complete
@@ -778,6 +782,81 @@ $(chroot_userland_restore_script)
 for tool in install timeout mktemp flock ip getent; do command -v \"\$tool\" || exit 1; done
 /usr/sbin/iptables --version
 "
+}
+
+chroot_initial_ssh() {
+    local name=$1 enable_service
+    # Only a fresh install requests initialization. Updates/repairs must not reset
+    # a user's password; the guest marker also survives backup and metadata retry.
+    [[ $(chroot_meta_get "$name" ssh_initialization 2>/dev/null || true) == pending ]] || return 0
+    enable_service=$(chroot_meta_get "$name" systemd_requested) || return 1
+    chroot_stage "$name" ssh chroot_ssh_initialize "$name" "$enable_service" || return 1
+    if ((enable_service)); then chroot_meta_set "$name" ssh_initialization prepared || return 1
+    else chroot_meta_set "$name" ssh_initialization ready || return 1; fi
+    info '新容器 SSH 初始账号：root，初始密码：123456；请进入系统后用 passwd 修改。'
+    ((enable_service)) || info '基础模式已配置 SSH；进入容器后执行 /usr/sbin/sshd 启动，退出容器后服务不保证继续运行。'
+}
+
+chroot_initial_ssh_service() {
+    local name=$1
+    [[ $(chroot_meta_get "$name" ssh_initialization 2>/dev/null || true) == prepared ]] || return 0
+    chroot_stage "$name" ssh-service chroot_systemd_exec "$name" -- /bin/bash -ec '
+systemctl start ssh.service
+systemctl is-active --quiet ssh.service
+' || return 1
+    chroot_meta_set "$name" ssh_initialization ready
+}
+
+chroot_ssh_initialize() {
+    local name=$1 enable_service=$2
+    chroot_exec "$name" -- /bin/bash -lc "$(chroot_apt_guard_script)
+if ! command -v sshd >/dev/null || ! command -v chpasswd >/dev/null; then
+    apt-get -o APT::Update::Error-Mode=any update
+    apt-get install -y openssh-server passwd
+fi
+$(chroot_ssh_initial_script)" _ "$enable_service"
+}
+
+chroot_ssh_initial_script() {
+    cat <<'SSH_INITIAL'
+set -Eeuo pipefail
+ssh_state=/var/lib/xtmoe/ssh
+ssh_config=/etc/ssh/sshd_config
+ssh_defaults=/etc/ssh/xtmoe-initial.conf
+for path in /var/lib/xtmoe "$ssh_state" "$ssh_state/initialized" /etc/ssh "$ssh_config" "$ssh_defaults" /run/sshd; do
+    [ ! -L "$path" ] || { printf 'SSH initialization refuses symbolic-link paths.\n' >&2; exit 1; }
+done
+if [ -e "$ssh_state/initialized" ]; then
+    [ -f "$ssh_state/initialized" ] || exit 1
+    exit 0
+fi
+case "${1:-}" in 0|1) ;; *) printf 'Invalid SSH service selection.\n' >&2; exit 1 ;; esac
+for tool in sshd ssh-keygen chpasswd; do command -v "$tool" >/dev/null || exit 1; done
+[ -f "$ssh_config" ] || { printf 'Missing sshd_config.\n' >&2; exit 1; }
+install -d -m 0700 "$ssh_state"
+install -d -m 0755 /run/sshd
+printf '%s\n' '# XTMOE initial SSH defaults' 'PermitRootLogin yes' 'PasswordAuthentication yes' \
+    'PermitEmptyPasswords no' 'AuthenticationMethods any' >"$ssh_defaults"
+chmod 0644 "$ssh_defaults"
+# OpenSSH uses the first global value. Place this include before image/vendor
+# defaults, then validate the effective root login policy instead of guessing.
+ssh_tmp=$(mktemp /etc/ssh/.xtmoe-sshd.XXXXXX)
+if ! {
+    printf 'Include %s\n' "$ssh_defaults"
+    awk -v include_line="Include $ssh_defaults" '$0 != include_line' "$ssh_config"
+} >"$ssh_tmp"; then rm -f -- "$ssh_tmp"; exit 1; fi
+chmod 0644 "$ssh_tmp"
+mv -T -- "$ssh_tmp" "$ssh_config"
+ssh-keygen -A
+sshd -t
+ssh_effective=$(sshd -T -C user=root,host=localhost,addr=127.0.0.1)
+for setting in 'permitrootlogin yes' 'passwordauthentication yes' 'permitemptypasswords no' 'authenticationmethods any'; do
+    grep -qxF "$setting" <<<"$ssh_effective" || { printf 'SSH root password policy did not take effect.\n' >&2; exit 1; }
+done
+if [ "$1" = 1 ]; then systemctl enable ssh.service; fi
+printf 'root:123456\n' | chpasswd
+(umask 077; printf '1\n' >"$ssh_state/initialized")
+SSH_INITIAL
 }
 
 chroot_userland_prepare_script() {

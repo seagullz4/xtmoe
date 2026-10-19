@@ -38,6 +38,8 @@ jobs:
             tests/audit.sh \
             tests/install-safety.sh \
             tests/chroot-init.sh \
+            tests/ssh.sh \
+            tests/ssh-integration.sh \
             tests/chroot-network.sh \
             tests/capabilities.sh \
             tests/internal.sh \
@@ -68,6 +70,8 @@ jobs:
             tests/audit.sh \
             tests/install-safety.sh \
             tests/chroot-init.sh \
+            tests/ssh.sh \
+            tests/ssh-integration.sh \
             tests/chroot-network.sh \
             tests/capabilities.sh \
             tests/internal.sh \
@@ -95,6 +99,10 @@ jobs:
           PY
             exit "$status"
           fi
+
+      - name: Test real initial SSH login in disposable Ubuntu
+        timeout-minutes: 10
+        run: docker run --rm -v "$PWD:/workspace:ro" ubuntu:24.04 bash /workspace/tests/ssh-integration.sh
 
       - name: Check whitespace
         run: git diff --check
