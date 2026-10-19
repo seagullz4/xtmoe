@@ -84,6 +84,56 @@ assert_ok 'Auto mappings rebind A to B, pause offline, recover and retry occupie
     [[ $(net_ports_status) == *"auto:18080 => 192.168.99.123:18080 -> 80/tcp [active]"* ]]
 ' _ "$ROOT_DIR" "$TEST_TMP"
 
+assert_ok 'Mapped LAN replies get connected routes without copying VPN or default routes' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/xtmoe-network"; NET_SUBNET=10.203.0.0/30
+    ip() { printf "%s\n" \
+        "2: wlan0 inet 10.77.74.139/24 scope global wlan0" \
+        "3: eth0 inet 192.168.9.5/24 scope global eth0" \
+        "4: tun0 inet 10.8.0.2/24 scope global tun0" \
+        "5: wlan1 inet 10.99.0.1/8 scope global wlan1" \
+        "6: wlan2 inet 192.168.8.2/0 scope global wlan2"; }
+    resolved=$(printf "auto|10.77.74.139|1234|22|tcp|ready\nauto|10.8.0.2|1234|22|tcp|ready\nauto|192.168.9.5|1234|22|tcp|port-occupied\nauto|192.168.8.2|1234|22|tcp|ready\n")
+    [[ $(net_lan_routes "$resolved") == "10.77.74.0/24|wlan0|10.77.74.139" ]]
+    [[ -z $(net_lan_routes "") ]]
+' _ "$ROOT_DIR"
+
+assert_ok 'LAN return routes migrate and disappear without altering Android routes or VPN egress' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/xtmoe-network"
+    NET_SLOT=0; NET_HOST=xnfixture; NET_CHAIN=XNfixture; NET_RUN="$2/lan-return"; mkdir "$NET_RUN"
+    NET_PORTS="$NET_RUN/ports"; printf "auto|1234|22|tcp\n" >"$NET_PORTS"
+    log="$NET_RUN/commands"; lan=10.77.74.139; link=wlan0; warn() { :; }
+    net_running() { return 0; }; net_egress() { NET_EGRESS=tun0; NET_EGRESS_TABLE=100; }
+    ip() {
+        printf "ip %s\n" "$*" >>"$log"
+        if [[ $* == *addr* && -n $lan ]]; then printf "2: %s inet %s/24 scope global %s\n" "$link" "$lan" "$link"; fi
+        return 0
+    }
+    ss() { :; }; net_ipt() { printf "iptables %s\n" "$*" >>"$log"; [[ $* != *" -C "* && $1 != -C ]]; }
+    net_refresh
+    grep -qx "ip -4 route replace table 40000 10.77.74.0/24 dev wlan0 scope link src 10.77.74.139" "$log"
+    grep -q "iif xnfixture lookup 100" "$log"
+    : >"$log"; lan=192.168.99.7; link=eth0; net_refresh
+    grep -qx "ip -4 route del table 40000 10.77.74.0/24 dev wlan0 scope link src 10.77.74.139" "$log"
+    grep -qx "ip -4 route replace table 40000 192.168.99.0/24 dev eth0 scope link src 192.168.99.7" "$log"
+    : >"$log"; lan=""; net_refresh
+    grep -qx "ip -4 route del table 40000 192.168.99.0/24 dev eth0 scope link src 192.168.99.7" "$log"
+    if grep -Eq "route (flush|replace .*default|.*table (main|100|wlan0))" "$log"; then exit 1; fi
+    [[ -z $(<"$NET_RUN/lan-routes") ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'LAN return route overlap fails closed and linked state is not followed' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/xtmoe-network"; warn() { :; }; NET_SUBNET=10.203.0.0/30
+    ip() { printf "2: wlan0 inet 10.203.0.9/24 scope global wlan0\n"; }
+    if net_lan_routes "auto|10.203.0.9|1234|22|tcp|ready"; then exit 1; fi
+    NET_RUN="$2/lan-route-link"; mkdir "$NET_RUN"; printf untouched >"$NET_RUN/target"
+    ln -s "$NET_RUN/target" "$NET_RUN/lan-routes"
+    if net_lan_routes_remove; then exit 1; fi
+    [[ $(<"$NET_RUN/target") == untouched ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
 assert_ok 'Auto reservations survive offline creation and reject fixed or cross-container overlap' bash -c '
     set -Eeuo pipefail
     source "$1/src/lib/xtmoe-network"

@@ -214,6 +214,7 @@ net_rules_remove() {
     done
     while ip -4 rule del priority "$NET_PRIORITY" to "$NET_SUBNET" lookup "$NET_TABLE" 2>/dev/null; do :; done
     while ip -4 rule del priority "$((NET_PRIORITY+10))" iif "$NET_HOST" lookup "$NET_TABLE" 2>/dev/null; do :; done
+    net_lan_routes_remove || return
     # Only this container owns this table and these exact routes.
     ip -4 route del table "$NET_TABLE" "$NET_SUBNET" dev "$NET_HOST" 2>/dev/null || true
     ip -4 route del table "$NET_TABLE" unreachable default metric 32767 2>/dev/null || true
@@ -298,15 +299,55 @@ net_resolved_ports() {
     done <<<"$ports"
 }
 
+net_lan_routes() {
+    # DNAT replies must reach directly connected LAN clients before the VPN
+    # lookup/final unreachable guard. Never copy a LAN default route.
+    local resolved=$1 snapshot index interface family cidr rest address bits number octet network minimum
+    local -a octets=()
+    snapshot=$(ip -4 -o addr show up scope global) || return 1
+    while read -r index interface family cidr rest; do
+        [[ $family == inet && $rest != *tentative* && $rest != *dadfailed* && $rest != *deprecated* ]] || continue
+        interface=${interface%%@*}; address=${cidr%/*}; bits=${cidr#*/}
+        net_lan_interface "$interface" && net_private_address "$address" || continue
+        [[ $bits =~ ^[0-9]{1,2}$ ]] || continue
+        case "$address" in 10.*) minimum=8 ;; 172.*) minimum=12 ;; *) minimum=16 ;; esac
+        ((10#$bits >= minimum && 10#$bits <= 32)) || continue
+        awk -F'|' -v address="$address" '$2==address && $6=="ready" {found=1} END {exit !found}' <<<"$resolved" || continue
+        number=0; IFS=. read -r -a octets <<<"$address"
+        for octet in "${octets[@]}"; do number=$(((number << 8) + 10#$octet)); done
+        number=$((number & ((0xffffffff << (32-10#$bits)) & 0xffffffff)))
+        network="$((number >> 24 & 255)).$((number >> 16 & 255)).$((number >> 8 & 255)).$((number & 255))/$((10#$bits))"
+        if net_cidr_overlap "$network" "$NET_SUBNET"; then
+            warn '映射局域网与容器私网重叠，拒绝添加回程路由'; return 1
+        fi
+        printf '%s|%s|%s\n' "$network" "$interface" "$address"
+    done <<<"$snapshot" | sort -u
+}
+
+net_lan_routes_remove() {
+    local network interface address extra
+    [[ ! -e $NET_RUN/lan-routes && ! -L $NET_RUN/lan-routes ]] && return 0
+    [[ -f $NET_RUN/lan-routes && ! -L $NET_RUN/lan-routes ]] || return 1
+    while IFS='|' read -r network interface address extra; do
+        [[ -n $network ]] || continue
+        net_private_address "${network%/*}" && net_private_address "$address" && net_lan_interface "$interface" &&
+            [[ $network == */* && ${network#*/} =~ ^[0-9]{1,2}$ && -z $extra ]] &&
+            ((${network#*/} >= 8 && ${network#*/} <= 32)) || return 1
+        ip -4 route del table "$NET_TABLE" "$network" dev "$interface" scope link src "$address" 2>/dev/null || true
+    done <"$NET_RUN/lan-routes"
+    rm -f -- "$NET_RUN/lan-routes"
+}
+
 net_refresh() {
     net_running || return 0
-    local ports automatic resolved selector state address host guest proto egress_ok=0 old_table signature old_signature=''
+    local ports automatic resolved selector state address host guest proto egress_ok=0 old_table signature old_signature='' lan_routes network interface
     net_addresses
     ports=$(net_port_lines) || return 1
     automatic=$(net_auto_addresses) || return 1
     resolved=$(net_resolved_ports "$ports" "$automatic") || return 1
+    lan_routes=$(net_lan_routes "$resolved") || return 1
     net_egress && egress_ok=1
-    signature="$egress_ok|$NET_EGRESS|$NET_EGRESS_TABLE|$resolved|$(ip -4 -o addr show)"
+    signature="lan-return-v1|$egress_ok|$NET_EGRESS|$NET_EGRESS_TABLE|$resolved|$lan_routes|$(ip -4 -o addr show)"
     [[ ! -f $NET_RUN/signature ]] || old_signature=$(<"$NET_RUN/signature")
     [[ $signature != "$old_signature" ]] || return 0
     rm -f "$NET_RUN/signature"
@@ -320,6 +361,14 @@ net_refresh() {
     # Dedicated routes serve private destinations; the final rule guards egress.
     ip -4 route replace table "$NET_TABLE" "$NET_SUBNET" dev "$NET_HOST" src "$NET_GATEWAY" || return
     ip -4 route del unreachable default table "$NET_TABLE" metric 32767 2>/dev/null || true
+    net_lan_routes_remove || return
+    # Record the complete desired set first, so a partial failure is removable
+    # on retry/stop. Only exact routes in this container's owned table change.
+    printf '%s\n' "$lan_routes" >"$NET_RUN/lan-routes"
+    while IFS='|' read -r network interface address; do
+        [[ -n $network ]] || continue
+        ip -4 route replace table "$NET_TABLE" "$network" dev "$interface" scope link src "$address" || return
+    done <<<"$lan_routes"
     ip -4 rule show | grep -Fq "to $NET_SUBNET lookup $NET_TABLE" || ip -4 rule add priority "$NET_PRIORITY" to "$NET_SUBNET" lookup "$NET_TABLE" || return
     # A lookup of the dedicated table without a default must fall through for outbound traffic.
     ip -4 rule show | grep -Fq "iif $NET_HOST lookup $NET_TABLE" || ip -4 rule add priority "$((NET_PRIORITY+10))" iif "$NET_HOST" lookup "$NET_TABLE" suppress_prefixlength 0 || return
