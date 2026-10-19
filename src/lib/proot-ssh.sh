@@ -102,7 +102,7 @@ if ! command -v sshd >/dev/null 2>&1 || ! command -v chpasswd >/dev/null 2>&1; t
     chmod 0755 "$policy_dir/guard"
     mv -Tf "$policy_dir/guard" /usr/sbin/policy-rc.d
     apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=1 update
-    apt-get install -y openssh-server passwd
+    apt-get install -y --no-install-recommends openssh-server passwd
 fi
 mkdir -p "$state" /run/sshd
 chmod 0700 "$state"
