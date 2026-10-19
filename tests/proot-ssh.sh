@@ -113,7 +113,7 @@ assert_ok 'PRoot session detection reads stdout or stderr tables without truncat
     set -Eeuo pipefail
     source "$1/src/lib/common.sh"; source "$1/src/lib/proot.sh"; source "$1/src/lib/manager.sh"
     proot-distro() { [[ $COLUMNS == 4096 && $PD_FORCE_NO_COLORS == 1 ]]; printf "PID CONTAINER TYPE USER UPTIME COMMAND\n123 demo login* root 0m /usr/sbin/sshd -D -f /etc/ssh/xtmoe-ssh.conf\n" >&2; }
-    [[ $(proot_session_count demo) == 1 && $(proot_ssh_session_count demo) == 1 && $(manager_proot_sessions) == "demo 1" ]]
+    [[ $(proot_session_count demo) == 1 && $(manager_proot_sessions) == "demo 1" ]]
 ' _ "$ROOT_DIR"
 
 assert_ok 'PRoot SSH starts when supported detach help is printed only to stderr' bash -c '
@@ -125,7 +125,18 @@ assert_ok 'PRoot SSH starts when supported detach help is printed only to stderr
     proot_ssh_session_count() { if [[ -f $fixture_dir/started ]]; then printf 1; else printf 0; fi; }
     proot_ssh_choose_port() { printf 22222; }; proot_ssh_ready() { return 0; }
     proot-distro() { [[ $* == "login --help" ]]; printf -- "--detach\n" >&2; }
-    proot_login() { touch "$fixture_dir/started"; }
+    proot_login() { touch "$fixture_dir/started"; printf "PID: %s\n" "$$"; }
+    proot_ssh_record_session() { :; }
     proot_ssh_start_locked demo
     [[ -f $fixture_dir/started ]]
 ' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'PRoot SSH identity uses PID birth and quiet registry instead of truncated display commands' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/common.sh"; source "$1/src/lib/proot.sh"
+    proot-distro() { [[ $* == "ps --quiet" ]]; printf "%s\n" "$$"; }
+    proot_ssh_record_session identified "$$"
+    [[ $(proot_ssh_session_count identified) == 1 ]] || exit 1
+    printf "%s 0\n" "$$" >"$XTMOE_CACHE_DIR/proot-ssh/identified.pid"
+    [[ $(proot_ssh_session_count identified) == 0 ]]
+' _ "$ROOT_DIR"

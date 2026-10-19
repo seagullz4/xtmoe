@@ -129,8 +129,37 @@ proot_ssh_initialize() {
 }
 
 proot_ssh_session_count() {
-    local name=$1
-    COLUMNS=4096 PD_FORCE_NO_COLORS=1 proot-distro ps 2>&1 | awk -v name="$name" '$1 ~ /^[0-9]+$/ && $2==name && index($0,"xtmoe-ssh.conf") {count++} END {print count+0}'
+    local name=$1 file pid birth extra current pids
+    file="$XTMOE_CACHE_DIR/proot-ssh/$name.pid"
+    if [[ ! -f $file || -L $file || ! -O $file ]]; then printf 0; return 0; fi
+    read -r pid birth extra <"$file" || return 1
+    [[ $pid =~ ^[1-9][0-9]*$ && $birth =~ ^[0-9]+$ && -z $extra ]] || return 1
+    current=$(proot_ssh_pid_birth "$pid") || { printf 0; return 0; }
+    [[ $current == "$birth" ]] || { printf 0; return 0; }
+    pids=$(proot-distro ps --quiet) || return 1
+    if grep -qxF "$pid" <<<"$pids"; then printf 1; else printf 0; fi
+}
+
+proot_ssh_pid_birth() {
+    local data
+    data=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    # Strip the parenthesized command first: process names may contain spaces.
+    data=${data##*) }
+    awk '{print $20}' <<<"$data"
+}
+
+proot_ssh_record_session() {
+    local name=$1 pid=$2 birth directory temporary
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+    birth=$(proot_ssh_pid_birth "$pid") || return 1
+    [[ $birth =~ ^[0-9]+$ ]] || return 1
+    directory="$XTMOE_CACHE_DIR/proot-ssh"
+    [[ ! -L $XTMOE_CACHE_DIR && ! -L $directory && ! -L $directory/$name.pid ]] || return 1
+    mkdir -p "$directory"
+    temporary=$(mktemp "$directory/.pid.XXXXXX") || return 1
+    printf '%s %s\n' "$pid" "$birth" >"$temporary"
+    chmod 0600 "$temporary"
+    mv -Tf -- "$temporary" "$directory/$name.pid"
 }
 
 proot_ssh_ready() {
@@ -151,7 +180,7 @@ SSH_PROBE
 }
 
 proot_ssh_start_locked() {
-    local name=$1 port count help attempt directory
+    local name=$1 port count help attempt directory output pid
     directory=$(proot_container_dir "$name") || return 1
     [[ -f $directory/rootfs/var/lib/xtmoe/proot-ssh/initialized && ! -L $directory/rootfs/var/lib/xtmoe/proot-ssh/initialized ]] || die 'SSH初始化未完成，请先通过向导重新配置SSH'
     port=$(proot_ssh_port "$name") || die '此容器尚未配置SSH，请从PRoot运行管理选择配置SSH'
@@ -163,7 +192,9 @@ proot_ssh_start_locked() {
     proot_ssh_choose_port "$port" "$name" >/dev/null || return 1
     help=$(PD_FORCE_NO_COLORS=1 proot-distro login --help 2>&1) || return 1
     [[ $help == *--detach* ]] || die 'SSH后台会话要求新版proot-distro --detach，请先执行 pkg upgrade proot-distro'
-    proot_login "$name" --detach -- /bin/sh -lc 'mkdir -p /run/sshd; exec /usr/sbin/sshd -D -e -f /etc/ssh/xtmoe-ssh.conf >>/var/log/xtmoe-ssh.log 2>&1' || return 1
+    output=$(proot_login "$name" --detach -- /bin/sh -lc 'mkdir -p /run/sshd; exec /usr/sbin/sshd -D -e -f /etc/ssh/xtmoe-ssh.conf >>/var/log/xtmoe-ssh.log 2>&1' 2>&1) || { printf '%s\n' "$output" >&2; return 1; }
+    pid=$(awk '$1=="PID:" && $2 ~ /^[1-9][0-9]*$/ {print $2; count++} END {if(count!=1) exit 1}' <<<"$output") || { printf '%s\n' "$output" >&2; warn '无法取得SSH后台会话PID'; return 1; }
+    proot_ssh_record_session "$name" "$pid" || return 1
     for attempt in 1 2 3 4 5; do
         count=$(proot_ssh_session_count "$name") || return 1
         if ((count > 0)) && proot_ssh_ready "$port"; then
