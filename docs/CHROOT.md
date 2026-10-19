@@ -7,11 +7,12 @@ xtmoe chroot prepare
 xtmoe doctor
 xtmoe chroot install ubuntu 24.04 ubuntu
 xtmoe chroot systemd-login ubuntu
+xtmoe chroot restart ubuntu
 xtmoe chroot stop ubuntu
 xtmoe chroot status ubuntu
 ```
 
-快捷 systemd-login 按容器实际方案进入：systemd、direct Docker 或基础 Shell。运行中的服务不会因为退出 Shell 自动停止；停止容器用 stop。
+快捷 systemd-login 按容器实际方案进入：systemd、direct Docker 或基础 Shell。运行中的服务不会因为退出 Shell 自动停止；停止容器用 stop。`xtmoe chroot restart [名称]` 会安全停止并重新创建 XTMOE 管理的嵌套 systemd 容器，不执行 Android 或内核 reboot；仅适用于 systemd 容器。
 
 ## 自动方案
 
@@ -34,7 +35,7 @@ systemd 只在独立 PID namespace 内启动，使用实际 cgroup 能力；缺�
 `xtmoe on → Chroot 管理`：
 
 - 容器管理：安装、进入、停止、状态、数据。
-- systemd：检查、启动、停止、重启、状态。
+- systemd：检查、启动、停止、安全重启容器、状态。安全重启与 `xtmoe chroot restart [名称]` 使用同一生命周期路径。
 - Docker：检查、安装/修复、启动、停止、重启、日志。
 - 网络与 DNS：检测/修复、实际网络状态、模式、端口映射。
 - 诊断与修复：环境能力、服务检查、系统更新、修复、容器命令、目录绑定。

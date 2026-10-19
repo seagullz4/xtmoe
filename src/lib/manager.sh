@@ -220,7 +220,7 @@ menu_entries() {
         chroot:containers)
             printf '%s\n' '安装依赖|prepare' '创建 Ubuntu（按能力初始化）|install' '进入容器|login' '停止容器|stop' '容器状态|status' '数据管理|data' ;;
         chroot:systemd)
-            printf '%s\n' '前置检查|systemd-check' '开启 systemd|systemd-start' '停止 systemd|systemd-stop' '重启 systemd|systemd-restart' '状态检查|systemd-status' ;;
+            printf '%s\n' '前置检查|systemd-check' '开启 systemd|systemd-start' '停止 systemd|systemd-stop' '安全重启容器（systemd）|restart' '状态检查|systemd-status' ;;
         chroot:network)
             printf '%s\n' '检测网络、DNS 与监听端口|network-check' '修复 DNS 与 Docker 默认网络|network-repair' '独立网络状态和私有 IP|network-status' '设置网络模式（须停止容器）|network-mode' '查看局域网端口映射|port-list' '添加局域网端口映射|port-add' '删除局域网端口映射|port-remove' ;;
         proot:runtime)

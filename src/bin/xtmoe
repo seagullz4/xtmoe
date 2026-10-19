@@ -34,7 +34,7 @@ show_help() {
   xtmoe chroot prepare
   xtmoe chroot install [ubuntu] [24.04] [名称]
   xtmoe chroot systemd-login [名称]   按容器实际运行方式进入
-  xtmoe chroot stop|status [名称]
+  xtmoe chroot restart|stop|status [名称]
   xtmoe uninstall [--yes] <proot|chroot> <名称>
   xtmoe version
   xtmoe help

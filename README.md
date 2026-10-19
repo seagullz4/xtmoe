@@ -52,13 +52,14 @@ xtmoe chroot prepare
 xtmoe doctor
 xtmoe chroot install ubuntu 24.04 ubuntu
 xtmoe chroot systemd-login ubuntu
+xtmoe chroot restart ubuntu
 xtmoe chroot stop ubuntu
 xtmoe chroot status ubuntu
 # 删除前先停止并备份：
 xtmoe uninstall chroot ubuntu
 ```
 
-安装默认完成基础 Ubuntu，再配置支持的 systemd、Docker 和独立网络。能力缺失会明确说明；下载、配置或启动失败仍真实报错并保留系统。快捷入口 `systemd-login` 按容器实际运行方案进入，不代表任何手机都能运行 systemd。
+安装默认完成基础 Ubuntu，再配置支持的 systemd、Docker 和独立网络。能力缺失会明确说明；下载、配置或启动失败仍真实报错并保留系统。快捷入口 `systemd-login` 按容器实际运行方案进入，不代表任何手机都能运行 systemd。`xtmoe chroot restart [名称]` 安全重启 XTMOE 管理的嵌套 systemd 容器；它不会执行 Android 或内核 `reboot`，仅适用于 systemd 容器。
 
 新建 Chroot Ubuntu 的初始 SSH 账号为 `root / 123456`，默认 systemd 方案会启动 SSH；首次登录后请用 `passwd` 修改公开初始密码。局域网连接需自行添加端口映射，旧容器不自动迁移。详见 [SSH 登录说明](docs/CHROOT.md#新容器-ssh-登录)。
 

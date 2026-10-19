@@ -382,6 +382,12 @@ assert_ok 'Proxy-assisted preflight allows remote DNS only after real APT succee
     if chroot_network_preflight fixture; then exit 1; fi
 ' _ "$ROOT_DIR"
 
+assert_ok 'Public Chroot restart action invokes the managed systemd restart lifecycle' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
+    chroot_systemd_restart() { [[ $1 == ubuntu ]]; }
+    chroot_main restart ubuntu
+' _ "$ROOT_DIR"
+
 assert_ok 'Systemd restart refuses to launch over a failed stop and verifies a successful restart' bash -c '
     source "$1/src/lib/common.sh"; source "$1/src/lib/chroot.sh"
     lifecycle_log="$2/systemd-restart"

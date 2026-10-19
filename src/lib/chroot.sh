@@ -6,6 +6,7 @@ Chroot 快捷命令（Android 7+、有效 Root、原生 Ubuntu 24.04）
   xtmoe chroot prepare
   xtmoe chroot install [ubuntu] [24.04] [名称]
   xtmoe chroot systemd-login [名称]
+  xtmoe chroot restart [名称]  安全重启 XTMOE 管理的 systemd 容器，不重启 Android
   xtmoe chroot stop [名称]
   xtmoe chroot status [名称]
 
@@ -1523,7 +1524,7 @@ chroot_main() {
         systemd-exec) chroot_systemd_exec "$@" ;;
         systemd-status) chroot_systemd_status "$@" ;;
         systemd-stop) chroot_systemd_stop "$@" ;;
-        systemd-restart) chroot_systemd_restart "$@" ;;
+        restart|systemd-restart) chroot_systemd_restart "$@" ;;
         use-bash-sh) chroot_use_bash_sh "$@" ;;
         list)
             require_arg_range 0 0 "$#" 'xtmoe on → Chroot'
