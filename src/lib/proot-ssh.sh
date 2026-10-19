@@ -172,6 +172,7 @@ proot_ssh_start_locked() {
         fi
         sleep "$attempt"
     done
+    proot_login "$name" -- /bin/sh -lc 'tail -n 20 /var/log/xtmoe-ssh.log 2>/dev/null || true' >&2 || true
     warn 'SSH未能启动；容器已保留，请检查/var/log/xtmoe-ssh.log或重新配置SSH端口'
     return 1
 }

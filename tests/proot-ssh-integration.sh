@@ -27,7 +27,14 @@ export XDG_DATA_HOME="$PREFIX/var/lib"
 mkdir -p "$PREFIX/bin" "$XDG_DATA_HOME"
 source /workspace/src/lib/common.sh
 source /workspace/src/lib/proot.sh
-cleanup() { proot-distro kill ssh-ci >/dev/null 2>&1 || true; }
+cleanup() {
+    local result=$?
+    if ((result != 0)); then
+        proot-distro ps 2>&1 || true
+        proot_login ssh-ci -- /bin/sh -c 'tail -n 35 /var/log/xtmoe-ssh.log 2>/dev/null || true' || true
+    fi
+    proot-distro kill ssh-ci >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 proot_install ubuntu:24.04 ssh-ci --ssh-port auto
 port=$(proot_ssh_port ssh-ci)
