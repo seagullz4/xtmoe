@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+assert_ok 'Public Chroot restart passes the actual CLI allowlist and preserves the target name' bash -c '
+    source "$1/src/lib/common.sh"
+    chroot_main() { [[ $* == "restart custom-ubuntu" ]]; }
+    public_chroot restart custom-ubuntu
+' _ "$ROOT_DIR"
 # Sourced by run.sh.
 assert_ok 'Android API 24 is accepted and API 23 is rejected' bash -c '
     source "$1/src/lib/common.sh"

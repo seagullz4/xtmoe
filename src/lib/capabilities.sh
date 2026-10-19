@@ -79,7 +79,7 @@ public_chroot() {
         for argument in "${@:2}"; do [[ $argument != -* ]] || die '安装选项请通过 xtmoe on 配置'; done
     fi
     case "${1:-help}" in
-        help|-h|--help|prepare|install|stop|status) chroot_main "$@" ;;
+        help|-h|--help|prepare|install|restart|stop|status) chroot_main "$@" ;;
         systemd-login) shift; chroot_main login "$@" ;;
         *) die '此操作请使用 xtmoe on → Chroot 管理' ;;
     esac

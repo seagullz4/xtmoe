@@ -2,6 +2,8 @@
 
 ## v1.0.0
 
+- 修复历史/外部同 veth 策略规则优先匹配物理网络、遮蔽容器 VPN 出口的问题：受管优先级组可安全前移，保留未知规则及失败关闭保护，并记录中断迁移。补齐 `chroot restart` 的公开 CLI 白名单，避免帮助中有命令但入口拒绝执行。
+
 - 新增 `xtmoe chroot restart [名称]`：安全停止并重建 XTMOE 管理的嵌套 systemd 容器；不调用 Android/内核 reboot。`xtmoe on → Chroot 管理 → systemd 服务管理` 同步提供“安全重启容器（systemd）”。
 
 - 修复Chroot映射在VPN环境下请求能到达服务、应答却无法返回局域网客户端的问题；在容器专属表维护映射LAN的直连回程路由，换网/撤销时清理，不接管Android或VPN路由表。

@@ -185,6 +185,7 @@ net_egress() {
 
 net_rules_remove() {
     local table hook
+    net_priority_finish stopping || return 1
     while net_ipt -C FORWARD -i "$NET_HOST" -j DROP 2>/dev/null; do net_ipt -D FORWARD -i "$NET_HOST" -j DROP || return; done
     while net_ipt -C FORWARD -o "$NET_HOST" -j DROP 2>/dev/null; do net_ipt -D FORWARD -o "$NET_HOST" -j DROP || return; done
     while net_ipt -C INPUT -j "${NET_CHAIN}I" 2>/dev/null; do net_ipt -D INPUT -j "${NET_CHAIN}I" || return; done
@@ -338,18 +339,98 @@ net_lan_routes_remove() {
     rm -f -- "$NET_RUN/lan-routes"
 }
 
+# The allocator avoids occupied priorities, but an old/external rule for this
+# exact veth can still shadow our later group. Move only our group, never delete
+# the foreign rule or select a physical fallback instead of the current VPN.
+net_priority_prepare() {
+    local rules first candidate offset occupied old=$NET_PRIORITY old_table=none device pending
+    pending="$NET_RUN/priority-pending"
+    if [[ -e $pending || -L $pending ]]; then
+        [[ -f $pending && ! -L $pending ]] || return 1
+        # Complete an interrupted transition before considering another one.
+        net_priority_finish || return 1
+        [[ ! -e $pending ]] || return 0
+    fi
+    rules=$(ip -4 rule show) || return 1
+    first=$(awk -v host="$NET_HOST" -v p="$NET_PRIORITY" -v table="$NET_TABLE" '
+        { n=$1; sub(/:$/, "", n); if (n !~ /^[0-9]+$/ || n>=p+20) next
+          owned=(n==p+10 && index($0,"lookup " table " suppress_prefixlength 0"))
+          if (owned) next
+          for (i=2;i<NF;i++) if ($i=="iif" && $(i+1)==host) {
+              if (!found || n<first) first=n; found=1
+          }
+        } END {if (found) print first}' <<<"$rules")
+    [[ -n $first ]] || return 0
+    occupied=1
+    for ((candidate=10020;candidate+30<first;candidate+=40)); do
+        occupied=0
+        for ((offset=0;offset<40;offset++)); do
+            if grep -Eq "^$((candidate+offset)):" <<<"$rules"; then occupied=1; break; fi
+        done
+        ((occupied)) || break
+    done
+    if ((occupied || candidate+30>=first)); then
+        warn "容器出口被优先级 $first 的已有规则遮蔽，且无更早空闲优先级组；未修改该规则。"
+        return 1
+    fi
+    if [[ -f $NET_RUN/egress ]]; then
+        read -r device old_table <"$NET_RUN/egress" || return 1
+        [[ $old_table =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || return 1
+    fi
+    # Journal the exact old group before changing anything. A guard is installed
+    # first so an interrupted refresh cannot fall through to the shadowing rule.
+    printf '%s %s %s\n' "$old" "$candidate" "$old_table" >"$pending" || return 1
+    ip -4 rule add priority "$((candidate+30))" iif "$NET_HOST" unreachable || { rm -f -- "$pending"; return 1; }
+    NET_PRIORITY=$candidate
+    if ! net_save_config; then
+        NET_PRIORITY=$old
+        net_priority_finish || return 1
+        return 1
+    fi
+    rm -f -- "$NET_RUN/signature"
+    warn "容器专属路由优先级已从 $old 调整为 $candidate；保留原有规则，继续使用当前出口。"
+}
+
+net_priority_finish() {
+    local pending="$NET_RUN/priority-pending" old new old_table extra
+    [[ -e $pending || -L $pending ]] || return 0
+    [[ -f $pending && ! -L $pending ]] || return 1
+    read -r old new old_table extra <"$pending" || return 1
+    [[ $old =~ ^10[0-9]{3}$ && $new =~ ^10[0-9]{3}$ && $old_table =~ ^[A-Za-z0-9_.-]{1,32}$ && -z $extra ]] || return 1
+    ((old>=10001 && old<=10900 && new>=10001 && new+30<old)) || return 1
+    if ((NET_PRIORITY==old)); then
+        # Config was not committed: roll back only the newly installed guard.
+        ip -4 rule del priority "$((new+30))" iif "$NET_HOST" unreachable 2>/dev/null || true
+    elif ((NET_PRIORITY==new)); then
+        # Do not remove the old group until a complete new refresh succeeded.
+        if [[ ${1:-} != stopping ]]; then
+            [[ -f $NET_RUN/signature && $(<"$NET_RUN/signature") == "priority-v2|$new|"* ]] || return 0
+        fi
+        ip -4 rule del priority "$old" to "$NET_SUBNET" lookup "$NET_TABLE" 2>/dev/null || true
+        ip -4 rule del priority "$((old+10))" iif "$NET_HOST" lookup "$NET_TABLE" suppress_prefixlength 0 2>/dev/null || true
+        if [[ $old_table != none ]]; then
+            ip -4 rule del priority "$((old+20))" iif "$NET_HOST" lookup "$old_table" 2>/dev/null || true
+        fi
+        ip -4 rule del priority "$((old+30))" iif "$NET_HOST" unreachable 2>/dev/null || true
+    else
+        return 1
+    fi
+    rm -f -- "$pending"
+}
+
 net_refresh() {
     net_running || return 0
     local ports automatic resolved selector state address host guest proto egress_ok=0 old_table signature old_signature='' lan_routes network interface
     net_addresses
+    net_priority_prepare || return 1
     ports=$(net_port_lines) || return 1
     automatic=$(net_auto_addresses) || return 1
     resolved=$(net_resolved_ports "$ports" "$automatic") || return 1
     lan_routes=$(net_lan_routes "$resolved") || return 1
     net_egress && egress_ok=1
-    signature="lan-return-v1|$egress_ok|$NET_EGRESS|$NET_EGRESS_TABLE|$resolved|$lan_routes|$(ip -4 -o addr show)"
+    signature="priority-v2|$NET_PRIORITY|$egress_ok|$NET_EGRESS|$NET_EGRESS_TABLE|$resolved|$lan_routes|$(ip -4 -o addr show)"
     [[ ! -f $NET_RUN/signature ]] || old_signature=$(<"$NET_RUN/signature")
-    [[ $signature != "$old_signature" ]] || return 0
+    [[ $signature != "$old_signature" ]] || { net_priority_finish; return $?; }
     rm -f "$NET_RUN/signature"
     # Keep this veth closed while replacing rules; failures leave it closed until retry.
     net_ipt -C FORWARD -i "$NET_HOST" -j DROP 2>/dev/null || net_ipt -I FORWARD 1 -i "$NET_HOST" -j DROP || return
@@ -369,9 +450,9 @@ net_refresh() {
         [[ -n $network ]] || continue
         ip -4 route replace table "$NET_TABLE" "$network" dev "$interface" scope link src "$address" || return
     done <<<"$lan_routes"
-    ip -4 rule show | grep -Fq "to $NET_SUBNET lookup $NET_TABLE" || ip -4 rule add priority "$NET_PRIORITY" to "$NET_SUBNET" lookup "$NET_TABLE" || return
+    ip -4 rule show | grep -Eq "^$NET_PRIORITY:.*to $NET_SUBNET lookup $NET_TABLE( |$)" || ip -4 rule add priority "$NET_PRIORITY" to "$NET_SUBNET" lookup "$NET_TABLE" || return
     # A lookup of the dedicated table without a default must fall through for outbound traffic.
-    ip -4 rule show | grep -Fq "iif $NET_HOST lookup $NET_TABLE" || ip -4 rule add priority "$((NET_PRIORITY+10))" iif "$NET_HOST" lookup "$NET_TABLE" suppress_prefixlength 0 || return
+    ip -4 rule show | grep -Eq "^$((NET_PRIORITY+10)):.*iif $NET_HOST lookup $NET_TABLE suppress_prefixlength 0$" || ip -4 rule add priority "$((NET_PRIORITY+10))" iif "$NET_HOST" lookup "$NET_TABLE" suppress_prefixlength 0 || return
     if ((egress_ok)); then
         ip -4 rule add priority "$((NET_PRIORITY+20))" iif "$NET_HOST" lookup "$NET_EGRESS_TABLE" || return
         printf '%s %s\n' "$NET_EGRESS" "$NET_EGRESS_TABLE" >"$NET_RUN/egress"
@@ -379,7 +460,7 @@ net_refresh() {
         rm -f "$NET_RUN/egress"
     fi
     # Final per-interface unreachable rule prevents fall-through to an unrelated Android network.
-    ip -4 rule show | grep -Fq "iif $NET_HOST unreachable" || ip -4 rule add priority "$((NET_PRIORITY+30))" iif "$NET_HOST" unreachable || return
+    ip -4 rule show | grep -Eq "^$((NET_PRIORITY+30)):.*iif $NET_HOST unreachable$" || ip -4 rule add priority "$((NET_PRIORITY+30))" iif "$NET_HOST" unreachable || return
     local table hook
     for table in nat filter; do
         net_ipt -t "$table" -S "$NET_CHAIN" >/dev/null 2>&1 || net_ipt -t "$table" -N "$NET_CHAIN" || return
@@ -407,6 +488,7 @@ net_refresh() {
     while net_ipt -C FORWARD -i "$NET_HOST" -j DROP 2>/dev/null; do net_ipt -D FORWARD -i "$NET_HOST" -j DROP || return; done
     while net_ipt -C FORWARD -o "$NET_HOST" -j DROP 2>/dev/null; do net_ipt -D FORWARD -o "$NET_HOST" -j DROP || return; done
     printf '%s' "$signature" >"$NET_RUN/signature"
+    net_priority_finish
 }
 
 net_start() {

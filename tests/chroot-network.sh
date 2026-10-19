@@ -1,5 +1,83 @@
 #!/usr/bin/env bash
 # Sourced by run.sh; exercise configuration, allocation, ownership and dispatch.
+assert_ok 'Shadowed veth rules migrate only the owned priority group and retain a guard until refresh succeeds' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/xtmoe-network"
+    CONTAINER="$2/shadowed"; NET_RUN="$CONTAINER/run"; mkdir -p "$NET_RUN"
+    NET_CONFIG="$CONTAINER/.xtmoe-network"; NET_MODE=isolated; NET_SLOT=0; NET_PRIORITY=10580
+    NET_HOST=xnfixture; net_addresses
+    log="$NET_RUN/commands"; warn() { :; }
+    printf "tun0 tun0\n" >"$NET_RUN/egress"
+    printf "old-signature" >"$NET_RUN/signature"
+    ip() {
+        printf "%s\n" "$*" >>"$log"
+        if [[ $* == "-4 rule show" ]]; then printf "10000: from all lookup legacy_system\n10520: from all iif xnfixture lookup wlan0\n10560: from all iif xnfixture lookup 1044\n"; fi
+    }
+    net_priority_prepare
+    [[ $NET_PRIORITY == 10020 && -f $NET_RUN/priority-pending ]] || exit 1
+    grep -qx "priority=10020" "$NET_CONFIG" || exit 1
+    grep -qx -- "-4 rule add priority 10050 iif xnfixture unreachable" "$log" || exit 1
+    net_priority_finish
+    [[ -f $NET_RUN/priority-pending ]] || exit 1
+    if grep -q "rule del" "$log"; then exit 1; fi
+    printf "priority-v2|10020|ready" >"$NET_RUN/signature"
+    net_priority_finish
+    [[ ! -e $NET_RUN/priority-pending ]] || exit 1
+    grep -qx -- "-4 rule del priority 10600 iif xnfixture lookup tun0" "$log" || exit 1
+    if grep -Eq "rule del priority (10520|10560) " "$log"; then exit 1; fi
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Shadow migration fails without touching foreign rules when no earlier group exists and rolls back an uncommitted guard' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/xtmoe-network"
+    CONTAINER="$2/shadow-busy"; NET_RUN="$CONTAINER/run"; mkdir -p "$NET_RUN"
+    NET_CONFIG="$CONTAINER/.xtmoe-network"; NET_MODE=isolated; NET_SLOT=0; NET_PRIORITY=10580
+    NET_HOST=xnfixture; net_addresses; log="$NET_RUN/commands"; warn() { :; }
+    ip() { printf "%s\n" "$*" >>"$log"; if [[ $* == "-4 rule show" ]]; then printf "10030: from all iif xnfixture lookup foreign\n"; fi; }
+    if net_priority_prepare; then exit 1; fi
+    [[ $NET_PRIORITY == 10580 && ! -e $NET_RUN/priority-pending && ! -e $NET_CONFIG ]] || exit 1
+    ip() { printf "%s\n" "$*" >>"$log"; if [[ $* == "-4 rule show" ]]; then printf "10520: from all iif xnfixture lookup wlan0\n"; fi; }
+    net_save_config() { return 1; }
+    if net_priority_prepare; then exit 1; fi
+    [[ $NET_PRIORITY == 10580 && ! -e $NET_RUN/priority-pending ]] || exit 1
+    grep -qx -- "-4 rule del priority 10050 iif xnfixture unreachable" "$log" || exit 1
+    if grep -Eq "rule del priority (10520|10560|10580) " "$log"; then exit 1; fi
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'Interrupted priority migration keeps old rules until new signature and stopping cleans both owned groups' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/xtmoe-network"
+    NET_RUN="$2/shadow-recovery"; mkdir -p "$NET_RUN"; NET_HOST=xnfixture
+    NET_SLOT=0; NET_PRIORITY=10020; net_addresses; log="$NET_RUN/commands"
+    printf "10580 10020 tun0\n" >"$NET_RUN/priority-pending"
+    printf "lan-return-v1|old" >"$NET_RUN/signature"
+    ip() { printf "%s\n" "$*" >>"$log"; }
+    net_priority_prepare
+    [[ -f $NET_RUN/priority-pending && ! -s $log ]] || exit 1
+    net_priority_finish stopping
+    [[ ! -e $NET_RUN/priority-pending ]] || exit 1
+    grep -qx -- "-4 rule del priority 10580 to 10.203.0.0/30 lookup 40000" "$log"
+' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'An unrelated veth does not trigger migration but a rule between owned lookup and egress does' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/xtmoe-network"
+    CONTAINER="$2/shadow-middle"; NET_RUN="$CONTAINER/run"; mkdir -p "$NET_RUN"
+    NET_CONFIG="$CONTAINER/.xtmoe-network"; NET_MODE=isolated; NET_SLOT=0; NET_PRIORITY=10580
+    NET_HOST=xnfixture; net_addresses; middle=0; warn() { :; }
+    ip() {
+        if [[ $* == "-4 rule show" ]]; then
+            printf "10010: from all iif xnother lookup foreign\n10590: from all iif xnfixture lookup 40000 suppress_prefixlength 0\n"
+            if ((middle)); then printf "10595: from all iif xnfixture lookup wlan0\n"; fi
+        fi
+        return 0
+    }
+    net_priority_prepare
+    [[ $NET_PRIORITY == 10580 && ! -e $NET_RUN/priority-pending ]] || exit 1
+    middle=1; net_priority_prepare
+    [[ $NET_PRIORITY == 10020 && -f $NET_RUN/priority-pending ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
+
 assert_ok 'Plain Chroot kernel protection diagnostics do not contaminate command stdout' bash -c '
     source <(awk "/^\\[\\[ .*id -u/ {skip=1} /^valid_name\\(\\)/ {skip=0} /^ACTION=/ {exit} !skip {print}" "$1/src/lib/xtmoe-root")
     ROOTFS=/fixture; XTMOE_NET_PLAIN=1
