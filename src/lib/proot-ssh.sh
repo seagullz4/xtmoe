@@ -161,7 +161,7 @@ proot_ssh_start_locked() {
         ok "PRoot SSH 已运行：root@手机IP:$port"; return 0
     fi
     proot_ssh_choose_port "$port" "$name" >/dev/null || return 1
-    help=$(proot-distro login --help) || return 1
+    help=$(PD_FORCE_NO_COLORS=1 proot-distro login --help 2>&1) || return 1
     [[ $help == *--detach* ]] || die 'SSH后台会话要求新版proot-distro --detach，请先执行 pkg upgrade proot-distro'
     proot_login "$name" --detach -- /bin/sh -lc 'mkdir -p /run/sshd; exec /usr/sbin/sshd -D -e -f /etc/ssh/xtmoe-ssh.conf >>/var/log/xtmoe-ssh.log 2>&1' || return 1
     for attempt in 1 2 3 4 5; do

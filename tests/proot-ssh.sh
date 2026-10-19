@@ -115,3 +115,17 @@ assert_ok 'PRoot session detection reads stdout or stderr tables without truncat
     proot-distro() { [[ $COLUMNS == 4096 && $PD_FORCE_NO_COLORS == 1 ]]; printf "PID CONTAINER TYPE USER UPTIME COMMAND\n123 demo login* root 0m /usr/sbin/sshd -D -f /etc/ssh/xtmoe-ssh.conf\n" >&2; }
     [[ $(proot_session_count demo) == 1 && $(proot_ssh_session_count demo) == 1 && $(manager_proot_sessions) == "demo 1" ]]
 ' _ "$ROOT_DIR"
+
+assert_ok 'PRoot SSH starts when supported detach help is printed only to stderr' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/common.sh"; source "$1/src/lib/proot.sh"
+    fixture_dir="$2/proot-detach-help"; mkdir -p "$fixture_dir/rootfs/var/lib/xtmoe/proot-ssh"
+    touch "$fixture_dir/rootfs/var/lib/xtmoe/proot-ssh/initialized"
+    proot_container_dir() { printf "%s" "$fixture_dir"; }; proot_ssh_port() { printf 22222; }
+    proot_ssh_session_count() { if [[ -f $fixture_dir/started ]]; then printf 1; else printf 0; fi; }
+    proot_ssh_choose_port() { printf 22222; }; proot_ssh_ready() { return 0; }
+    proot-distro() { [[ $* == "login --help" ]]; printf -- "--detach\n" >&2; }
+    proot_login() { touch "$fixture_dir/started"; }
+    proot_ssh_start_locked demo
+    [[ -f $fixture_dir/started ]]
+' _ "$ROOT_DIR" "$TEST_TMP"

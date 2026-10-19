@@ -115,7 +115,20 @@ jobs:
 
       - name: Test rootless PRoot SSH in disposable Ubuntu
         timeout-minutes: 15
-        run: docker run --rm --security-opt seccomp=unconfined -v "$PWD:/workspace:ro" ubuntu:24.04 bash /workspace/tests/proot-ssh-integration.sh
+        run: |
+          set +e
+          docker run --rm --security-opt seccomp=unconfined -v "$PWD:/workspace:ro" ubuntu:24.04 bash /workspace/tests/proot-ssh-integration.sh >proot-ssh-integration.log 2>&1
+          status=$?
+          cat proot-ssh-integration.log
+          if ((status != 0)); then
+            python3 - <<'PY'
+          from pathlib import Path
+          text = Path("proot-ssh-integration.log").read_text(encoding="utf-8", errors="replace")[-5000:]
+          text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print(f"::error title=Rootless PRoot SSH integration failed::{text}")
+          PY
+          fi
+          exit "$status"
 
       - name: Validate documentation and public commands
         run: python3 tests/validate-docs.py
