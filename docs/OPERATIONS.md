@@ -7,6 +7,7 @@
 | 安装/进入/停止 Ubuntu | PRoot 或 Chroot → 容器管理 |
 | 恢复/备份/重装/删除 | 对应模式 → 数据管理 |
 | 启停 Docker/systemd | Chroot → 服务菜单 |
+| PRoot SSH端口与启动 | PRoot → 容器运行管理；停止活动会话会一并停止SSH |
 | 地址、DNS、端口映射 | Chroot → 网络与 DNS |
 | 修改代理 | 首页 → 代理设置 |
 | 故障后续跑安装 | Chroot → 诊断与修复 |

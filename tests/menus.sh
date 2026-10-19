@@ -65,3 +65,13 @@ assert_ok 'Menu command execution is explicit and keeps the command as one argum
     printf "printf hello\n" | menu_dispatch_action chroot exec ubuntu
     [[ $(tail -n 1 "$log") == "printf hello" ]] && grep -qx -- -- "$log"
 ' _ "$ROOT_DIR" "$TEST_TMP"
+
+assert_ok 'PRoot install menu forwards blank random and explicit SSH port choices' bash -c '
+    set -Eeuo pipefail
+    source "$1/src/lib/common.sh"; source "$1/src/lib/proot.sh"; source "$1/src/lib/manager.sh"
+    log="$2/proot-menu-ssh"; proot_main() { printf "%s\n" "$*" >>"$log"; }
+    proot_ssh_choose_port() { if [[ $1 == auto ]]; then printf 34567; else printf "%s" "$1"; fi; }
+    printf "first\n\n" | menu_dispatch_action proot install
+    printf "second\n22222\n" | menu_dispatch_action proot install
+    [[ $(head -n 1 "$log") == "install ubuntu:24.04 first --ssh-port 34567" && $(tail -n 1 "$log") == "install ubuntu:24.04 second --ssh-port 22222" ]]
+' _ "$ROOT_DIR" "$TEST_TMP"

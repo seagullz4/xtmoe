@@ -39,7 +39,7 @@ fi
 SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
 SOURCE_DIR="$SCRIPT_DIR/src"
 [ -r "$SOURCE_DIR/bin/xtmoe" ] || die "源文件不完整：$SOURCE_DIR/bin/xtmoe"
-for module in common.sh capabilities.sh proxy.sh proot.sh chroot.sh manager.sh xtmoe-root xtmoe-network xtmoe-docker-routing xtmoe-docker-routing.service; do
+for module in common.sh capabilities.sh proxy.sh proot.sh proot-ssh.sh chroot.sh manager.sh xtmoe-root xtmoe-network xtmoe-docker-routing xtmoe-docker-routing.service; do
     [ -r "$SOURCE_DIR/lib/$module" ] || die "源文件不完整：$SOURCE_DIR/lib/$module"
 done
 
@@ -51,7 +51,7 @@ if command -v pkg >/dev/null 2>&1 && [ "${XTMOE_SKIP_PACKAGES:-0}" != 1 ]; then
     say '安装基础依赖（bash、coreutils、curl、tar、util-linux、proot-distro）……'
     DEBIAN_FRONTEND=noninteractive pkg install -y \
         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-        bash coreutils curl tar util-linux proot-distro socat
+        bash coreutils curl tar util-linux proot-distro socat python
 fi
 
 mkdir -p "$BIN_DIR" "$XTMOE_PREFIX/libexec"
@@ -66,7 +66,7 @@ STAGE_DIR=$(mktemp -d "$LIB_DIR/releases/.stage.XXXXXX")
 mkdir "$STAGE_DIR/bin" "$STAGE_DIR/lib"
 cp -- "$SOURCE_DIR/bin/xtmoe" "$STAGE_DIR/bin/xtmoe"
 chmod 0755 "$STAGE_DIR/bin/xtmoe"
-for module in common.sh capabilities.sh proxy.sh proot.sh chroot.sh manager.sh xtmoe-network xtmoe-docker-routing xtmoe-docker-routing.service; do
+for module in common.sh capabilities.sh proxy.sh proot.sh proot-ssh.sh chroot.sh manager.sh xtmoe-network xtmoe-docker-routing xtmoe-docker-routing.service; do
     cp -- "$SOURCE_DIR/lib/$module" "$STAGE_DIR/lib/$module"
     chmod 0644 "$STAGE_DIR/lib/$module"
 done

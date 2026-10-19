@@ -24,7 +24,7 @@ show_help() {
   xtmoe doctor                      环境与能力检查
   xtmoe update [--force]             更新程序；--force 丢弃源码本地修改
   xtmoe list [--all|--running] [--no-prompt]
-  xtmoe proot install [镜像] [名称]  默认 ubuntu:24.04 / ubuntu
+  xtmoe proot install [镜像] [名称] [--ssh-port 端口|auto]
   xtmoe proot login [名称]
   xtmoe proot exec <名称> -- <命令>
   xtmoe proot list|ps

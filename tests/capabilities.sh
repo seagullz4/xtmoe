@@ -50,6 +50,9 @@ assert_ok 'Basic-only bootstrap completes without attempting systemd or Docker' 
 assert_ok 'New PRoot install pins native architecture without compatibility aliases' bash -c '
     source "$1/src/lib/common.sh"; source "$1/src/lib/proot.sh"
     log="$2/native-install"; native_proot_arch() { printf arm; }
+    proot_ssh_lock() { exec {PROOT_SSH_LOCK_FD}>"${log}.lock"; }
+    proot_ssh_choose_port() { printf 22222; }
+    proot_ssh_initialize() { :; }; proot_ssh_start_locked() { :; }
     timeout() { shift 3; "$@"; }
     proot-distro() { if [[ $* == "install --help" ]]; then printf "%s\n" "--name --architecture"; else printf "%s\n" "$*" >"$log"; fi; }
     proot_install ubuntu:24.04 native

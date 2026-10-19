@@ -29,6 +29,7 @@ jobs:
             src/lib/capabilities.sh \
             src/lib/proxy.sh \
             src/lib/proot.sh \
+            src/lib/proot-ssh.sh \
             src/lib/chroot.sh \
             src/lib/manager.sh \
             src/lib/xtmoe-root \
@@ -40,6 +41,8 @@ jobs:
             tests/chroot-init.sh \
             tests/ssh.sh \
             tests/ssh-integration.sh \
+            tests/proot-ssh.sh \
+            tests/proot-ssh-integration.sh \
             tests/chroot-network.sh \
             tests/capabilities.sh \
             tests/internal.sh \
@@ -61,6 +64,7 @@ jobs:
             src/lib/capabilities.sh \
             src/lib/proxy.sh \
             src/lib/proot.sh \
+            src/lib/proot-ssh.sh \
             src/lib/chroot.sh \
             src/lib/manager.sh \
             src/lib/xtmoe-root \
@@ -72,6 +76,8 @@ jobs:
             tests/chroot-init.sh \
             tests/ssh.sh \
             tests/ssh-integration.sh \
+            tests/proot-ssh.sh \
+            tests/proot-ssh-integration.sh \
             tests/chroot-network.sh \
             tests/capabilities.sh \
             tests/internal.sh \
@@ -106,6 +112,10 @@ jobs:
 
       - name: Check whitespace
         run: git diff --check
+
+      - name: Test rootless PRoot SSH in disposable Ubuntu
+        timeout-minutes: 15
+        run: docker run --rm --security-opt seccomp=unconfined -v "$PWD:/workspace:ro" ubuntu:24.04 bash /workspace/tests/proot-ssh-integration.sh
 
       - name: Validate documentation and public commands
         run: python3 tests/validate-docs.py

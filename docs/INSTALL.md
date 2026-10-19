@@ -18,6 +18,8 @@ xtmoe on
 
 PRoot 安装依赖当前 proot-distro。Chroot 安装前准备 Root/挂载工具，验证用户空间架构；数据与缓存所在文件系统各至少 2 GiB，使用 Docker 时预留更多。
 
+PRoot默认Ubuntu新装会自动准备SSH，安装时可指定端口或回车随机分配，初始账号root/123456。需要Python进行实际端口绑定检测及支持 `login --detach` 的proot-distro；安装器包含Python依赖。服务/端口状态见 [PRoot说明](PROOT.md#初始-ssh-与端口选择)。
+
 ## 程序维护
 
 通过 `xtmoe on → 程序维护` 选择检查、更新、版本、卸载或强制更新，也可使用：

@@ -1,10 +1,13 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
+source "$(dirname -- "${BASH_SOURCE[0]}")/proot-ssh.sh"
+
 proot_help() {
     cat <<'EOF'
 PRoot 模式（无需 Root）
 
-  xtmoe proot install [镜像] [名称]   默认：ubuntu:24.04 / ubuntu
+  xtmoe proot install [镜像] [名称] [--ssh-port 端口|auto]
+                                     默认Ubuntu24.04；回车随机SSH高端口，root/123456
   xtmoe proot login [名称]            进入交互式 shell
   xtmoe proot exec <名称> -- <命令>   执行单条命令
   xtmoe proot list                    列出容器
@@ -37,34 +40,54 @@ proot_exists() {
 
 proot_session_count() {
     local name=$1
-    proot-distro ps 2>/dev/null | awk -v expected="$name" '
+    COLUMNS=4096 PD_FORCE_NO_COLORS=1 proot-distro ps 2>&1 | awk -v expected="$name" '
         NR == 1 && $1 == "PID" { next }
         $1 ~ /^[0-9]+$/ && $2 == expected { count++ }
         END { print count + 0 }
     '
 }
 
-proot_install() {
-    require_arg_range 0 2 "$#" 'xtmoe proot install [镜像] [名称]'
-    local image=${1:-ubuntu:24.04} name=${2:-ubuntu} install_help architecture
+proot_install() (
+    local image name install_help architecture requested='' port
+    local -a positional=()
+    while (($#)); do
+        case "$1" in
+            --ssh-port) (($#>=2)) && [[ -z $requested && -n $2 ]] || die 'SSH端口参数缺少值或重复'; requested=$2; shift 2 ;;
+            -*) die "未知PRoot安装选项：$1" ;;
+            *) positional+=("$1"); shift ;;
+        esac
+    done
+    ((${#positional[@]}<=2)) || die 'xtmoe proot install [镜像] [名称] [--ssh-port 端口|auto]'
+    image=${positional[0]:-ubuntu:24.04}; name=${positional[1]:-ubuntu}
     require_name "$name"
     architecture=$(native_proot_arch) || return 1
+    if [[ -z $requested ]]; then
+        if [[ -t 0 && -t 1 ]]; then requested=$(proot_ssh_prompt_port "$name") || return 1
+        else requested=auto; fi
+    fi
+    proot_exists "$name" && die "PRoot容器已存在：$name"
+    proot_ssh_lock
+    port=$(proot_ssh_choose_port "$requested" "$name") || return 1
     info "安装 PRoot 容器：$name（$image）"
     install_help=$(proot-distro install --help 2>&1) || die '无法读取 proot-distro 安装接口'
     [[ $install_help == *--name* && $install_help == *--architecture* ]] || die '请更新 proot-distro 到提供 --name 和 --architecture 的当前版本'
-    timeout --foreground --kill-after=15 1800 proot-distro install --name "$name" --architecture "$architecture" "$image"
-}
+    (exec {PROOT_SSH_LOCK_FD}>&-; timeout --foreground --kill-after=15 1800 proot-distro install --name "$name" --architecture "$architecture" "$image") || return $?
+    proot_ssh_initialize "$name" "$port" || { warn '基础容器已安装，但SSH初始化失败；可通过向导重新配置SSH'; return 1; }
+    proot_ssh_start_locked "$name" || return 1
+    info 'PRoot SSH初始账号root，密码123456；请登录后用passwd修改。'
+)
 
-proot_login() {
+proot_login() (
     local name=$1 assignment values=''
     local -a arguments=(login "$name")
     shift
+    if [[ ${PROOT_SSH_LOCK_FD:-} =~ ^[0-9]+$ ]]; then exec {PROOT_SSH_LOCK_FD}>&-; fi
     values=$(proxy_environment) || return 1
     if [[ -n $values ]]; then
         while IFS= read -r assignment; do arguments+=(--env "$assignment"); done <<<"$values"
     fi
     proot-distro "${arguments[@]}" "$@"
-}
+)
 
 proot_backup() {
     require_arg_range 1 2 "$#" 'xtmoe proot backup <名称> [文件]'
@@ -134,7 +157,7 @@ fi'
 }
 
 proot_reinstall() {
-    local yes=0 name=ubuntu name_set=0
+    local yes=0 name=ubuntu name_set=0 ssh_port=''
     while (($#)); do
         case "$1" in
             --yes|-y) yes=1 ;;
@@ -147,10 +170,12 @@ proot_reinstall() {
     proot_exists "$name" || die "PRoot 容器不存在：$name"
     ((yes)) && export XTMOE_YES=1
     confirm "重装 PRoot 容器 '$name'？容器内全部数据都会永久删除且不会自动备份" || { info '已取消'; return 0; }
+    ssh_port=$(proot_ssh_port "$name") || true
     if ! proot-distro help 2>&1 | grep -Eq '(^|[[:space:]])reset([[:space:]]|$)'; then
         die '当前 proot-distro 不支持安全 reset；请先在 Termux 中更新 proot-distro。'
     fi
     proot-distro reset "$name" || return $?
+    if [[ -n $ssh_port ]]; then proot_ssh_configure "$name" "$ssh_port" || return $?; fi
     ok "PRoot 容器已按原镜像重装：$name"
 }
 
@@ -168,6 +193,7 @@ proot_status() {
     else
         printf 'stopped\n'
     fi
+    proot_ssh_status "$name"
 }
 
 proot_main() {
@@ -177,6 +203,9 @@ proot_main() {
     require_proot
     case "$action" in
         install) proot_install "$@" ;;
+        ssh-start) proot_ssh_start "$@" ;;
+        ssh-configure) proot_ssh_configure "$@" ;;
+        ssh-status) proot_ssh_status "$@" ;;
         login)
             local name=${1:-ubuntu}
             require_name "$name"

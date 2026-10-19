@@ -43,6 +43,8 @@ xtmoe uninstall proot ubuntu
 
 PRoot 使用当前 proot-distro 的原生架构能力；缺少镜像或依赖时报告失败，不自动换发行版。
 
+新装默认PRoot Ubuntu会询问SSH端口：手动输入可用高端口，回车随机选择未使用端口；初始账号为 `root / 123456`，配置成功后启动后台SSH会话。端口和启动操作在PRoot运行管理菜单，初次登录后请用 `passwd` 改密。详见 [PRoot SSH说明](docs/PROOT.md#初始-ssh-与端口选择)。
+
 ## Chroot 快速开始
 
 ```sh

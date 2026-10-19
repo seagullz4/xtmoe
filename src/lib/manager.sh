@@ -15,7 +15,7 @@ manager_proot_names() {
 
 manager_proot_sessions() {
     command_exists proot-distro || return 0
-    proot-distro ps 2>/dev/null | awk '
+    COLUMNS=4096 PD_FORCE_NO_COLORS=1 proot-distro ps 2>&1 | awk '
         NR == 1 && $1 == "PID" { next }
         $1 ~ /^[0-9]+$/ && NF >= 2 { count[$2]++ }
         END { for (name in count) print name, count[name] }
@@ -224,7 +224,7 @@ menu_entries() {
         chroot:network)
             printf '%s\n' '检测网络、DNS 与监听端口|network-check' '修复 DNS 与 Docker 默认网络|network-repair' '独立网络状态和私有 IP|network-status' '设置网络模式（须停止容器）|network-mode' '查看局域网端口映射|port-list' '添加局域网端口映射|port-add' '删除局域网端口映射|port-remove' ;;
         proot:runtime)
-            printf '%s\n' '进入容器|login' '执行容器命令|exec' '停止活动会话|stop' '更新容器系统|update-system' '查看状态|status' '活动会话|ps' ;;
+            printf '%s\n' '进入容器|login' '执行容器命令|exec' '停止活动会话（包括SSH）|stop' '更新容器系统|update-system' '查看状态|status' '活动会话|ps' '启动SSH|ssh-start' '查看SSH端口和状态|ssh-status' '配置SSH端口（须停止会话）|ssh-configure' ;;
         chroot:diagnostics)
             printf '%s\n' '深度环境能力检查|capabilities' '检查 systemd|systemd-check' '检查 Docker|docker-check' '初始化或修复|repair' '更新容器系统|update-system' '执行容器命令|exec' '绑定目录|bind' ;;
         proot:data|chroot:data)
@@ -272,7 +272,9 @@ menu_dispatch_action() {
     case "$action" in
         install)
             name=$(menu_read '新容器名称' ubuntu) || return 0
-            if [[ $mode == proot ]]; then menu_run "$backend" install ubuntu:24.04 "$name"
+            if [[ $mode == proot ]]; then
+                host=$(proot_ssh_prompt_port "$name") || return 0
+                menu_run "$backend" install ubuntu:24.04 "$name" --ssh-port "$host"
             else menu_run "$backend" install ubuntu 24.04 "$name"; fi
             return 0 ;;
         prepare) menu_run "$backend" prepare; return 0 ;;
@@ -297,6 +299,10 @@ menu_dispatch_action() {
     fi
     require_name "$name"
     case "$action" in
+        ssh-configure)
+            host=$(proot_ssh_prompt_port "$name") || return 0
+            menu_run "$backend" ssh-configure "$name" "$host"
+            ;;
         capabilities) menu_run chroot_root capabilities "$(chroot_base)" "$name" ;;
         exec)
             file=$(menu_read '容器内命令（留空取消）') || return 0
