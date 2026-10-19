@@ -5,13 +5,19 @@ set -Eeuo pipefail
 if [[ $(id -u) == 0 ]]; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=2 update
-    apt-get install -y --no-install-recommends python3 git ca-certificates proot util-linux openssh-client sshpass
+    apt-get install -y --no-install-recommends python3 git ca-certificates build-essential gcc-multilib libtalloc-dev util-linux openssh-client sshpass
+    # Ubuntu's old generic proot does not implement Termux's virtual permission
+    # extensions. Build the exact source tag used by official Termux packaging.
+    git clone https://github.com/termux/proot.git /opt/termux-proot
+    git -C /opt/termux-proot checkout --detach e2d843ee6dab076ea0ed1ffd5d0ea12232185499
+    make -C /opt/termux-proot/src -j2
+    install -m 0755 /opt/termux-proot/src/proot /usr/local/bin/proot
     git clone https://github.com/termux/proot-distro.git /opt/proot-distro
     git -C /opt/proot-distro checkout --detach 5a427a1f924550c176ab34197e9fcf5d010fdbd9
     printf '#!/bin/sh\nexec python3 /opt/proot-distro/proot-distro.py "$@"\n' >/usr/local/bin/proot-distro
     chmod 0755 /usr/local/bin/proot-distro
     useradd -m -u 10551 xtmoe-ci
-    runuser -u xtmoe-ci -- env HOME=/home/xtmoe-ci NO_COLOR=1 bash "$0" --guest
+    runuser -u xtmoe-ci -- env HOME=/home/xtmoe-ci NO_COLOR=1 PD_PROOT_BIN=/usr/local/bin/proot bash "$0" --guest
     exit
 fi
 [[ ${1:-} == --guest && $(id -u) != 0 ]]
