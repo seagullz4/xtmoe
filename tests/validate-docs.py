@@ -8,7 +8,7 @@ documents = [root / "README.md", root / "CHANGELOG.md", *sorted((root / "docs").
 top = {"on", "doctor", "list", "version", "help", "proot", "chroot", "uninstall", "update"}
 actions = {
     "proot": {"install", "login", "exec", "list", "ps", "stop", "backup", "update-system", "status", "help"},
-    "chroot": {"prepare", "install", "systemd-login", "stop", "status", "help"},
+    "chroot": {"prepare", "install", "systemd-login", "restart", "stop", "status", "help"},
 }
 errors = []
 for document in documents:
