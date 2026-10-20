@@ -2,6 +2,8 @@
 
 ## v1.0.0
 
+- 新增显式开启的systemd Chroot非Root联网兼容：通过经设备元数据核对的ConnectivityService接口，为实际运行UID临时授权，按私有PID namespace识别Docker子进程、多容器共享登记并回收；保留整机限制联网模式及原有授权。当前限已验证的Android13–15后端，授权为宿主UID范围，异步扫描不保证首包成功。
+
 - 修复历史/外部同 veth 策略规则优先匹配物理网络、遮蔽容器 VPN 出口的问题：受管优先级组可安全前移，保留未知规则及失败关闭保护，并记录中断迁移。补齐 `chroot restart` 的公开 CLI 白名单，避免帮助中有命令但入口拒绝执行。
 
 - 新增 `xtmoe chroot restart [名称]`：安全停止并重建 XTMOE 管理的嵌套 systemd 容器；不调用 Android/内核 reboot。`xtmoe on → Chroot 管理 → systemd 服务管理` 同步提供“安全重启容器（systemd）”。

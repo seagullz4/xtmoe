@@ -19,3 +19,7 @@
 # Local publisher and project handoff record. They must never be uploaded.
 push_github.py
 PROJECT_STATE.md
+
+# Python runtime caches are local, not release sources.
+__pycache__/
+*.pyc

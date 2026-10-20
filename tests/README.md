@@ -19,6 +19,8 @@ PRoot 安装失败用例确认架构检测失败时不调用上游安装；备�
 
 tests/internal.sh 仅供开发调用内部库操作，不安装到手机命令路径，也不作为公开 CLI。能力深度检查在临时 namespace 中进行，不修改 Android 现有接口或防火墙策略。
 
+`tests/uid-network.py` 使用纯内存假后端验证UID租约的基线保护、同UID多容器共享、失败日志恢复、最后使用者回收及禁止直接BPF写入；不调用手机策略接口。真实设备另行验证动态识别、非Root Docker进程与停止回收，不以模拟结果冒充Android验收。
+
 Android 端可运行 tests/android-smoke.sh，先看 help。临时容器名称由脚本生成；清理只处理自身已验证的容器，失败保存日志。禁止以清空 Termux 或现有用户容器替代测试隔离。
 
 rootfs-lifecycle.sh 使用给定的真实 Ubuntu Base 验证解压、备份、恢复和删除边界。PRoot/Chroot 真机测试与模拟回归分别报告。

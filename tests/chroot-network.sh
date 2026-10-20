@@ -1,5 +1,21 @@
 #!/usr/bin/env bash
 # Sourced by run.sh; exercise configuration, allocation, ownership and dispatch.
+assert_ok 'UID network hooks are opt-in, attach to the verified init and refuse invalid settings' bash -c '
+    source <(awk "/^\\[\\[ .*id -u/ {skip=1} /^valid_name\\(\\)/ {skip=0} /^ACTION=/ {exit} !skip {print}" "$1/src/lib/xtmoe-root")
+    CONTAINER="$2/uid-hook"; mkdir -p "$CONTAINER"; log="$2/uid-hook-calls"
+    systemd_target_pid() { printf 123; }
+    uid_network_tool() { printf "%s\n" "$*" >>"$log"; }
+    uid_network_attach_if_enabled || exit 1
+    [[ ! -e $log ]] || exit 1
+    printf "enabled=1\n" >"$CONTAINER/.xtmoe-uid-network"
+    uid_network_attach_if_enabled || exit 1
+    grep -qx "attach $CONTAINER 123" "$log" || exit 1
+    uid_network_release_if_configured || exit 1
+    grep -qx "release $CONTAINER" "$log" || exit 1
+    printf "invalid\n" >"$CONTAINER/.xtmoe-uid-network"
+    if uid_network_attach_if_enabled; then exit 1; fi
+' _ "$ROOT_DIR" "$TEST_TMP"
+
 assert_ok 'Shadowed veth rules migrate only the owned priority group and retain a guard until refresh succeeds' bash -c '
     set -Eeuo pipefail
     source "$1/src/lib/xtmoe-network"
@@ -310,7 +326,7 @@ assert_ok 'Daemon descriptor cleanup closes inherited handles only in the child'
 
 assert_ok 'Nested systemd stop exits its manager and cleans networking after service shutdown' bash -c '
     source <(awk "/^\\[\\[ .*id -u/ {skip=1} /^valid_name\\(\\)/ {skip=0} /^ACTION=/ {exit} !skip {print}" "$1/src/lib/xtmoe-root")
-    log="$2/nested-stop"; stop_fixture=$2; ROOTFS=/fixture
+    log="$2/nested-stop"; stop_fixture=$2; ROOTFS=/fixture; CONTAINER="$2/nested-stop-container"
     systemd_running() { return 0; }; systemd_target_pid() { printf 123; }; rootfs_has_executable() { return 0; }
     systemd_exec() { printf "%s\n" "$*" >>"$log"; }; process_alive() { return 1; }
     readlink() { printf private-pid; }; systemd_resume_namespace_waiters() { :; }

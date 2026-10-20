@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+assert_ok 'UID networking menu discloses shared UID scope and requires explicit confirmation' bash -c '
+    source "$1/src/lib/common.sh"; source "$1/src/lib/manager.sh"
+    log="$2/uid-menu"; menu_run() { printf "%s\n" "$*" >"$log"; }
+    catalog=$(menu_entries chroot network)
+    [[ $catalog == *"UID共享授权"* && $catalog == *"uid-network-status"* ]] || exit 1
+    confirm() { return 1; }
+    menu_dispatch_action chroot uid-network-on ubuntu || exit 1
+    [[ ! -e $log ]] || exit 1
+    confirm() { return 0; }
+    menu_dispatch_action chroot uid-network-on ubuntu || exit 1
+    [[ $(<"$log") == "chroot_main uid-network-on ubuntu" ]]
+' _ "$ROOT_DIR" "$TEST_TMP"
 # Sourced by run.sh. Exercise real menu navigation with recording backends.
 assert_ok 'Dual mode menu catalog covers service, network, data and repair functions' bash -c '
     source "$1/src/lib/common.sh"; source "$1/src/lib/manager.sh"

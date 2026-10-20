@@ -119,15 +119,16 @@ source "$ROOT_DIR/tests/menus.sh"
 source "$ROOT_DIR/tests/proxy.sh"
 source "$ROOT_DIR/tests/chroot-network.sh"
 source "$ROOT_DIR/tests/capabilities.sh"
+assert_ok 'UID networking policy, ownership, multi-container and API metadata tests' python "$ROOT_DIR/tests/uid-network.py"
 
 assert_ok 'Installer copies all required modules' env XTMOE_SKIP_PACKAGES=1 XTMOE_ALLOW_NON_TERMUX=1 sh "$ROOT_DIR/termux.sh"
 assert_ok 'Installed version works' bash "$PREFIX/bin/xtmoe" version
 assert_contains 'Installed version matches source' 'xtmoe v1.0.0' "$TEST_TMP/stdout"
-for module in common.sh capabilities.sh proxy.sh proot.sh proot-ssh.sh chroot.sh manager.sh xtmoe-network; do
+for module in common.sh capabilities.sh proxy.sh proot.sh proot-ssh.sh chroot.sh manager.sh xtmoe-network xtmoe-uid-network.py; do
     [[ -f "$PREFIX/libexec/xtmoe/current/lib/$module" ]] && pass "Installed module $module" || fail "Missing module $module"
 done
 source "$ROOT_DIR/tests/install-safety.sh"
-expected_modules=$(printf '%s\n' capabilities.sh chroot.sh common.sh manager.sh proot.sh proot-ssh.sh proxy.sh xtmoe-docker-routing xtmoe-docker-routing.service xtmoe-network | sort)
+expected_modules=$(printf '%s\n' capabilities.sh chroot.sh common.sh manager.sh proot.sh proot-ssh.sh proxy.sh xtmoe-docker-routing xtmoe-docker-routing.service xtmoe-network xtmoe-uid-network.py | sort)
 actual_modules=$(find "$ROOT_DIR/src/lib" -maxdepth 1 -type f -printf '%f\n' | sed '/^xtmoe-root$/d' | sort)
 [[ $actual_modules == "$expected_modules" ]] && pass 'Only intended dual-mode modules are shipped' || fail 'Unexpected module inventory'
 

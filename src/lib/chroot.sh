@@ -1490,7 +1490,7 @@ chroot_main() {
     require_chroot
     ensure_dirs
     case "$action" in
-        network-status|network-mode|port-add|port-list|port-remove)
+        network-status|network-mode|port-add|port-list|port-remove|uid-network-on|uid-network-off|uid-network-status)
             (($#)) || die '缺少容器名称'
             local network_name=$1; shift; require_name "$network_name"
             chroot_root "$action" "$(chroot_base)" "$network_name" "$@"

@@ -771,6 +771,28 @@ systemd_namespace_launch() {
         /bin/bash -c "$(systemd_guest_init_script)"
 }
 
+uid_network_tool() {
+    local tool
+    tool="$(dirname -- "${BASH_SOURCE[0]}")/xtmoe-uid-network.py"
+    [[ -f $tool ]] || tool="$(dirname -- "${BASH_SOURCE[0]}")/lib/xtmoe-uid-network.py"
+    [[ -f $tool ]] || die '当前安装缺少 UID 联网模块，请重新安装程序'
+    "$TERMUX_PREFIX/bin/python" "$tool" "$@"
+}
+
+uid_network_attach_if_enabled() {
+    local file="$CONTAINER/.xtmoe-uid-network"
+    [[ -e $file || -L $file ]] || return 0
+    [[ -f $file && ! -L $file ]] || { warn '非法 UID 联网配置'; return 1; }
+    grep -qx 'enabled=0' "$file" && return 0
+    grep -qx 'enabled=1' "$file" || { warn 'UID 联网配置内容无效'; return 1; }
+    uid_network_tool attach "$CONTAINER" "$(systemd_target_pid)"
+}
+
+uid_network_release_if_configured() {
+    [[ -e $CONTAINER/.xtmoe-uid-network || -L $CONTAINER/.xtmoe-uid-network ]] || return 0
+    uid_network_tool release "$CONTAINER"
+}
+
 systemd_start() {
     local config=${1:-} launcher_pid target_pid attempt helper_path
     local extra
@@ -779,7 +801,7 @@ systemd_start() {
     systemd_check
     systemd_pid_files
     if systemd_running; then
-        systemd_manager_ready && { ok '嵌套 systemd 已在运行并就绪'; return 0; }
+        systemd_manager_ready && { uid_network_attach_if_enabled || return 1; ok '嵌套 systemd 已在运行并就绪'; return 0; }
         die '嵌套 systemd 进程存在，但 manager 尚未就绪'
     fi
     is_mounted "$ROOTFS" && die '容器已有普通 Chroot 挂载；请先退出会话并执行 stop。'
@@ -837,6 +859,7 @@ systemd_start() {
     ok "嵌套 systemd 已启动并就绪（宿主 PID $target_pid）"
     net_bind_master "$target_pid"
     trap - EXIT
+    uid_network_attach_if_enabled
 }
 
 systemd_exec() {
@@ -899,7 +922,7 @@ systemd_resume_namespace_waiters() {
 }
 
 systemd_stop() {
-    local pid attempt namespace
+    local pid attempt namespace result=0
     if ! systemd_running; then
         systemd_pid_files
         rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
@@ -907,8 +930,9 @@ systemd_stop() {
             unmount_all "$ROOTFS" || { warn '部分挂载仍被占用，停止未完成'; return 1; }
         fi
         ok '嵌套 systemd 未运行'
-        net_stop
-        return 0
+        uid_network_release_if_configured || result=1
+        net_stop || result=1
+        return "$result"
     fi
     pid=$(systemd_target_pid)
     namespace=$(readlink "/proc/$pid/ns/pid") || return 1
@@ -931,7 +955,9 @@ systemd_stop() {
     rm -f -- "$PID_FILE" "$LAUNCHER_PID_FILE"
     unmount_all "$ROOTFS" || { warn 'systemd 已停止，但部分挂载未卸载'; return 1; }
     ok '嵌套 systemd 已停止'
-    net_stop
+    uid_network_release_if_configured || result=1
+    net_stop || result=1
+    return "$result"
 }
 
 direct_docker_namespace_launch() {
@@ -1392,6 +1418,25 @@ case "$ACTION" in
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
         [[ -f $CONTAINER/.xtmoe-chroot ]] || die '容器不存在'
         direct_docker_run_test
+        ;;
+    uid-network-on|uid-network-off|uid-network-status)
+        (($# == 2)) || die 'UID 联网操作参数数量错误'
+        container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"
+        valid_container_tree "$CONTAINER" || die '容器不存在或目录无效'
+        case "$ACTION" in
+            uid-network-on)
+                target=0
+                if systemd_running; then target=$(systemd_target_pid); fi
+                direct_docker_running && die '此功能目前仅支持独立 PID namespace 的 systemd 模式'
+                if ((target == 0)); then
+                    is_mounted "$ROOTFS" && die '基础 Chroot 会话不支持此功能；请先停止，再使用 systemd 模式'
+                    rootfs_has_systemd_init "$ROOTFS" || die '容器缺少 systemd，不能开启此功能'
+                fi
+                uid_network_tool on "$CONTAINER" "$target"
+                ;;
+            uid-network-off) uid_network_tool off "$CONTAINER" ;;
+            uid-network-status) uid_network_tool status "$CONTAINER" ;;
+        esac
         ;;
     systemd-check)
         container_paths "${1:?缺少基础目录}" "${2:?缺少名称}"

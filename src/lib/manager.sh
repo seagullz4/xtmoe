@@ -222,7 +222,7 @@ menu_entries() {
         chroot:systemd)
             printf '%s\n' '前置检查|systemd-check' '开启 systemd|systemd-start' '停止 systemd|systemd-stop' '安全重启容器（systemd）|restart' '状态检查|systemd-status' ;;
         chroot:network)
-            printf '%s\n' '检测网络、DNS 与监听端口|network-check' '修复 DNS 与 Docker 默认网络|network-repair' '独立网络状态和私有 IP|network-status' '设置网络模式（须停止容器）|network-mode' '查看局域网端口映射|port-list' '添加局域网端口映射|port-add' '删除局域网端口映射|port-remove' ;;
+            printf '%s\n' '检测网络、DNS 与监听端口|network-check' '修复 DNS 与 Docker 默认网络|network-repair' '独立网络状态和私有 IP|network-status' '设置网络模式（须停止容器）|network-mode' '查看局域网端口映射|port-list' '添加局域网端口映射|port-add' '删除局域网端口映射|port-remove' '开启非Root联网兼容（UID共享授权）|uid-network-on' '关闭非Root联网兼容并回收|uid-network-off' '非Root联网兼容状态|uid-network-status' ;;
         proot:runtime)
             printf '%s\n' '进入容器|login' '执行容器命令|exec' '停止活动会话（包括SSH）|stop' '更新容器系统|update-system' '查看状态|status' '活动会话|ps' '启动SSH|ssh-start' '查看SSH端口和状态|ssh-status' '配置SSH端口（须停止会话）|ssh-configure' ;;
         chroot:diagnostics)
@@ -299,6 +299,10 @@ menu_dispatch_action() {
     fi
     require_name "$name"
     case "$action" in
+        uid-network-on)
+            warn '授权按宿主 UID 全局生效，同 UID 的其他进程可能同时获得联网资格；不关闭整机限制联网模式。'
+            if confirm "为 $name 开启自动 UID 联网兼容？"; then menu_run "$backend" "$action" "$name"; fi
+            ;;
         ssh-configure)
             host=$(proot_ssh_prompt_port "$name") || return 0
             menu_run "$backend" ssh-configure "$name" "$host"
